@@ -1,0 +1,268 @@
+/*
+ * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import aQute.bnd.gradle.BundleTaskConvention
+import me.champeau.gradle.japicmp.JapicmpTask
+
+apply plugin: 'java-test-fixtures'
+apply plugin: 'io.spring.javadoc'
+apply plugin: 'com.github.johnrengelman.shadow'
+apply plugin: 'me.champeau.gradle.japicmp'
+apply plugin: 'de.undercouch.download'
+apply plugin: 'biz.aQute.bnd.builder'
+
+ext {
+	bndOptions = [
+			"Export-Package" : "!reactor.netty.internal*,reactor.netty*;version=$osgiVersion;-noimport:=true",
+			"Import-Package": [
+					"!javax.annotation",
+					"io.netty.channel.kqueue;resolution:=optional;version=\"[4.1,5)\"",
+					"io.netty.incubator.channel.uring;resolution:=optional",
+					"io.micrometer.*;resolution:=optional",
+					"*"
+			].join(","),
+			"Bundle-Name" : "reactor-netty-core",
+			"Bundle-SymbolicName" : "io.projectreactor.netty.reactor-netty-core",
+			"Bundle-Version" : "$osgiVersion"
+	]
+}
+
+sourceSets {
+	jarFileTest
+}
+
+configurations {
+	shaded
+}
+
+dependencies {
+	// JSR-305 annotations
+	compileOnly "com.google.code.findbugs:jsr305:$jsr305Version"
+
+	compile "io.netty:netty-handler:$nettyVersion"
+	compile "io.netty:netty-handler-proxy:$nettyVersion"
+	compile "io.netty:netty-resolver-dns:$nettyVersion"
+	if (!"$nettyVersion".endsWithAny("SNAPSHOT")) {
+		compile "io.netty:netty-resolver-dns-native-macos:$nettyVersion:osx-x86_64"
+	}
+	else {
+		// MacOS binaries are not available for Netty SNAPSHOT version
+		compile "io.netty:netty-resolver-dns-native-macos:$nettyVersion"
+	}
+	//transport resolution: typical build forces epoll but not kqueue transitively
+	//on the other hand, if we want to make transport-specific tests, we'll make all
+	// native optional at compile time and add correct native/nio to testRuntime
+	if (project.hasProperty("forceTransport")) {
+		//so that the main code compiles
+		optional "io.netty:netty-transport-native-epoll:$nettyVersion"
+		optional "io.netty:netty-transport-native-kqueue:$nettyVersion"
+		optional "io.netty.incubator:netty-incubator-transport-native-io_uring:$nettyIoUringVersion"
+		//now we explicitly add correctly qualified native, or do nothing if we want to test NIO
+		if (forceTransport == "native") {
+			if (osdetector.os == "osx") {
+				testRuntime "io.netty:netty-transport-native-kqueue:$nettyVersion$os_suffix"
+			}
+			else if (osdetector.os == "linux") {
+				testRuntime "io.netty:netty-transport-native-epoll:$nettyVersion$os_suffix"
+			}
+		}
+		else if (forceTransport == "io_uring" && osdetector.os == "linux") {
+			testRuntime "io.netty.incubator:netty-incubator-transport-native-io_uring:$nettyIoUringVersion$os_suffix"
+		}
+		else if (forceTransport != "nio") {
+			throw new InvalidUserDataException("invalid -PforceTranport option " + forceTransport + ", should be native|nio")
+		}
+	}
+	else {
+		//classic build to be distributed
+		compile "io.netty:netty-transport-native-epoll:$nettyVersion:linux-x86_64"
+		optional "io.netty:netty-transport-native-kqueue:$nettyVersion"
+		optional "io.netty.incubator:netty-incubator-transport-native-io_uring:$nettyIoUringVersion"
+	}
+
+	//Metrics
+	optional "io.micrometer:micrometer-core:$micrometerVersion"
+
+	// Logging
+	optional "org.slf4j:slf4j-api:$slf4jVersion"
+
+	compile "io.projectreactor:reactor-core:$reactorCoreVersion"
+	shaded("io.projectreactor.addons:reactor-pool:$reactorPoolVersion") {
+		exclude module: "reactor-core"
+	}
+
+	// Testing
+
+	// JSR-305 annotations
+	testCompileOnly "com.google.code.findbugs:jsr305:$jsr305Version"
+
+	testCompile "com.fasterxml.jackson.core:jackson-databind:$jacksonDatabindVersion"
+	testCompile "io.projectreactor:reactor-test:$testAddonVersion"
+	testCompile "org.assertj:assertj-core:$assertJVersion"
+	testCompile "org.junit.jupiter:junit-jupiter-api:$junitVersion"
+	testCompile "org.mockito:mockito-core:$mockitoVersion"
+	testCompile "ch.qos.logback:logback-classic:$logbackVersion"
+	testCompile "io.projectreactor.tools:blockhound-junit-platform:$blockHoundVersion"
+
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher:$junitPlatformLauncherVersion"
+	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
+	testRuntimeOnly "org.slf4j:jcl-over-slf4j:$slf4jVersion"
+
+	for (dependency in project.configurations.shaded.dependencies) {
+		compileOnly(dependency)
+		testCompile(dependency)
+	}
+
+	jarFileTestCompile "org.assertj:assertj-core:$assertJVersion"
+	jarFileTestCompile "org.junit.jupiter:junit-jupiter-api:$junitVersion"
+	jarFileTestRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
+}
+
+jar {
+	archiveClassifier.set('original')
+	manifest {
+		attributes("Automatic-Module-Name": "reactor.netty.core")
+	}
+	bnd(bndOptions)
+}
+
+components.java.withVariantsFromConfiguration(configurations.testFixturesApiElements) { skip() }
+components.java.withVariantsFromConfiguration(configurations.testFixturesRuntimeElements) { skip() }
+
+task downloadBaseline(type: Download) {
+	onlyIf {
+		if (project.gradle.startParameter.isOffline()) {
+			println "Offline: skipping downloading of baseline and JAPICMP"
+			return false
+		}
+		else if ("$compatibleVersion" == "SKIP") {
+			println "SKIP: Instructed to skip the baseline comparison"
+			return false
+		}
+		else {
+			println "Will download and perform baseline comparison with ${compatibleVersion}"
+			return true
+		}
+	}
+
+	onlyIfNewer true
+	compress true
+	src "${repositories.jcenter().url}io/projectreactor/netty/reactor-netty-core/$compatibleVersion/reactor-netty-core-${compatibleVersion}-original.jar"
+	dest "${buildDir}/baselineLibs/reactor-netty-core-${compatibleVersion}-original.jar"
+}
+
+task japicmp(type: JapicmpTask) {
+	oldClasspath = files("${buildDir}/baselineLibs/reactor-netty-core-${compatibleVersion}-original.jar")
+	newClasspath = files(jar.archiveFile)
+	onlyBinaryIncompatibleModified = true
+	failOnModification = true
+	failOnSourceIncompatibility = true
+	txtOutputFile = file("${project.buildDir}/reports/japi.txt")
+	ignoreMissingClasses = true
+	includeSynthetic = true
+	onlyIf { "$compatibleVersion" != "SKIP" }
+}
+
+tasks.japicmp.dependsOn(downloadBaseline)
+
+tasks.check.dependsOn(japicmp)
+
+shadowJar {
+	configure {
+		it.convention.plugins.bundle = new BundleTaskConvention(it)
+		doLast {
+			buildBundle()
+		}
+	}
+	bnd(bndOptions)
+
+	archiveClassifier.set(null)
+
+	dependsOn(project.tasks.jar)
+
+	manifest {
+		inheritFrom project.tasks.jar.manifest
+	}
+
+	configurations = [project.configurations.shaded]
+
+	project.afterEvaluate {
+		dependencies {
+			def shadedDependencies = project.configurations
+					.shaded
+					.dependencies
+					.collect { "${it.group}:${it.name}".toString() }
+					.toSet()
+
+			// Exclude every compile-scoped dependency (including the transitive ones)
+			for (id in project.configurations.compile.resolvedConfiguration.resolvedArtifacts*.moduleVersion*.id) {
+				def module = "${id.group}:${id.name}".toString()
+				if (!shadedDependencies.contains(module)) {
+					project.configurations.shaded.exclude(group: id.group, module: id.name)
+					exclude(dependency(module))
+				}
+			}
+		}
+	}
+
+	exclude 'META-INF/maven*/**'
+}
+
+task relocateShadowJar(type: com.github.jengelman.gradle.plugins.shadow.tasks.ConfigureShadowRelocation) {
+	target = tasks.shadowJar
+	prefix = "reactor.netty.internal.shaded"
+}
+
+tasks.shadowJar.dependsOn(relocateShadowJar)
+
+//delay the maven publishing so that the OSGi metadata is generated
+//then add shadowJar to the publication
+components.java.withVariantsFromConfiguration(configurations.shadowRuntimeElements) {
+	skip()
+}
+publishing.publications.mavenJava.artifact(shadowJar)
+
+task jarFileTest(type: Test) {
+	testClassesDirs = sourceSets.jarFileTest.output.classesDirs
+	classpath = sourceSets.jarFileTest.runtimeClasspath
+
+	systemProperty("jarFile", shadowJar.outputs.files.singleFile)
+
+	dependsOn(shadowJar)
+}
+
+tasks.check.dependsOn(jarFileTest)
+
+task shadedJarTest(type: Test) {
+	testClassesDirs = sourceSets.test.output.classesDirs
+
+	Set<? super File> mainOutputs = [
+			project.sourceSets.main.output.resourcesDir,
+			project.sourceSets.main.java.outputDir,
+	]
+
+	classpath = shadowJar.outputs.files
+	// Exclude main outputs since we have the shaded JAR on the classpath already
+	classpath += sourceSets.test.runtimeClasspath.filter { !(it in mainOutputs) }
+
+	//The imports are not relocated, we do relocation only for the main sources not the tests
+	exclude '**/*PooledConnectionProviderTest*.*'
+
+	dependsOn(shadowJar)
+}
+
+tasks.check.dependsOn(shadedJarTest)
+
+description = "Core functionality for the Reactor Netty library"

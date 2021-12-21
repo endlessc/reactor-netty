@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -44,16 +44,20 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Flux;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.ByteBufFlux;
+import reactor.netty.http.client.ContextAwareHttpClientMetricsRecorder;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.test.StepVerifier;
+import reactor.util.context.Context;
+import reactor.util.context.ContextView;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -237,6 +241,103 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 		checkExpectationsExisting("testUriTagValueResolver", sa.getHostString() + ":" + sa.getPort(), 1);
 	}
 
+	/**
+	 * https://github.com/reactor/reactor-netty/issues/1559
+	 */
+	@Test
+	void testUriTagValueFunctionNotSharedForClient() throws Exception {
+		disposableServer =
+				httpServer.metrics(true,
+				                s -> {
+				                    if ("/1".equals(s)) {
+				                        return "testUriTagValueFunctionNotShared_1";
+				                    }
+				                    else {
+				                        return "testUriTagValueFunctionNotShared_2";
+				                    }
+				                })
+				          .bindNow();
+
+		AtomicReference<SocketAddress> serverAddress = new AtomicReference<>();
+		httpClient = httpClient.doAfterRequest((req, conn) ->
+				serverAddress.set(conn.channel().remoteAddress())
+		);
+
+		CountDownLatch latch1 = new CountDownLatch(1);
+		httpClient.doOnResponse((res, conn) -> conn.channel()
+		                                           .closeFuture()
+		                                           .addListener(f -> latch1.countDown()))
+		          .metrics(true, s -> "testUriTagValueFunctionNotShared_1")
+		          .post()
+		          .uri("/1")
+		          .send(body)
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .as(StepVerifier::create)
+		          .expectNext("Hello World!")
+		          .expectComplete()
+		          .verify(Duration.ofSeconds(30));
+
+		assertThat(latch1.await(30, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+		InetSocketAddress sa = (InetSocketAddress) serverAddress.get();
+
+		Thread.sleep(1000);
+		checkExpectationsExisting("testUriTagValueFunctionNotShared_1", sa.getHostString() + ":" + sa.getPort(), 1);
+
+		CountDownLatch latch2 = new CountDownLatch(1);
+		httpClient.doOnResponse((res, conn) -> conn.channel()
+		                                           .closeFuture()
+		                                           .addListener(f -> latch2.countDown()))
+		          .metrics(true, s -> "testUriTagValueFunctionNotShared_2")
+		          .post()
+		          .uri("/2")
+		          .send(body)
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .as(StepVerifier::create)
+		          .expectNext("Hello World!")
+		          .expectComplete()
+		          .verify(Duration.ofSeconds(30));
+
+		assertThat(latch1.await(30, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+		sa = (InetSocketAddress) serverAddress.get();
+
+		Thread.sleep(1000);
+		checkExpectationsExisting("testUriTagValueFunctionNotShared_2", sa.getHostString() + ":" + sa.getPort(), 2);
+	}
+
+	@Test
+	void testContextAwareRecorder() throws Exception {
+		disposableServer = httpServer.bindNow();
+
+		ContextAwareRecorder recorder = ContextAwareRecorder.INSTANCE;
+		CountDownLatch latch = new CountDownLatch(1);
+		httpClient.doOnResponse((res, conn) -> conn.channel()
+		                                           .closeFuture()
+		                                           .addListener(f -> latch.countDown()))
+		          .metrics(true, () -> recorder)
+		          .post()
+		          .uri("/1")
+		          .send(body)
+		          .responseContent()
+		          .aggregate()
+		          .asString()
+		          .contextWrite(Context.of("testContextAwareRecorder", "OK"))
+		          .as(StepVerifier::create)
+		          .expectNext("Hello World!")
+		          .expectComplete()
+		          .verify(Duration.ofSeconds(30));
+
+		assertThat(latch.await(30, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+		assertThat(recorder.onDataReceivedContextView).isTrue();
+		assertThat(recorder.onDataSentContextView).isTrue();
+	}
+
 	private void checkExpectationsExisting(String uri, String serverAddress, int index) {
 		String[] timerTags1 = new String[] {URI, uri, METHOD, "POST", STATUS, "200"};
 		String[] timerTags2 = new String[] {URI, uri, METHOD, "POST"};
@@ -352,4 +453,65 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	static final String CLIENT_ERRORS = HTTP_CLIENT_PREFIX + ERRORS;
 	private static final String CLIENT_CONNECT_TIME = HTTP_CLIENT_PREFIX + CONNECT_TIME;
 	private static final String CLIENT_TLS_HANDSHAKE_TIME = HTTP_CLIENT_PREFIX + TLS_HANDSHAKE_TIME;
+
+	static final class ContextAwareRecorder extends ContextAwareHttpClientMetricsRecorder {
+
+		static final ContextAwareRecorder INSTANCE = new ContextAwareRecorder();
+
+		AtomicBoolean onDataReceivedContextView = new AtomicBoolean();
+		AtomicBoolean onDataSentContextView = new AtomicBoolean();
+
+		@Override
+		public void incrementErrorsCount(ContextView contextView, SocketAddress remoteAddress, String uri) {
+		}
+
+		@Override
+		public void recordDataReceived(ContextView contextView, SocketAddress remoteAddress, String uri, long bytes) {
+		}
+
+		@Override
+		public void recordDataSent(ContextView contextView, SocketAddress remoteAddress, String uri, long bytes) {
+		}
+
+		@Override
+		public void recordDataReceivedTime(ContextView contextView, SocketAddress remoteAddress, String uri,
+				String method, String status, Duration time) {
+			onDataReceivedContextView.set("OK".equals(contextView.getOrDefault("testContextAwareRecorder", "KO")));
+		}
+
+		@Override
+		public void recordDataSentTime(ContextView contextView, SocketAddress remoteAddress, String uri, String method,
+				Duration time) {
+			onDataSentContextView.set("OK".equals(contextView.getOrDefault("testContextAwareRecorder", "KO")));
+		}
+
+		@Override
+		public void recordResponseTime(ContextView contextView, SocketAddress remoteAddress, String uri,
+				String method, String status, Duration time) {
+		}
+
+		@Override
+		public void incrementErrorsCount(ContextView contextView, SocketAddress socketAddress) {
+		}
+
+		@Override
+		public void recordConnectTime(ContextView contextView, SocketAddress socketAddress, Duration duration, String s) {
+		}
+
+		@Override
+		public void recordDataReceived(ContextView contextView, SocketAddress socketAddress, long l) {
+		}
+
+		@Override
+		public void recordDataSent(ContextView contextView, SocketAddress socketAddress, long l) {
+		}
+
+		@Override
+		public void recordTlsHandshakeTime(ContextView contextView, SocketAddress socketAddress, Duration duration, String s) {
+		}
+
+		@Override
+		public void recordResolveAddressTime(SocketAddress socketAddress, Duration duration, String s) {
+		}
+	}
 }

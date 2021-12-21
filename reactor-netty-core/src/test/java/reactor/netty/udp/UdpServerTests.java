@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.udp;
 
 import java.io.IOException;
@@ -49,6 +48,7 @@ import reactor.netty.ChannelBindException;
 import reactor.netty.Connection;
 import reactor.netty.SocketUtils;
 import reactor.netty.resources.LoopResources;
+import reactor.test.StepVerifier;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 
@@ -275,14 +275,6 @@ class UdpServerTests {
 	}
 
 	@Test
-	void testUdpServerWithDomainSockets() {
-		assertThatExceptionOfType(UnsupportedOperationException.class)
-				.isThrownBy(() -> UdpServer.create()
-		                                   .bindAddress(() -> new DomainSocketAddress("/tmp/test.sock"))
-		                                   .bindNow());
-	}
-
-	@Test
 	void testUdpServerWithDomainSocketsWithHost() {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> UdpServer.create()
@@ -306,5 +298,23 @@ class UdpServerTests {
 				.isThrownBy(() -> UdpServer.create()
 		                                   .port(0)
 		                                   .bindNow(Duration.ofMillis(Long.MAX_VALUE)));
+	}
+
+	@Test
+	void testUdpServerWithDomainSocketsNIOTransport() {
+		LoopResources loop = LoopResources.create("testUdpServerWithDomainSocketsNIOTransport");
+		try {
+			UdpServer.create()
+			         .runOn(loop, false)
+			         .bindAddress(() -> new DomainSocketAddress("/tmp/test.sock"))
+			         .bind()
+			         .as(StepVerifier::create)
+			         .expectError(IllegalArgumentException.class)
+			         .verify(Duration.ofSeconds(5));
+		}
+		finally {
+			loop.disposeLater()
+			    .block(Duration.ofSeconds(30));
+		}
 	}
 }

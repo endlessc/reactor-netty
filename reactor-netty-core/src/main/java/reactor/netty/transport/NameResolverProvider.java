@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,8 @@ import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.resolver.AddressResolverGroup;
+import io.netty.resolver.DefaultHostsFileEntriesResolver;
+import io.netty.resolver.HostsFileEntriesResolver;
 import io.netty.resolver.ResolvedAddressTypes;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.resolver.dns.DnsNameResolver;
@@ -27,12 +29,15 @@ import io.netty.resolver.dns.DnsNameResolverBuilder;
 import io.netty.resolver.dns.DnsQueryLifecycleObserverFactory;
 import io.netty.resolver.dns.LoggingDnsQueryLifeCycleObserverFactory;
 import io.netty.resolver.dns.RoundRobinDnsAddressResolverGroup;
+import io.netty.util.concurrent.Future;
 import reactor.netty.resources.LoopResources;
 import reactor.util.annotation.Nullable;
 
+import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
  * A {@link NameResolverProvider} will produce {@link DnsAddressResolverGroup}.
@@ -86,8 +91,21 @@ public final class NameResolverProvider {
 		NameResolverSpec cacheNegativeTimeToLive(Duration cacheNegativeTimeToLive);
 
 		/**
+		 * If {@code true}, the resolver notifies the returned {@link Future} as
+		 * soon as all queries for the preferred address type are complete.
+		 * If {@code false}, the resolver notifies the returned {@link Future} when
+		 * all possible address types are complete.
+		 * This configuration is applicable for {@link DnsNameResolver#resolveAll(String)}.
+		 * By default, this is enabled.
+		 *
+		 * @param enable {@code true} to enable, {@code false} to disable.
+		 * @return {@code this}
+		 */
+		NameResolverSpec completeOncePreferredResolved(boolean enable);
+
+		/**
 		 * Disables the automatic inclusion of an optional record that tries to hint the remote DNS server about
-		 * how much data the resolver can read per response. By default this is enabled.
+		 * how much data the resolver can read per response. By default, this is enabled.
 		 *
 		 * @param disable true if an optional record is not included
 		 * @return {@code this}
@@ -96,12 +114,22 @@ public final class NameResolverProvider {
 
 		/**
 		 * Specifies whether this resolver has to send a DNS query with the recursion desired (RD) flag set.
-		 * By default this is enabled.
+		 * By default, this is enabled.
 		 *
 		 * @param disable true if RD flag is not set
 		 * @return {@code this}
 		 */
 		NameResolverSpec disableRecursionDesired(boolean disable);
+
+		/**
+		 * Specifies a custom {@link HostsFileEntriesResolver} to be used for hosts file entries.
+		 * Default to {@link DefaultHostsFileEntriesResolver}.
+		 *
+		 * @param hostsFileEntriesResolver the {@link HostsFileEntriesResolver} to be used for hosts file entries
+		 * @return {@code this}
+		 * @since 1.0.12
+		 */
+		NameResolverSpec hostsFileEntriesResolver(HostsFileEntriesResolver hostsFileEntriesResolver);
 
 		/**
 		 * Sets the capacity of the datagram packet buffer (in bytes).
@@ -152,6 +180,16 @@ public final class NameResolverProvider {
 		NameResolverSpec resolvedAddressTypes(ResolvedAddressTypes resolvedAddressTypes);
 
 		/**
+		 * Set a new local address supplier that supply the address to bind to.
+		 * By default, the host is configured for any local address, and the system picks up an ephemeral port.
+		 *
+		 * @param bindAddressSupplier A supplier of local address to bind to.
+		 * @return {@code this}
+		 * @since 1.0.14
+		 */
+		NameResolverSpec bindAddressSupplier(Supplier<? extends SocketAddress> bindAddressSupplier);
+
+		/**
 		 * Enables an {@link AddressResolverGroup} of {@link DnsNameResolver}s that supports random selection
 		 * of destination addresses if multiple are provided by the nameserver.
 		 * See {@link RoundRobinDnsAddressResolverGroup}.
@@ -192,7 +230,7 @@ public final class NameResolverProvider {
 
 		/**
 		 * Sets the list of search domains of the resolver.
-		 * By default the effective search domain list will be populated using
+		 * By default, the effective search domain list will be populated using
 		 * the system DNS search domains.
 		 *
 		 * @param searchDomains the search domains
@@ -245,6 +283,28 @@ public final class NameResolverProvider {
 	 */
 	public Duration cacheNegativeTimeToLive() {
 		return cacheNegativeTimeToLive;
+	}
+
+	/**
+	 * Returns the configured custom {@link HostsFileEntriesResolver} to be used for hosts file entries or null.
+	 *
+	 * @return the configured custom {@link HostsFileEntriesResolver} to be used for hosts file entries or null
+	 * @since 1.0.12
+	 */
+	@Nullable
+	public HostsFileEntriesResolver hostsFileEntriesResolver() {
+		return hostsFileEntriesResolver;
+	}
+
+	/**
+	 * Returns {@code true} if the resolver notifies the returned {@link Future} as
+	 * soon as all queries for the preferred address type are complete.
+	 *
+	 * @return {@code true} if the resolver notifies the returned {@link Future} as
+	 * soon as all queries for the preferred address type are complete
+	 */
+	public boolean isCompleteOncePreferredResolved() {
+		return completeOncePreferredResolved;
 	}
 
 	/**
@@ -340,6 +400,17 @@ public final class NameResolverProvider {
 	}
 
 	/**
+	 * Returns the configured supplier of local address to bind to or null.
+	 *
+	 * @return the configured supplier of local address to bind to or null
+	 * @since 1.0.14
+	 */
+	@Nullable
+	public Supplier<? extends SocketAddress> bindAddressSupplier() {
+		return bindAddressSupplier;
+	}
+
+	/**
 	 * Returns the configured list of search domains of the resolver or null.
 	 *
 	 * @return the configured list of search domains of the resolver or null
@@ -359,7 +430,8 @@ public final class NameResolverProvider {
 			return false;
 		}
 		NameResolverProvider that = (NameResolverProvider) o;
-		return disableRecursionDesired == that.disableRecursionDesired &&
+		return completeOncePreferredResolved == that.completeOncePreferredResolved &&
+				disableRecursionDesired == that.disableRecursionDesired &&
 				disableOptionalRecord == that.disableOptionalRecord &&
 				maxPayloadSize == that.maxPayloadSize &&
 				maxQueriesPerResolve == that.maxQueriesPerResolve &&
@@ -373,15 +445,17 @@ public final class NameResolverProvider {
 				Objects.equals(loopResources, that.loopResources) &&
 				queryTimeout.equals(that.queryTimeout) &&
 				resolvedAddressTypes == that.resolvedAddressTypes &&
+				Objects.equals(bindAddressSupplier, that.bindAddressSupplier) &&
 				// searchDomains is List so Objects.equals is OK
 				Objects.equals(searchDomains, that.searchDomains);
 	}
 
 	@Override
 	public int hashCode() {
-		return Objects.hash(cacheMaxTimeToLive, cacheMinTimeToLive, cacheNegativeTimeToLive, disableRecursionDesired,
-				disableOptionalRecord, loggingFactory, loopResources, maxPayloadSize, maxQueriesPerResolve, ndots,
-				preferNative, queryTimeout, resolvedAddressTypes, roundRobinSelection, searchDomains);
+		return Objects.hash(cacheMaxTimeToLive, cacheMinTimeToLive, cacheNegativeTimeToLive, completeOncePreferredResolved,
+				disableRecursionDesired, disableOptionalRecord, loggingFactory, loopResources, maxPayloadSize,
+				maxQueriesPerResolve, ndots, preferNative, queryTimeout, resolvedAddressTypes, bindAddressSupplier, roundRobinSelection,
+				searchDomains);
 	}
 
 	/**
@@ -405,6 +479,7 @@ public final class NameResolverProvider {
 		DnsNameResolverBuilder builder = new DnsNameResolverBuilder()
 				.ttl(Math.toIntExact(cacheMinTimeToLive.getSeconds()), Math.toIntExact(cacheMaxTimeToLive.getSeconds()))
 				.negativeTtl(Math.toIntExact(cacheNegativeTimeToLive.getSeconds()))
+				.completeOncePreferredResolved(completeOncePreferredResolved)
 				.optResourceEnabled(!disableOptionalRecord)
 				.recursionDesired(!disableRecursionDesired)
 				.maxPayloadSize(maxPayloadSize)
@@ -414,11 +489,19 @@ public final class NameResolverProvider {
 				.eventLoop(group.next())
 				.channelFactory(() -> loop.onChannel(DatagramChannel.class, group))
 				.socketChannelFactory(() -> loop.onChannel(SocketChannel.class, group));
+		if (hostsFileEntriesResolver != null) {
+			builder.hostsFileEntriesResolver(hostsFileEntriesResolver);
+		}
 		if (loggingFactory != null) {
 			builder.dnsQueryLifecycleObserverFactory(loggingFactory);
 		}
 		if (resolvedAddressTypes != null) {
 			builder.resolvedAddressTypes(resolvedAddressTypes);
+		}
+		if (bindAddressSupplier != null) {
+			// There is no check for bindAddressSupplier.get() == null
+			// This is deliberate, when null value is provided Netty will use the default behaviour
+			builder.localAddress(bindAddressSupplier.get());
 		}
 		if (searchDomains != null) {
 			builder.searchDomains(searchDomains);
@@ -429,8 +512,10 @@ public final class NameResolverProvider {
 	final Duration cacheMaxTimeToLive;
 	final Duration cacheMinTimeToLive;
 	final Duration cacheNegativeTimeToLive;
+	final boolean completeOncePreferredResolved;
 	final boolean disableRecursionDesired;
 	final boolean disableOptionalRecord;
+	final HostsFileEntriesResolver hostsFileEntriesResolver;
 	final DnsQueryLifecycleObserverFactory loggingFactory;
 	final LoopResources loopResources;
 	final int maxPayloadSize;
@@ -439,6 +524,7 @@ public final class NameResolverProvider {
 	final boolean preferNative;
 	final Duration queryTimeout;
 	final ResolvedAddressTypes resolvedAddressTypes;
+	final Supplier<? extends SocketAddress> bindAddressSupplier;
 	final boolean roundRobinSelection;
 	final Iterable<String> searchDomains;
 
@@ -446,8 +532,10 @@ public final class NameResolverProvider {
 		this.cacheMaxTimeToLive = build.cacheMaxTimeToLive;
 		this.cacheMinTimeToLive = build.cacheMinTimeToLive;
 		this.cacheNegativeTimeToLive = build.cacheNegativeTimeToLive;
+		this.completeOncePreferredResolved = build.completeOncePreferredResolved;
 		this.disableOptionalRecord = build.disableOptionalRecord;
 		this.disableRecursionDesired = build.disableRecursionDesired;
+		this.hostsFileEntriesResolver = build.hostsFileEntriesResolver;
 		this.loggingFactory = build.loggingFactory;
 		this.loopResources = build.loopResources;
 		this.maxPayloadSize = build.maxPayloadSize;
@@ -456,6 +544,7 @@ public final class NameResolverProvider {
 		this.preferNative = build.preferNative;
 		this.queryTimeout = build.queryTimeout;
 		this.resolvedAddressTypes = build.resolvedAddressTypes;
+		this.bindAddressSupplier = build.bindAddressSupplier;
 		this.roundRobinSelection = build.roundRobinSelection;
 		this.searchDomains = build.searchDomains;
 	}
@@ -464,6 +553,7 @@ public final class NameResolverProvider {
 		static final Duration DEFAULT_CACHE_MAX_TIME_TO_LIVE = Duration.ofSeconds(Integer.MAX_VALUE);
 		static final Duration DEFAULT_CACHE_MIN_TIME_TO_LIVE = Duration.ofSeconds(0);
 		static final Duration DEFAULT_CACHE_NEGATIVE_TIME_TO_LIVE = Duration.ofSeconds(0);
+		static final boolean DEFAULT_COMPLETE_ONCE_PREFERRED_RESOLVED = true;
 		static final int DEFAULT_MAX_PAYLOAD_SIZE = 4096;
 		static final int DEFAULT_MAX_QUERIES_PER_RESOLVE = 16;
 		static final int DEFAULT_NDOTS = -1;
@@ -472,8 +562,10 @@ public final class NameResolverProvider {
 		Duration cacheMaxTimeToLive = DEFAULT_CACHE_MAX_TIME_TO_LIVE;
 		Duration cacheMinTimeToLive = DEFAULT_CACHE_MIN_TIME_TO_LIVE;
 		Duration cacheNegativeTimeToLive = DEFAULT_CACHE_NEGATIVE_TIME_TO_LIVE;
+		boolean completeOncePreferredResolved = DEFAULT_COMPLETE_ONCE_PREFERRED_RESOLVED;
 		boolean disableOptionalRecord;
 		boolean disableRecursionDesired;
+		HostsFileEntriesResolver hostsFileEntriesResolver;
 		DnsQueryLifecycleObserverFactory loggingFactory;
 		LoopResources loopResources;
 		int maxPayloadSize = DEFAULT_MAX_PAYLOAD_SIZE;
@@ -482,6 +574,7 @@ public final class NameResolverProvider {
 		boolean preferNative = LoopResources.DEFAULT_NATIVE;
 		Duration queryTimeout = DEFAULT_QUERY_TIMEOUT;
 		ResolvedAddressTypes resolvedAddressTypes;
+		Supplier<? extends SocketAddress> bindAddressSupplier;
 		boolean roundRobinSelection;
 		Iterable<String> searchDomains;
 
@@ -504,6 +597,12 @@ public final class NameResolverProvider {
 		}
 
 		@Override
+		public NameResolverSpec completeOncePreferredResolved(boolean enable) {
+			this.completeOncePreferredResolved = enable;
+			return this;
+		}
+
+		@Override
 		public NameResolverSpec disableOptionalRecord(boolean disable) {
 			this.disableOptionalRecord = disable;
 			return this;
@@ -512,6 +611,12 @@ public final class NameResolverProvider {
 		@Override
 		public NameResolverSpec disableRecursionDesired(boolean disable) {
 			this.disableRecursionDesired = disable;
+			return this;
+		}
+
+		@Override
+		public NameResolverSpec hostsFileEntriesResolver(HostsFileEntriesResolver hostsFileEntriesResolver) {
+			this.hostsFileEntriesResolver = Objects.requireNonNull(hostsFileEntriesResolver);
 			return this;
 		}
 
@@ -551,6 +656,14 @@ public final class NameResolverProvider {
 		@Override
 		public NameResolverSpec resolvedAddressTypes(ResolvedAddressTypes resolvedAddressTypes) {
 			this.resolvedAddressTypes = Objects.requireNonNull(resolvedAddressTypes);
+			return this;
+		}
+
+		@Override
+		public NameResolverSpec bindAddressSupplier(Supplier<? extends SocketAddress> bindAddressSupplier)	{
+			// If the default behaviour for bindAddress is the desired behaviour, one can provide a Supplier that returns null
+			Objects.requireNonNull(bindAddressSupplier, "bindAddressSupplier");
+			this.bindAddressSupplier = bindAddressSupplier;
 			return this;
 		}
 

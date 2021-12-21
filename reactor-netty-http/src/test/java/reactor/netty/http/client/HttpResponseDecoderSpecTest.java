@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,6 +19,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static reactor.netty.http.HttpDecoderSpecTest.checkDefaultAllowDuplicateContentLengths;
+import static reactor.netty.http.HttpDecoderSpecTest.checkDefaultInitialBufferSize;
+import static reactor.netty.http.HttpDecoderSpecTest.checkDefaultMaxChunkSize;
+import static reactor.netty.http.HttpDecoderSpecTest.checkDefaultMaxHeaderSize;
+import static reactor.netty.http.HttpDecoderSpecTest.checkDefaultMaxInitialLineLength;
+import static reactor.netty.http.HttpDecoderSpecTest.checkDefaultValidateHeaders;
 
 /**
  * @author Violeta Georgieva
@@ -34,41 +40,73 @@ class HttpResponseDecoderSpecTest {
 
 	@Test
 	void failOnMissingResponse() {
+		checkDefaultFailOnMissingResponse(conf);
+
 		conf.failOnMissingResponse(true);
 
 		assertThat(conf.failOnMissingResponse).as("fail on missing response").isTrue();
 
-		assertThat(conf.maxInitialLineLength()).as("default initial line length")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_MAX_INITIAL_LINE_LENGTH);
-		assertThat(conf.maxHeaderSize()).as("default header size")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_MAX_HEADER_SIZE);
-		assertThat(conf.maxChunkSize()).as("default chunk size")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_MAX_CHUNK_SIZE);
-		assertThat(conf.validateHeaders()).as("default validate headers")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_VALIDATE_HEADERS);
-		assertThat(conf.initialBufferSize()).as("default initial buffer sizes")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_INITIAL_BUFFER_SIZE);
-		assertThat(conf.parseHttpAfterConnectRequest).as("default parse http after connect request")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_PARSE_HTTP_AFTER_CONNECT_REQUEST);
+		checkDefaultMaxInitialLineLength(conf);
+		checkDefaultMaxHeaderSize(conf);
+		checkDefaultMaxChunkSize(conf);
+		checkDefaultValidateHeaders(conf);
+		checkDefaultInitialBufferSize(conf);
+		checkDefaultAllowDuplicateContentLengths(conf);
+		checkDefaultParseHttpAfterConnectRequest(conf);
+		checkDefaultH2cMaxContentLength(conf);
+	}
+
+	@Test
+	void h2cMaxContentLength() {
+		checkDefaultH2cMaxContentLength(conf);
+
+		conf.h2cMaxContentLength(256);
+
+		assertThat(conf.h2cMaxContentLength()).as("H2C max content length").isEqualTo(256);
+
+		checkDefaultMaxInitialLineLength(conf);
+		checkDefaultMaxHeaderSize(conf);
+		checkDefaultMaxChunkSize(conf);
+		checkDefaultValidateHeaders(conf);
+		checkDefaultInitialBufferSize(conf);
+		checkDefaultAllowDuplicateContentLengths(conf);
+		checkDefaultFailOnMissingResponse(conf);
+		checkDefaultParseHttpAfterConnectRequest(conf);
 	}
 
 	@Test
 	void parseHttpAfterConnectRequest() {
+		checkDefaultParseHttpAfterConnectRequest(conf);
+
 		conf.parseHttpAfterConnectRequest(true);
 
 		assertThat(conf.parseHttpAfterConnectRequest).as("parse http after connect request").isTrue();
 
-		assertThat(conf.maxInitialLineLength()).as("default initial line length")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_MAX_INITIAL_LINE_LENGTH);
-		assertThat(conf.maxHeaderSize()).as("default header size")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_MAX_HEADER_SIZE);
-		assertThat(conf.maxChunkSize()).as("default chunk size")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_MAX_CHUNK_SIZE);
-		assertThat(conf.validateHeaders()).as("default validate headers")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_VALIDATE_HEADERS);
-		assertThat(conf.initialBufferSize()).as("default initial buffer sizes")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_INITIAL_BUFFER_SIZE);
+		checkDefaultMaxInitialLineLength(conf);
+		checkDefaultMaxHeaderSize(conf);
+		checkDefaultMaxChunkSize(conf);
+		checkDefaultValidateHeaders(conf);
+		checkDefaultInitialBufferSize(conf);
+		checkDefaultAllowDuplicateContentLengths(conf);
+		checkDefaultFailOnMissingResponse(conf);
+		checkDefaultH2cMaxContentLength(conf);
+	}
+
+	private static void checkDefaultFailOnMissingResponse(HttpResponseDecoderSpec conf) {
 		assertThat(conf.failOnMissingResponse).as("default fail on missing response")
-				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_FAIL_ON_MISSING_RESPONSE);
+				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_FAIL_ON_MISSING_RESPONSE)
+				.isFalse();
+	}
+
+	private static void checkDefaultH2cMaxContentLength(HttpResponseDecoderSpec conf) {
+		assertThat(conf.h2cMaxContentLength()).as("default H2C max content length")
+				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_H2C_MAX_CONTENT_LENGTH)
+				.isEqualTo(65536);
+	}
+
+	private static void checkDefaultParseHttpAfterConnectRequest(HttpResponseDecoderSpec conf) {
+		assertThat(conf.parseHttpAfterConnectRequest).as("default parse http after connect request")
+				.isEqualTo(HttpResponseDecoderSpec.DEFAULT_PARSE_HTTP_AFTER_CONNECT_REQUEST)
+				.isFalse();
 	}
 }

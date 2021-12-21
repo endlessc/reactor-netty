@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.server;
 
 import java.io.ByteArrayOutputStream;
@@ -28,7 +27,9 @@ import java.nio.file.Paths;
 import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -36,6 +37,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
@@ -89,6 +91,8 @@ import io.netty.util.concurrent.GlobalEventExecutor;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -103,6 +107,8 @@ import reactor.netty.FutureMono;
 import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.AbortedException;
+import reactor.netty.http.Http11SslContextSpec;
+import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientRequest;
@@ -123,7 +129,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.api.Assumptions.assumeThat;
-import static reactor.netty.tcp.SslProvider.DefaultConfigurationType.TCP;
+import static reactor.netty.http.server.HttpServerFormDecoderProvider.DEFAULT_FORM_DECODER_SPEC;
 
 /**
  * @author Stephane Maldini
@@ -838,15 +844,17 @@ class HttpServerTests extends BaseHttpTest {
 	@Test
 	void httpServerRequestConfigInjectAttributes() {
 		AtomicReference<Channel> channelRef = new AtomicReference<>();
-		AtomicReference<Boolean> validate = new AtomicReference<>();
-		AtomicReference<Integer> chunkSize = new AtomicReference<>();
+		AtomicBoolean validate = new AtomicBoolean();
+		AtomicInteger chunkSize = new AtomicInteger();
+		AtomicBoolean allowDuplicateContentLengths = new AtomicBoolean();
 		disposableServer =
 				createServer()
 				          .httpRequestDecoder(opt -> opt.maxInitialLineLength(123)
 				                                        .maxHeaderSize(456)
 				                                        .maxChunkSize(789)
 				                                        .validateHeaders(false)
-				                                        .initialBufferSize(10))
+				                                        .initialBufferSize(10)
+				                                        .allowDuplicateContentLengths(true))
 				          .handle((req, resp) -> req.receive().then(resp.sendNotFound()))
 				          .doOnConnection(c -> {
 				                      channelRef.set(c.channel());
@@ -856,6 +864,7 @@ class HttpServerTests extends BaseHttpTest {
 				                      HttpObjectDecoder decoder = (HttpObjectDecoder) getValueReflection(codec, "inboundHandler", 1);
 				                      chunkSize.set((Integer) getValueReflection(decoder, "maxChunkSize", 2));
 				                      validate.set((Boolean) getValueReflection(decoder, "validateHeaders", 2));
+				                      allowDuplicateContentLengths.set((Boolean) getValueReflection(decoder, "allowDuplicateContentLengths", 2));
 				                  })
 				          .bindNow();
 
@@ -869,8 +878,9 @@ class HttpServerTests extends BaseHttpTest {
 		          .block();
 
 		assertThat(channelRef.get()).isNotNull();
-		assertThat(chunkSize.get()).as("line length").isEqualTo(789);
-		assertThat(validate.get()).as("validate headers").isFalse();
+		assertThat(chunkSize).as("line length").hasValue(789);
+		assertThat(validate).as("validate headers").isFalse();
+		assertThat(allowDuplicateContentLengths).as("allow duplicate Content-Length").isTrue();
 	}
 
 	private Object getValueReflection(Object obj, String fieldName, int superLevel) {
@@ -1704,9 +1714,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testHttpServerWithDomainSockets_HTTP2() {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestHttpServerWithDomainSockets(
 				HttpServer.create().protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
 				HttpClient.create().protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -1873,11 +1884,12 @@ class HttpServerTests extends BaseHttpTest {
 		HttpServerOperations ops = new HttpServerOperations(
 				Connection.from(channel),
 				ConnectionObserver.emptyListener(),
-				null,
 				new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/"),
 				null,
-				ServerCookieEncoder.STRICT,
+				null,
 				ServerCookieDecoder.STRICT,
+				ServerCookieEncoder.STRICT,
+				DEFAULT_FORM_DECODER_SPEC,
 				null,
 				false);
 		ops.status(status);
@@ -1902,22 +1914,21 @@ class HttpServerTests extends BaseHttpTest {
 	@Test
 	void testSniSupport() throws Exception {
 		SelfSignedCertificate defaultCert = new SelfSignedCertificate("default");
-		SslContextBuilder defaultSslContextBuilder =
-				SslContextBuilder.forServer(defaultCert.certificate(), defaultCert.privateKey());
+		Http11SslContextSpec defaultSslContextBuilder =
+				Http11SslContextSpec.forServer(defaultCert.certificate(), defaultCert.privateKey());
 
 		SelfSignedCertificate testCert = new SelfSignedCertificate("test.com");
-		SslContextBuilder testSslContextBuilder =
-				SslContextBuilder.forServer(testCert.certificate(), testCert.privateKey());
+		Http11SslContextSpec testSslContextBuilder =
+				Http11SslContextSpec.forServer(testCert.certificate(), testCert.privateKey());
 
-		SslContextBuilder clientSslContextBuilder =
-				SslContextBuilder.forClient()
-				                 .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http11SslContextSpec clientSslContextBuilder =
+				Http11SslContextSpec.forClient()
+				                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 
 		AtomicReference<String> hostname = new AtomicReference<>();
 		disposableServer =
 				createServer()
 				          .secure(spec -> spec.sslContext(defaultSslContextBuilder)
-				                              .defaultConfiguration(TCP)
 				                              .addSniMapping("*.test.com", domainSpec -> domainSpec.sslContext(testSslContextBuilder)))
 				          .doOnChannelInit((obs, channel, remoteAddress) ->
 				              channel.pipeline()
@@ -1935,7 +1946,6 @@ class HttpServerTests extends BaseHttpTest {
 
 		createClient(disposableServer::address)
 		          .secure(spec -> spec.sslContext(clientSslContextBuilder)
-		                              .defaultConfiguration(TCP)
 		                              .serverNames(new SNIHostName("test.com")))
 		          .get()
 		          .uri("/")
@@ -1979,9 +1989,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286_H2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -1990,9 +2001,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286_ServerHTTP11AndH2ClientH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2001,9 +2013,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286_ServerHTTP11AndH2ClientHTTP11AndH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(clientCtx)),
@@ -2042,9 +2055,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ErrorResponse_H2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2053,9 +2067,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ErrorResponse_ServerHTTP11AndH2ClientH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2064,9 +2079,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ErrorResponse_ServerHTTP11AndH2ClientHTTP11AndH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(clientCtx)),
@@ -2105,9 +2121,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ConnectionClose_H2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2116,9 +2133,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ConnectionClose_ServerHTTP11AndH2ClientH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2127,9 +2145,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ConnectionClose_ServerHTTP11AndH2ClientHTTP11AndH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(clientCtx)),
@@ -2168,9 +2187,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ConnectionCloseErrorResponse_H2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2179,9 +2199,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ConnectionCloseErrorResponse_ServerHTTP11AndH2ClientH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)),
@@ -2190,9 +2211,10 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testIssue1286ConnectionCloseErrorResponse_ServerHTTP11AndH2ClientHTTP11AndH2() throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		doTestIssue1286(
 				server -> server.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(serverCtx)),
 				client -> client.protocol(HttpProtocol.H2, HttpProtocol.HTTP11).secure(spec -> spec.sslContext(clientCtx)),
@@ -2392,9 +2414,10 @@ class HttpServerTests extends BaseHttpTest {
 				          .disableRetry(true);
 
 		if (withSecurity) {
-			SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-			SslContextBuilder clientCtx = SslContextBuilder.forClient()
-			                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+			Http11SslContextSpec serverCtx = Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+			Http11SslContextSpec clientCtx =
+					Http11SslContextSpec.forClient()
+					                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 			server = server.secure(spec -> spec.sslContext(serverCtx));
 			client = client.secure(spec -> spec.sslContext(clientCtx));
 		}
@@ -2461,6 +2484,102 @@ class HttpServerTests extends BaseHttpTest {
 				"POST http://%s/ HTTP/1.1\r\nHost: %s\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nhello");
 	}
 
+	@Test
+	void testMatchRouteInConfiguredOrder() {
+		HttpServerRoutes serverRoutes = HttpServerRoutes.newRoutes()
+				.get("/yes/{value}", (request, response) -> response.sendString(Mono.just("/yes/{value}")))
+				.get("/yes/value", (request, response) -> response.sendString(Mono.just("/yes/value")));
+
+		disposableServer = HttpServer.create().handle(serverRoutes).bindNow();
+
+		StepVerifier.create(createClient(disposableServer.port()).get().uri("/yes/value")
+				.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+				.expectNext("/yes/{value}")
+				.verifyComplete();
+	}
+
+	@Test
+	void testUseComparatorOrderRoutes() {
+		HttpServerRoutes serverRoutes = HttpServerRoutes.newRoutes()
+				.get("/yes/{value}", (request, response) -> response.sendString(Mono.just("/yes/{value}")))
+				.get("/yes/value", (request, response) -> response.sendString(Mono.just("/yes/value")));
+
+		disposableServer = HttpServer.create().handle(serverRoutes.comparator(comparator)).bindNow();
+
+		StepVerifier.create(createClient(disposableServer.port()).get().uri("/yes/value")
+				.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+				.expectNext("/yes/value")
+				.verifyComplete();
+	}
+
+	@Test
+	void testOverrideRouteOrder() {
+		HttpServerRoutes serverRoutes = HttpServerRoutes.newRoutes()
+				.get("/yes/{value}", (request, response) -> response.sendString(Mono.just("/yes/{value}")))
+				.get("/yes/value", (request, response) -> response.sendString(Mono.just("/yes/value")));
+
+		try {
+			disposableServer = HttpServer.create().handle(serverRoutes.comparator(comparator)).bindNow();
+
+			StepVerifier.create(createClient(disposableServer.port()).get().uri("/yes/value")
+					.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+					.expectNext("/yes/value")
+					.verifyComplete();
+		}
+		finally {
+			if (disposableServer != null) {
+				disposableServer.disposeNow();
+			}
+		}
+
+		disposableServer = HttpServer.create().handle(serverRoutes.comparator(comparator).comparator(comparator.reversed()))
+				.bindNow();
+
+		StepVerifier.create(createClient(disposableServer.port()).get().uri("/yes/value")
+				.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+				.expectNext("/yes/{value}")
+				.verifyComplete();
+	}
+
+	@Test
+	void testUseRoutesConfiguredOrder() {
+		HttpServerRoutes serverRoutes = HttpServerRoutes.newRoutes()
+				.get("/yes/{value}", (request, response) -> response.sendString(Mono.just("/yes/{value}")))
+				.get("/yes/value", (request, response) -> response.sendString(Mono.just("/yes/value")));
+
+		try {
+			disposableServer = HttpServer.create().handle(serverRoutes.comparator(comparator)).bindNow();
+
+			StepVerifier.create(createClient(disposableServer.port()).get().uri("/yes/value")
+					.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+					.expectNext("/yes/value")
+					.verifyComplete();
+		}
+		finally {
+			if (disposableServer != null) {
+				disposableServer.disposeNow();
+			}
+		}
+
+		disposableServer = HttpServer.create().handle(serverRoutes.comparator(comparator).noComparator())
+				.bindNow();
+
+		StepVerifier.create(createClient(disposableServer.port()).get().uri("/yes/value")
+				.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+				.expectNext("/yes/{value}")
+				.verifyComplete();
+	}
+
+	private static final Comparator<HttpRouteHandlerMetadata> comparator = (o1, o2) -> {
+		if (o1.getPath().contains("{")) {
+			return 1;
+		}
+		else if (o1.getPath().contains("{") && o2.getPath().contains("{")) {
+			return 0;
+		}
+		return -1;
+	};
+
 	private void doTestConnectionClosePropagatedAsError(String request) throws Exception {
 		AtomicReference<Throwable> error = new AtomicReference<>();
 		CountDownLatch msgLatch = new CountDownLatch(1);
@@ -2497,5 +2616,105 @@ class HttpServerTests extends BaseHttpTest {
 		assertThat(error.get()).isNotNull()
 				.isInstanceOf(AbortedException.class)
 				.hasMessage("Connection has been closed");
+	}
+
+	@Test
+	void testRemoveRoutes() {
+		HttpServerRoutes serverRoutes = HttpServerRoutes.newRoutes()
+				.get("/route1", (request, response) -> response.sendString(Mono.just("/route1")))
+				.get("/route2", (request, response) -> response.sendString(Mono.just("/route2")));
+
+		try {
+			disposableServer = HttpServer.create().handle(serverRoutes).bindNow();
+
+			StepVerifier.create(createClient(disposableServer.port()).get().uri("/route1")
+					.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+					.expectNext("/route1")
+					.verifyComplete();
+
+			StepVerifier.create(createClient(disposableServer.port()).get().uri("/route2")
+					.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+					.expectNext("/route2")
+					.verifyComplete();
+		}
+		finally {
+			if (disposableServer != null) {
+				disposableServer.disposeNow();
+			}
+		}
+
+		HttpServerRoutes serverRoutes1 = serverRoutes.removeIf(metadata -> Objects.equals(metadata.getPath(), "/route1")
+				&& metadata.getMethod().equals(HttpMethod.GET));
+
+		disposableServer = HttpServer.create().handle(serverRoutes1)
+				.bindNow();
+
+		StepVerifier.create(createClient(disposableServer.port()).get().uri("/route1")
+				.response())
+				.expectNextMatches(response -> response.status().equals(HttpResponseStatus.NOT_FOUND))
+				.verifyComplete();
+
+		StepVerifier.create(createClient(disposableServer.port()).get().uri("/route2")
+				.responseSingle((response, byteBufMono) -> byteBufMono.asString()))
+				.expectNext("/route2")
+				.verifyComplete();
+	}
+
+	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ValueSource(ints = {-1, 1, 2})
+	void testMaxKeepAliveRequests(int maxKeepAliveRequests) {
+		HttpServer server = createServer().handle((req, res) -> res.sendString(Mono.just("testMaxKeepAliveRequests")));
+		assertThat(server.configuration().maxKeepAliveRequests()).isEqualTo(-1);
+
+		server = server.maxKeepAliveRequests(maxKeepAliveRequests);
+		assertThat(server.configuration().maxKeepAliveRequests()).isEqualTo(maxKeepAliveRequests);
+
+		disposableServer = server.bindNow();
+
+		ConnectionProvider provider = ConnectionProvider.create("testMaxKeepAliveRequests", 1);
+		HttpClient client = createClient(provider, disposableServer.port());
+		Flux.range(0, 2)
+		    .flatMap(i ->
+		        client.get()
+		              .uri("/")
+		              .responseSingle((res, bytes) ->
+		                  bytes.asString()
+		                       .zipWith(Mono.just(res.responseHeaders().get(HttpHeaderNames.CONNECTION, "persistent")))))
+		    .collectList()
+		    .as(StepVerifier::create)
+		    .expectNextMatches(l -> {
+		        boolean result = l.size() == 2 &&
+		                "testMaxKeepAliveRequests".equals(l.get(0).getT1()) &&
+		                "testMaxKeepAliveRequests".equals(l.get(1).getT1());
+
+		        if (maxKeepAliveRequests == -1) {
+		            return result &&
+		                    "persistent".equals(l.get(0).getT2()) &&
+		                    "persistent".equals(l.get(1).getT2());
+		        }
+		        else if (maxKeepAliveRequests == 1) {
+		            return result &&
+		                    "close".equals(l.get(0).getT2()) &&
+		                    "close".equals(l.get(1).getT2());
+		        }
+		        else if (maxKeepAliveRequests == 2) {
+		            return result &&
+		                    "persistent".equals(l.get(0).getT2()) &&
+		                    "close".equals(l.get(1).getT2());
+		        }
+		        return false;
+		    })
+		    .expectComplete()
+		    .verify(Duration.ofSeconds(5));
+
+		provider.disposeLater().block(Duration.ofSeconds(5));
+	}
+
+	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ValueSource(ints = {-2, 0})
+	void testMaxKeepAliveRequestsBadValues(int maxKeepAliveRequests) {
+		assertThatExceptionOfType(IllegalArgumentException.class)
+				.isThrownBy(() -> createServer().maxKeepAliveRequests(maxKeepAliveRequests))
+				.withMessage("maxKeepAliveRequests must be positive or -1");
 	}
 }

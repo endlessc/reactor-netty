@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,6 +25,9 @@ import reactor.netty.channel.ChannelMetricsRecorder;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
 import static reactor.netty.Metrics.ERROR;
@@ -35,11 +38,21 @@ import static reactor.netty.Metrics.SUCCESS;
  */
 final class AddressResolverGroupMetrics<T extends SocketAddress> extends AddressResolverGroup<T> {
 
+	static final ConcurrentMap<Integer, AddressResolverGroupMetrics<?>> cache = new ConcurrentHashMap<>();
+
+	static AddressResolverGroupMetrics<?> getOrCreate(
+			AddressResolverGroup<?> resolverGroup, ChannelMetricsRecorder recorder) {
+		int hash = Objects.hash(resolverGroup, recorder);
+		AddressResolverGroupMetrics<?> resolverGroupMetrics = cache.get(hash);
+		return resolverGroupMetrics != null ? resolverGroupMetrics : cache.computeIfAbsent(hash,
+				key -> new AddressResolverGroupMetrics<>(resolverGroup, recorder));
+	}
+
 	final AddressResolverGroup<T> resolverGroup;
 
 	final ChannelMetricsRecorder recorder;
 
-	AddressResolverGroupMetrics(AddressResolverGroup<T> resolverGroup, ChannelMetricsRecorder recorder) {
+	private AddressResolverGroupMetrics(AddressResolverGroup<T> resolverGroup, ChannelMetricsRecorder recorder) {
 		this.resolverGroup = resolverGroup;
 		this.recorder = recorder;
 	}

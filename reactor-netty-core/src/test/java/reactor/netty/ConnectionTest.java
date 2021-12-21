@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty;
 
 import java.time.Duration;
@@ -24,8 +23,8 @@ import java.util.function.BiConsumer;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.LineBasedFrameDecoder;
 import io.netty.handler.codec.http.HttpServerCodec;
@@ -36,146 +35,154 @@ import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static reactor.netty.NettyPipeline.RIGHT;
 
 /**
  * @author Simon Baslé
+ * @author Violeta Georgieva
  */
 class ConnectionTest {
 
-	Connection      testContext;
-	EmbeddedChannel channel;
+	static final BiConsumer<? super ChannelHandlerContext, Object> ADD_EXTRACTOR = ChannelHandlerContext::fireChannelRead;
 
-	static final BiConsumer<? super ChannelHandlerContext, Object> ADD_EXTRACTOR =
-			ChannelHandlerContext::fireChannelRead;
+	static final String ANOTHER_RIGHT = RIGHT + "test";
+	static final String DECODER_NAME = "decoder";
+	static final String DECODER_EXTRACT_NAME = "decoder$extract";
+	static final String ENCODER_NAME = "encoder";
+	static final String TAIL_CONTEXT_NAME = "DefaultChannelPipeline$TailContext#0";
+
+	ChannelHandler anotherRight;
+	EmbeddedChannel channel;
+	ChannelHandler decoder;
+	ChannelHandler encoder;
+	ChannelHandler httpTrafficHandlerMock;
+	ChannelHandler reactiveBridgeMock;
+	Connection testContext;
 
 	@BeforeEach
 	void init() {
+		anotherRight = new ChannelDuplexHandler();
 		channel = new EmbeddedChannel();
+		decoder = new LineBasedFrameDecoder(12);
+		encoder = new LineBasedFrameDecoder(12);
+		httpTrafficHandlerMock = new ChannelDuplexHandler();
+		reactiveBridgeMock = new ChannelInboundHandlerAdapter();
 		testContext = () -> channel;
 	}
 
 	@Test
 	void addByteDecoderWhenNoLeft() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler decoder = new LineBasedFrameDecoder(12);
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerLast("decoder", decoder)
-		           .addHandlerFirst("decoder$extract",
-				           NettyPipeline.inboundHandler(ADD_EXTRACTOR));
+		testContext.addHandlerLast(DECODER_NAME, decoder)
+		           .addHandlerFirst(DECODER_EXTRACT_NAME, NettyPipeline.inboundHandler(ADD_EXTRACTOR));
 
 		assertThat(channel.pipeline().names())
-				.containsExactly("decoder$extract", "decoder", NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(DECODER_EXTRACT_NAME, DECODER_NAME, NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
+	}
+
+	@Test
+	void addByteDecoderWhenManyRight() {
+		channel.pipeline()
+		       .addLast(ANOTHER_RIGHT, anotherRight)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
+
+		testContext.addHandlerLast(DECODER_NAME, decoder)
+		           .addHandlerFirst(DECODER_EXTRACT_NAME, NettyPipeline.inboundHandler(ADD_EXTRACTOR));
+
+		assertThat(channel.pipeline().names())
+				.containsExactly(DECODER_EXTRACT_NAME, DECODER_NAME, ANOTHER_RIGHT,
+						NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteDecoderWhenNoRight() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.HttpCodec, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler decoder = new LineBasedFrameDecoder(12);
+		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec());
 
-		testContext.addHandlerLast("decoder", decoder)
-		           .addHandlerFirst("decoder$extract",
-				           NettyPipeline.inboundHandler(ADD_EXTRACTOR));
+		testContext.addHandlerLast(DECODER_NAME, decoder)
+		           .addHandlerFirst(DECODER_EXTRACT_NAME, NettyPipeline.inboundHandler(ADD_EXTRACTOR));
 
 		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, "decoder$extract", "decoder", "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(NettyPipeline.HttpCodec, DECODER_EXTRACT_NAME, DECODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteDecoderWhenEmptyPipeline() {
+		testContext.addHandlerLast(DECODER_NAME, decoder)
+		           .addHandlerFirst(DECODER_EXTRACT_NAME, NettyPipeline.inboundHandler(ADD_EXTRACTOR));
 
-		ChannelHandler decoder = new LineBasedFrameDecoder(12);
-
-		testContext.addHandlerLast("decoder", decoder)
-		           .addHandlerFirst("decoder$extract",
-				           NettyPipeline.inboundHandler(ADD_EXTRACTOR));
-
-		assertThat(channel.pipeline().names())
-				.containsExactly("decoder$extract", "decoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(DECODER_EXTRACT_NAME, DECODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteDecoderWhenFullReactorPipeline() {
-
 		channel.pipeline()
 		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec())
-		       .addLast(NettyPipeline.HttpTrafficHandler, new ChannelDuplexHandler())
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler decoder = new LineBasedFrameDecoder(12);
+		       .addLast(NettyPipeline.HttpTrafficHandler, httpTrafficHandlerMock)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerLast("decoder", decoder)
-		           .addHandlerFirst("decoder$extract",
-				           NettyPipeline.inboundHandler(ADD_EXTRACTOR));
+		testContext.addHandlerLast(DECODER_NAME, decoder)
+		           .addHandlerFirst(DECODER_EXTRACT_NAME, NettyPipeline.inboundHandler(ADD_EXTRACTOR));
 
 		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, "decoder$extract",
-						"decoder", NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, DECODER_EXTRACT_NAME,
+						DECODER_NAME, NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteDecoderWhenNoLeft() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler decoder = new ChannelHandlerAdapter() {
-		};
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerLast("decoder", decoder);
+		testContext.addHandlerLast(DECODER_NAME, decoder);
 
 		assertThat(channel.pipeline().names())
-				.containsExactly("decoder", NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(DECODER_NAME, NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
+	}
+
+	@Test
+	void addNonByteDecoderWhenManyRight() {
+		channel.pipeline()
+		       .addLast(ANOTHER_RIGHT, anotherRight)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
+
+		testContext.addHandlerLast(DECODER_NAME, decoder);
+
+		assertThat(channel.pipeline().names())
+				.containsExactly(DECODER_NAME, ANOTHER_RIGHT, NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteDecoderWhenNoRight() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.HttpCodec, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler decoder = new ChannelHandlerAdapter() {
-		};
+		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec());
 
-		testContext.addHandlerLast("decoder", decoder);
+		testContext.addHandlerLast(DECODER_NAME, decoder);
 
-		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, "decoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(NettyPipeline.HttpCodec, DECODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteDecoderWhenEmptyPipeline() {
+		testContext.addHandlerLast(DECODER_NAME, decoder);
 
-		ChannelHandler decoder = new ChannelHandlerAdapter() {
-		};
-
-		testContext.addHandlerLast("decoder", decoder);
-
-		assertThat(channel.pipeline().names())
-				.containsExactly("decoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(DECODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteDecoderWhenFullReactorPipeline() {
-
 		channel.pipeline()
 		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec())
-		       .addLast(NettyPipeline.HttpTrafficHandler, new ChannelDuplexHandler())
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler decoder = new ChannelHandlerAdapter() {
-		};
+		       .addLast(NettyPipeline.HttpTrafficHandler, httpTrafficHandlerMock)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerLast("decoder", decoder);
+		testContext.addHandlerLast(DECODER_NAME, decoder);
 
 		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, "decoder",
-						NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, DECODER_NAME,
+						NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
@@ -185,138 +192,104 @@ class ConnectionTest {
 
 		channel.pipeline()
 		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec())
-		       .addLast(NettyPipeline.HttpTrafficHandler, new ChannelDuplexHandler())
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
+		       .addLast(NettyPipeline.HttpTrafficHandler, httpTrafficHandlerMock)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerLast("decoder1$extract",
-				NettyPipeline.inboundHandler(ADD_EXTRACTOR))
+		testContext.addHandlerLast("decoder1$extract", NettyPipeline.inboundHandler(ADD_EXTRACTOR))
 		           .addHandlerLast("decoder1", decoder1)
 
-		           .addHandlerLast("decoder2$extract",
-				           NettyPipeline.inboundHandler(ADD_EXTRACTOR))
+		           .addHandlerLast("decoder2$extract", NettyPipeline.inboundHandler(ADD_EXTRACTOR))
 		           .addHandlerLast("decoder2", decoder2);
 
 		assertThat(channel.pipeline().names())
 				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, "decoder1$extract",
 						"decoder1", "decoder2$extract", "decoder2",
-						NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+						NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteEncoderWhenNoLeft() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler encoder = new LineBasedFrameDecoder(12);
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerFirst("encoder", encoder);
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
 		assertThat(channel.pipeline().names())
-				.containsExactly("encoder", NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(ENCODER_NAME, NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteEncoderWhenNoRight() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.HttpCodec, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler encoder = new LineBasedFrameDecoder(12);
+		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec());
 
-		testContext.addHandlerFirst("encoder", encoder);
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
-		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, "encoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(NettyPipeline.HttpCodec, ENCODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteEncoderWhenEmptyPipeline() {
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
-		ChannelHandler encoder = new LineBasedFrameDecoder(12);
-
-		testContext.addHandlerFirst("encoder", encoder);
-
-		assertThat(channel.pipeline().names())
-				.containsExactly("encoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(ENCODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addByteEncoderWhenFullReactorPipeline() {
-
 		channel.pipeline()
 		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec())
-		       .addLast(NettyPipeline.HttpTrafficHandler, new ChannelDuplexHandler())
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
+		       .addLast(NettyPipeline.HttpTrafficHandler, httpTrafficHandlerMock)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 		ChannelHandler encoder = new LineBasedFrameDecoder(12);
 
-		testContext.addHandlerFirst("encoder", encoder);
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
 		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, "encoder",
-						NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, ENCODER_NAME,
+						NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteEncoderWhenNoLeft() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler encoder = new ChannelHandlerAdapter() {
-		};
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerFirst("encoder", encoder);
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
 		assertThat(channel.pipeline().names())
-				.containsExactly("encoder", NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(ENCODER_NAME, NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteEncoderWhenNoRight() {
-
 		channel.pipeline()
-		       .addLast(NettyPipeline.HttpCodec, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler encoder = new ChannelHandlerAdapter() {
-		};
+		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec());
 
-		testContext.addHandlerFirst("encoder", encoder);
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
-		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, "encoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(NettyPipeline.HttpCodec, ENCODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteEncoderWhenEmptyPipeline() {
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
-		ChannelHandler encoder = new ChannelHandlerAdapter() {
-		};
-
-		testContext.addHandlerFirst("encoder", encoder);
-
-		assertThat(channel.pipeline().names())
-				.containsExactly("encoder", "DefaultChannelPipeline$TailContext#0");
+		assertThat(channel.pipeline().names()).containsExactly(ENCODER_NAME, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
 	void addNonByteEncoderWhenFullReactorPipeline() {
-
 		channel.pipeline()
 		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec())
-		       .addLast(NettyPipeline.HttpTrafficHandler, new ChannelDuplexHandler())
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
-		ChannelHandler encoder = new ChannelHandlerAdapter() {
-		};
+		       .addLast(NettyPipeline.HttpTrafficHandler, httpTrafficHandlerMock)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
-		testContext.addHandlerFirst("encoder", encoder);
+		testContext.addHandlerFirst(ENCODER_NAME, encoder);
 
 		assertThat(channel.pipeline().names())
-				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, "encoder",
-						NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, ENCODER_NAME,
+						NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
@@ -326,16 +299,15 @@ class ConnectionTest {
 
 		channel.pipeline()
 		       .addLast(NettyPipeline.HttpCodec, new HttpServerCodec())
-		       .addLast(NettyPipeline.HttpTrafficHandler, new ChannelDuplexHandler())
-		       .addLast(NettyPipeline.ReactiveBridge, new ChannelHandlerAdapter() {
-		       });
+		       .addLast(NettyPipeline.HttpTrafficHandler, httpTrafficHandlerMock)
+		       .addLast(NettyPipeline.ReactiveBridge, reactiveBridgeMock);
 
 		testContext.addHandlerFirst("encoder1", encoder1)
 		           .addHandlerFirst("encoder2", encoder2);
 
 		assertThat(channel.pipeline().names())
 				.containsExactly(NettyPipeline.HttpCodec, NettyPipeline.HttpTrafficHandler, "encoder2",
-						"encoder1", NettyPipeline.ReactiveBridge, "DefaultChannelPipeline$TailContext#0");
+						"encoder1", NettyPipeline.ReactiveBridge, TAIL_CONTEXT_NAME);
 	}
 
 	@Test
@@ -360,9 +332,8 @@ class ConnectionTest {
 		};
 
 		c.markPersistent(false)
-		 .addHandlerFirst("byteencoder", new Utf8FrameValidator())
-		 .addHandlerFirst("encoder", new ChannelHandlerAdapter() {
-		 });
+		 .addHandlerFirst("byteEncoder", new Utf8FrameValidator())
+		 .addHandlerFirst(ENCODER_NAME, encoder);
 
 		assertThat(c.isPersistent()).isFalse();
 		assertThat(closeCount.intValue()).isEqualTo(0);
@@ -391,8 +362,7 @@ class ConnectionTest {
 
 		c.markPersistent(false)
 		 .addHandlerLast("byteDecoder", new Utf8FrameValidator())
-		 .addHandlerLast("decoder", new ChannelHandlerAdapter() {
-		 });
+		 .addHandlerLast(DECODER_NAME, decoder);
 
 		assertThat(c.isPersistent()).isFalse();
 		assertThat(closeCount.intValue()).isEqualTo(0);
@@ -401,25 +371,23 @@ class ConnectionTest {
 	@Test
 	void addDecoderSkipsIfExist() {
 		channel.pipeline()
-		       .addFirst("foo", new Utf8FrameValidator());
+		       .addFirst(DECODER_NAME, new Utf8FrameValidator());
 
-		testContext.addHandlerFirst("foo", new LineBasedFrameDecoder(10));
+		testContext.addHandlerFirst(DECODER_NAME, decoder);
 
-		assertThat(channel.pipeline().names())
-				.containsExactly("foo", "DefaultChannelPipeline$TailContext#0");
-		assertThat(channel.pipeline().get("foo")).isInstanceOf(Utf8FrameValidator.class);
+		assertThat(channel.pipeline().names()).containsExactly(DECODER_NAME, TAIL_CONTEXT_NAME);
+		assertThat(channel.pipeline().get(DECODER_NAME)).isInstanceOf(Utf8FrameValidator.class);
 	}
 
 	@Test
 	void addEncoderSkipsIfExist() {
 		channel.pipeline()
-		       .addFirst("foo", new Utf8FrameValidator());
+		       .addFirst(ENCODER_NAME, new Utf8FrameValidator());
 
-		testContext.addHandlerFirst("foo", new LineBasedFrameDecoder(10));
+		testContext.addHandlerFirst(ENCODER_NAME, new LineBasedFrameDecoder(10));
 
-		assertThat(channel.pipeline().names())
-				.containsExactly("foo", "DefaultChannelPipeline$TailContext#0");
-		assertThat(channel.pipeline().get("foo")).isInstanceOf(Utf8FrameValidator.class);
+		assertThat(channel.pipeline().names()).containsExactly(ENCODER_NAME, TAIL_CONTEXT_NAME);
+		assertThat(channel.pipeline().get(ENCODER_NAME)).isInstanceOf(Utf8FrameValidator.class);
 	}
 
 	@Test

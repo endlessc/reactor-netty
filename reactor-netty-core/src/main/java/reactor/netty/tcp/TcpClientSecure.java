@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,10 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.tcp;
 
-import io.netty.handler.ssl.SslContextBuilder;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 
 /**
  * Initializes the default {@link SslProvider} for the TCP client.
@@ -26,6 +26,8 @@ import io.netty.handler.ssl.SslContextBuilder;
  */
 final class TcpClientSecure {
 
+	private static final Logger log = Loggers.getLogger(TcpClientSecure.class);
+
 	static final SslProvider DEFAULT_SSL_PROVIDER;
 
 	static {
@@ -33,11 +35,11 @@ final class TcpClientSecure {
 		try {
 			sslProvider =
 					SslProvider.builder()
-					           .sslContext(SslContextBuilder.forClient())
-					           .defaultConfiguration(SslProvider.DefaultConfigurationType.TCP)
+					           .sslContext(TcpSslContextSpec.forClient())
 					           .build();
 		}
 		catch (Exception e) {
+			log.error("Failed to build default ssl provider", e);
 			sslProvider = null;
 		}
 		DEFAULT_SSL_PROVIDER = sslProvider;

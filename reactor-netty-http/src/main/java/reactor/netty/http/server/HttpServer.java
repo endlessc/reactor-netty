@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.server;
 
 import java.net.SocketAddress;
@@ -54,7 +53,7 @@ import reactor.util.Metrics;
 import static reactor.netty.ReactorNetty.format;
 
 /**
- * An HttpServer allows to build in a safe immutable way an HTTP server that is
+ * An HttpServer allows building in a safe immutable way an HTTP server that is
  * materialized and connecting when {@link #bind()} is ultimately called.
  * <p>
  * <p>Examples:
@@ -154,41 +153,6 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	}
 
 	/**
-	 * Customize the access log, provided access logging has been enabled through the
-	 * {@value reactor.netty.ReactorNetty#ACCESS_LOG_ENABLED} system property.
-	 * <p>
-	 * Example:
-	 * <pre>
-	 * {@code
-	 * HttpServer.create()
-	 *           .port(8080)
-	 *           .route(r -> r.get("/hello",
-	 *                   (req, res) -> res.header(CONTENT_TYPE, TEXT_PLAIN)
-	 *                                    .sendString(Mono.just("Hello World!"))))
-	 *           .accessLog(argProvider ->
-	 *                   AccessLog.create("user-agent={}", argProvider.requestHeader("user-agent")))
-	 *           .bindNow()
-	 *           .onDispose()
-	 *           .block();
-	 * }
-	 * </pre>
-	 * <p>
-	 *
-	 * @param accessLogFactory the {@link Function} that creates an {@link AccessLog} given an {@link AccessLogArgProvider}
-	 * @return a new {@link HttpServer}
-	 * @since 1.0.1
-	 * @deprecated as of 1.0.3. Prefer the {@link #accessLog(boolean, AccessLogFactory) variant}
-	 * with the {@link AccessLogFactory} interface instead. This method will be removed in version 1.2.0.
-	 */
-	@Deprecated
-	public final HttpServer accessLog(Function<AccessLogArgProvider, AccessLog> accessLogFactory) {
-		Objects.requireNonNull(accessLogFactory, "accessLogFactory");
-		HttpServer dup = duplicate();
-		dup.configuration().accessLog = accessLogFactory;
-		return dup;
-	}
-
-	/**
 	 * Enable or disable the access log. If enabled, the default log system will be used.
 	 * <p>
 	 * Example:
@@ -256,6 +220,41 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		HttpServer dup = duplicate();
 		dup.configuration().accessLog = enable ? accessLogFactory : null;
 		dup.configuration().accessLogEnabled = enable;
+		return dup;
+	}
+
+	/**
+	 * Customize the access log, provided access logging has been enabled through the
+	 * {@value reactor.netty.ReactorNetty#ACCESS_LOG_ENABLED} system property.
+	 * <p>
+	 * Example:
+	 * <pre>
+	 * {@code
+	 * HttpServer.create()
+	 *           .port(8080)
+	 *           .route(r -> r.get("/hello",
+	 *                   (req, res) -> res.header(CONTENT_TYPE, TEXT_PLAIN)
+	 *                                    .sendString(Mono.just("Hello World!"))))
+	 *           .accessLog(argProvider ->
+	 *                   AccessLog.create("user-agent={}", argProvider.requestHeader("user-agent")))
+	 *           .bindNow()
+	 *           .onDispose()
+	 *           .block();
+	 * }
+	 * </pre>
+	 * <p>
+	 *
+	 * @param accessLogFactory the {@link Function} that creates an {@link AccessLog} given an {@link AccessLogArgProvider}
+	 * @return a new {@link HttpServer}
+	 * @since 1.0.1
+	 * @deprecated as of 1.0.3. Prefer the {@link #accessLog(boolean, AccessLogFactory) variant}
+	 * with the {@link AccessLogFactory} interface instead. This method will be removed in version 1.2.0.
+	 */
+	@Deprecated
+	public final HttpServer accessLog(Function<AccessLogArgProvider, AccessLog> accessLogFactory) {
+		Objects.requireNonNull(accessLogFactory, "accessLogFactory");
+		HttpServer dup = duplicate();
+		dup.configuration().accessLog = accessLogFactory;
 		return dup;
 	}
 
@@ -446,6 +445,29 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	}
 
 	/**
+	 * Apply HTTP form decoder configuration.
+	 * The configuration is used when {@link HttpServerRequest#receiveForm()} is invoked.
+	 * When a specific configuration per request is needed {@link HttpServerRequest#receiveForm(Consumer)}
+	 * should be used.
+	 *
+	 * @param formDecoderBuilder {@link HttpServerFormDecoderProvider.Builder} for HTTP form decoder configuration
+	 * @return a new {@link HttpServer}
+	 * @since 1.0.11
+	 */
+	public final HttpServer httpFormDecoder(Consumer<HttpServerFormDecoderProvider.Builder> formDecoderBuilder) {
+		Objects.requireNonNull(formDecoderBuilder, "formDecoderBuilder");
+		HttpServerFormDecoderProvider.Build builder = new HttpServerFormDecoderProvider.Build();
+		formDecoderBuilder.accept(builder);
+		HttpServerFormDecoderProvider formDecoderProvider = builder.build();
+		if (formDecoderProvider.equals(configuration().formDecoderProvider)) {
+			return this;
+		}
+		HttpServer dup = duplicate();
+		dup.configuration().formDecoderProvider = formDecoderProvider;
+		return dup;
+	}
+
+	/**
 	 * Configure the {@link io.netty.handler.codec.http.HttpServerCodec}'s request decoding options.
 	 *
 	 * @param requestDecoderOptions a function to mutate the provided Http request decoder options
@@ -459,20 +481,6 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		}
 		HttpServer dup = duplicate();
 		dup.configuration().decoder = decoder;
-		return dup;
-	}
-
-	/**
-	 * Decorate the configured I/O handler.
-	 * See {@link #handle(BiFunction)}.
-	 *
-	 * @param mapHandle A {@link BiFunction} to decorate the configured I/O handler
-	 * @return a new {@link HttpServer}
-	 */
-	public final HttpServer mapHandle(BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle) {
-		Objects.requireNonNull(mapHandle, "mapHandle");
-		HttpServer dup = duplicate();
-		dup.configuration().mapHandle = mapHandle;
 		return dup;
 	}
 
@@ -492,6 +500,44 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		Objects.requireNonNull(idleTimeout, "idleTimeout");
 		HttpServer dup = duplicate();
 		dup.configuration().idleTimeout = idleTimeout;
+		return dup;
+	}
+
+	/**
+	 * Decorate the configured I/O handler.
+	 * See {@link #handle(BiFunction)}.
+	 *
+	 * @param mapHandle A {@link BiFunction} to decorate the configured I/O handler
+	 * @return a new {@link HttpServer}
+	 */
+	public final HttpServer mapHandle(BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle) {
+		Objects.requireNonNull(mapHandle, "mapHandle");
+		HttpServer dup = duplicate();
+		dup.configuration().mapHandle = mapHandle;
+		return dup;
+	}
+
+	/**
+	 * The maximum number of HTTP/1.1 requests which can be served until the connection is closed by the server.
+	 * Setting this attribute to:
+	 * <ul>
+	 *     <li><strong>-1</strong>: The connection serves unlimited number of requests. It is up to the I/O handler to decide
+	 *     to close the connection. This is the default behaviour.</li>
+	 *     <li><strong>1</strong>: The connection is marked as non persistent and serves just one request.</li>
+	 *     <li><strong>&gt;1</strong>: The connection serves a number of requests up to the specified maximum number
+	 *     then the connection is closed by the server.</li>
+	 * </ul>
+	 * @param maxKeepAliveRequests the maximum number of HTTP/1.1 requests which can be served until
+	 * the connection is closed by the server
+	 * @return a new {@link HttpServer}
+	 * @since 1.0.13
+	 */
+	public final HttpServer maxKeepAliveRequests(int maxKeepAliveRequests) {
+		if (maxKeepAliveRequests < -1 || maxKeepAliveRequests == 0) {
+			throw new IllegalArgumentException("maxKeepAliveRequests must be positive or -1");
+		}
+		HttpServer dup = duplicate();
+		dup.configuration().maxKeepAliveRequests = maxKeepAliveRequests;
 		return dup;
 	}
 
@@ -550,7 +596,8 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	/**
 	 * Specifies whether the metrics are enabled on the {@link HttpServer}.
 	 * All generated metrics are provided to the specified recorder which is only
-	 * instantiated if metrics are being enabled.
+	 * instantiated if metrics are being enabled (the instantiation is not lazy,
+	 * but happens immediately, while configuring the {@link HttpServer}).
 	 * <p>{@code uriValue} function receives the actual uri and returns the uri value
 	 * that will be used when the metrics are propagated to the recorder.
 	 * For example instead of using the actual uri {@code "/users/1"} as uri value, templated uri
@@ -676,9 +723,9 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * <pre>
 	 * {@code
 	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
-	 *     SslContextBuilder sslContextBuilder =
-	 *             SslContextBuilder.forServer(cert.certificate(), cert.privateKey());
-	 *     secure(sslContextSpec -> sslContextSpec.sslContext(sslContextBuilder));
+	 *     Http11SslContextSpec http11SslContextSpec =
+	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec));
 	 * }
 	 * </pre>
 	 *
@@ -686,11 +733,40 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * @return a new {@link HttpServer}
 	 */
 	public final HttpServer secure(Consumer<? super SslProvider.SslContextSpec> sslProviderBuilder) {
+		return secure(sslProviderBuilder, false);
+	}
+
+	/**
+	 * Apply an SSL configuration customization via the passed builder. The builder
+	 * will produce the {@link SslContext} to be passed to with a default value of
+	 * {@code 10} seconds handshake timeout unless the environment property {@code
+	 * reactor.netty.tcp.sslHandshakeTimeout} is set.
+	 * <p>
+	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
+	 * used. Note that {@link SelfSignedCertificate} should not be used in production.
+	 * <pre>
+	 * {@code
+	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
+	 *     Http11SslContextSpec http11SslContextSpec =
+	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec), true);
+	 * }
+	 * </pre>
+	 *
+	 * @param sslProviderBuilder  builder callback for further customization of SslContext.
+	 * @param redirectHttpToHttps true enables redirecting HTTP to HTTPS by changing the
+	 *                            scheme only but otherwise leaving the port the same.
+	 *                            This configuration is applicable only for HTTP 1.x.
+	 * @return a new {@link HttpServer}
+	 * @since 1.0.5
+	 */
+	public final HttpServer secure(Consumer<? super SslProvider.SslContextSpec> sslProviderBuilder, boolean redirectHttpToHttps) {
 		Objects.requireNonNull(sslProviderBuilder, "sslProviderBuilder");
 		HttpServer dup = duplicate();
 		SslProvider.SslContextSpec builder = SslProvider.builder();
 		sslProviderBuilder.accept(builder);
 		dup.configuration().sslProvider = ((SslProvider.Builder) builder).build();
+		dup.configuration().redirectHttpToHttps = redirectHttpToHttps;
 		return dup;
 	}
 
@@ -702,9 +778,9 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * <pre>
 	 * {@code
 	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
-	 *     SslContextBuilder sslContextBuilder =
-	 *             SslContextBuilder.forServer(cert.certificate(), cert.privateKey());
-	 *     secure(sslContextSpec -> sslContextSpec.sslContext(sslContextBuilder));
+	 *     Http11SslContextSpec http11SslContextSpec =
+	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec));
 	 * }
 	 * </pre>
 	 *
@@ -713,9 +789,35 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * @return a new {@link HttpServer}
 	 */
 	public final HttpServer secure(SslProvider sslProvider) {
+		return secure(sslProvider, false);
+	}
+
+	/**
+	 * Applies an SSL configuration via the passed {@link SslProvider}.
+	 * <p>
+	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
+	 * used. Note that {@link SelfSignedCertificate} should not be used in production.
+	 * <pre>
+	 * {@code
+	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
+	 *     Http11SslContextSpec http11SslContextSpec =
+	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec), true);
+	 * }
+	 * </pre>
+	 *
+	 * @param sslProvider         The provider to set when configuring SSL
+	 * @param redirectHttpToHttps true enables redirecting HTTP to HTTPS by changing the
+	 *                            scheme only but otherwise leaving the port the same.
+	 *                            This configuration is applicable only for HTTP 1.x.
+	 * @return a new {@link HttpServer}
+	 * @since 1.0.5
+	 */
+	public final HttpServer secure(SslProvider sslProvider, boolean redirectHttpToHttps) {
 		Objects.requireNonNull(sslProvider, "sslProvider");
 		HttpServer dup = duplicate();
 		dup.configuration().sslProvider = sslProvider;
+		dup.configuration().redirectHttpToHttps = redirectHttpToHttps;
 		return dup;
 	}
 

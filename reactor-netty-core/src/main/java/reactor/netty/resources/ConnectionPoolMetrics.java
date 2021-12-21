@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -53,5 +53,26 @@ public interface ConnectionPoolMetrics {
 	 * @return the number of pending acquire
 	 */
 	int pendingAcquireSize();
+
+	/**
+	 * Get the maximum number of live resources this Pool will allow.
+	 * <p>
+	 * A Pool might be unbounded, in which case this method returns {@code Integer.MAX_VALUE}.
+	 * @return the maximum number of live resources that can be allocated by this Pool
+	 * @since 1.0.14
+	 */
+	int maxAllocatedSize();
+
+	/**
+	 * Get the maximum number of {@code Pool.acquire()} this Pool can queue in a pending state
+	 * when no available resource is immediately handy (and the Pool cannot allocate more
+	 * resources).
+	 * <p>
+	 * A Pool pending queue might be unbounded, in which case this method returns
+	 * {@code Integer.MAX_VALUE}.
+	 * @return the maximum number of pending acquire that can be enqueued by this Pool
+	 * @since 1.0.14
+	 */
+	int maxPendingAcquireSize();
 
 }

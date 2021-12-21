@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,8 +18,8 @@ package reactor.netty.transport;
 import io.micrometer.core.instrument.Gauge;
 import io.netty.buffer.ByteBufAllocatorMetric;
 import io.netty.buffer.PooledByteBufAllocatorMetric;
-import io.netty.util.internal.PlatformDependent;
 
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import static reactor.netty.Metrics.BYTE_BUF_ALLOCATOR_PREFIX;
@@ -42,13 +42,18 @@ import static reactor.netty.Metrics.USED_HEAP_MEMORY;
 final class ByteBufAllocatorMetrics {
 	static final ByteBufAllocatorMetrics INSTANCE = new ByteBufAllocatorMetrics();
 
-	final ConcurrentMap<String, ByteBufAllocatorMetric> cache = PlatformDependent.newConcurrentHashMap();
+	final ConcurrentMap<String, ByteBufAllocatorMetric> cache = new ConcurrentHashMap<>();
 
 	private ByteBufAllocatorMetrics() {
 	}
 
 	void registerMetrics(String allocType, ByteBufAllocatorMetric metrics) {
-		cache.computeIfAbsent(metrics.hashCode() + "", key -> {
+		String hash = metrics.hashCode() + "";
+		ByteBufAllocatorMetric cachedMetrics = cache.get(hash);
+		if (cachedMetrics != null) {
+			return;
+		}
+		cache.computeIfAbsent(hash, key -> {
 			String[] tags = new String[] {ID, key, TYPE, allocType};
 
 			Gauge.builder(BYTE_BUF_ALLOCATOR_PREFIX + USED_HEAP_MEMORY, metrics, ByteBufAllocatorMetric::usedHeapMemory)

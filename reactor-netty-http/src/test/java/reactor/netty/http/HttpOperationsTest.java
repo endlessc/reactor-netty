@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http;
 
 import io.netty.buffer.ByteBuf;
@@ -96,7 +95,7 @@ class HttpOperationsTest {
 	@Test
 	void testPath() {
 		TestHttpInfos infos = new TestHttpInfos();
-		Flux<String> expectations = Flux.just("", "", "", "/", "a", "a", "", "a", "", "a", "a", "a b");
+		Flux<String> expectations = Flux.just("", "", "", "/", "a", "a", "", "a", "", "a", "a", "a b", "a");
 
 		doTestPath(infos, expectations,
 				Flux.just("http://localhost:8080",
@@ -110,7 +109,8 @@ class HttpOperationsTest {
 						"http://localhost:8080/#b",
 						"http://localhost:8080/a#b",
 						"http://localhost:8080/a?b#c",
-						"http://localhost:8080/a%20b"));
+						"http://localhost:8080/a%20b",
+						"http://localhost:8080/a?b={}"));
 
 		doTestPath(infos, expectations,
 				Flux.just("localhost:8080",
@@ -124,9 +124,11 @@ class HttpOperationsTest {
 						"localhost:8080/#b",
 						"localhost:8080/a#b",
 						"localhost:8080/a?b#c",
-						"localhost:8080/a%20b"));
+						"localhost:8080/a%20b",
+						"localhost:8080/a?b={}"));
 
-		doTestPath(infos, expectations, Flux.just("", "/", "//", "///", "/a", "/a/", "/?b", "/a?b", "/#b", "/a#b", "/a?b#c", "/a%20b"));
+		doTestPath(infos, expectations,
+				Flux.just("", "/", "//", "///", "/a", "/a/", "/?b", "/a?b", "/#b", "/a#b", "/a?b#c", "/a%20b", "/a?b={}"));
 	}
 
 	private void doTestPath(TestHttpInfos infos, Flux<String> expectations, Flux<String> uris) {
@@ -152,6 +154,7 @@ class HttpOperationsTest {
 		assertThat(HttpOperations.resolvePath("http://localhost:8080/a#b")).isEqualTo("/a");
 		assertThat(HttpOperations.resolvePath("http://localhost:8080/a?b#c")).isEqualTo("/a");
 		assertThat(HttpOperations.resolvePath("http://localhost:8080/a%20b")).isEqualTo("/a b");
+		assertThat(HttpOperations.resolvePath("http://localhost:8080/a?b={}")).isEqualTo("/a");
 
 		assertThat(HttpOperations.resolvePath("localhost:8080")).isEqualTo("");
 		assertThat(HttpOperations.resolvePath("localhost:8080/")).isEqualTo("/");
@@ -165,6 +168,7 @@ class HttpOperationsTest {
 		assertThat(HttpOperations.resolvePath("localhost:8080/a#b")).isEqualTo("/a");
 		assertThat(HttpOperations.resolvePath("localhost:8080/a?b#c")).isEqualTo("/a");
 		assertThat(HttpOperations.resolvePath("localhost:8080/a%20b")).isEqualTo("/a b");
+		assertThat(HttpOperations.resolvePath("localhost:8080/a?b={}")).isEqualTo("/a");
 
 		assertThat(HttpOperations.resolvePath("")).isEqualTo("");
 		assertThat(HttpOperations.resolvePath("/")).isEqualTo("/");
@@ -178,6 +182,7 @@ class HttpOperationsTest {
 		assertThat(HttpOperations.resolvePath("/a#b")).isEqualTo("/a");
 		assertThat(HttpOperations.resolvePath("/a?b#c")).isEqualTo("/a");
 		assertThat(HttpOperations.resolvePath("/a%20b")).isEqualTo("/a b");
+		assertThat(HttpOperations.resolvePath("/a?b={}")).isEqualTo("/a");
 	}
 
 	static final class TestHttpInfos implements HttpInfos {

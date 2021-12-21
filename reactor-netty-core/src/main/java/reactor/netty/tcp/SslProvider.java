@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.tcp;
 
 import java.net.InetSocketAddress;
@@ -49,10 +48,13 @@ import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.SupportedCipherSuiteFilter;
 import reactor.core.Exceptions;
+import reactor.netty.Connection;
+import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
 import reactor.netty.ReactorNetty;
-import reactor.netty.channel.ChannelMetricsHandler;
+import reactor.netty.channel.AbstractChannelMetricsHandler;
 import reactor.netty.channel.ChannelMetricsRecorder;
+import reactor.netty.channel.ContextAwareChannelMetricsRecorder;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
 import reactor.util.Logger;
 import reactor.util.Loggers;
@@ -92,6 +94,12 @@ public final class SslProvider {
 		return new SslProvider(provider, handlerConfigurator);
 	}
 
+	/**
+	 * @deprecated as of 1.0.6. Prefer {@link SslProvider.SslContextSpec#sslContext(ProtocolSslContextSpec)},
+	 * where the default configuration is applied before any other custom configuration.
+	 * This will be removed in version 1.2.0.
+	 */
+	@Deprecated
 	public static SslProvider updateDefaultConfiguration(SslProvider provider, DefaultConfigurationType type) {
 		Objects.requireNonNull(provider, "provider");
 		Objects.requireNonNull(type, "type");
@@ -224,6 +232,18 @@ public final class SslProvider {
 	public interface SslContextSpec {
 
 		/**
+		 * SslContext builder that provides, specific for the protocol, default configuration
+		 * e.g. {@link DefaultSslContextSpec}, {@link TcpSslContextSpec} etc.
+		 * As opposed to {@link #sslContext(SslContextBuilder)}, the default configuration is applied before
+		 * any other custom configuration.
+		 *
+		 * @param spec SslContext builder that provides, specific for the protocol, default configuration
+		 * @return {@literal this}
+		 * @since 1.0.6
+		 */
+		Builder sslContext(ProtocolSslContextSpec spec);
+
+		/**
 		 * The SslContext to set when configuring SSL
 		 *
 		 * @param sslContext The context to set when configuring SSL
@@ -233,18 +253,26 @@ public final class SslProvider {
 		Builder sslContext(SslContext sslContext);
 
 		/**
-		 * The SslContextBuilder for building a new {@link SslContext}.
+		 * The SslContextBuilder for building a new {@link SslContext}. The default configuration is applied after
+		 * the custom configuration.
 		 *
 		 * @return {@literal this}
+		 * @deprecated as of 1.0.6. Prefer {@link #sslContext(ProtocolSslContextSpec)}, where the default
+		 * configuration is applied before any other custom configuration.
+		 * This method will be removed in version 1.2.0.
 		 */
+		@Deprecated
 		DefaultConfigurationSpec sslContext(SslContextBuilder sslCtxBuilder);
-
 	}
 
 	/**
 	 * Default configuration that will be applied to the provided
 	 * {@link SslContextBuilder}
+	 * @deprecated as of 1.0.6. Prefer {@link SslProvider.SslContextSpec#sslContext(ProtocolSslContextSpec)},
+	 * where the default configuration is applied before any other custom configuration.
+	 * This will be removed in version 1.2.0.
 	 */
+	@Deprecated
 	public enum DefaultConfigurationType {
 		/**
 		 * There will be no default configuration
@@ -265,6 +293,12 @@ public final class SslProvider {
 		H2
 	}
 
+	/**
+	 * @deprecated as of 1.0.6. Prefer {@link SslProvider.SslContextSpec#sslContext(ProtocolSslContextSpec)},
+	 * where the default configuration is applied before any other custom configuration.
+	 * This will be removed in version 1.2.0.
+	 */
+	@Deprecated
 	public interface DefaultConfigurationSpec {
 
 		/**
@@ -275,6 +309,31 @@ public final class SslProvider {
 		 * @return {@code this}
 		 */
 		Builder defaultConfiguration(DefaultConfigurationType type);
+	}
+
+	/**
+	 * SslContext builder that provides, specific for the protocol, default configuration.
+	 * The default configuration is applied prior any other custom configuration.
+	 *
+	 * @since 1.0.6
+	 */
+	public interface ProtocolSslContextSpec {
+
+		/**
+		 * Configures the underlying {@link SslContextBuilder}.
+		 *
+		 * @param sslCtxBuilder a callback for configuring the underlying {@link SslContextBuilder}
+		 * @return {@code this}
+		 */
+		ProtocolSslContextSpec configure(Consumer<SslContextBuilder> sslCtxBuilder);
+
+		/**
+		 * Create a new {@link SslContext} instance with the configured settings.
+		 *
+		 * @return a new {@link SslContext} instance
+		 * @throws SSLException thrown when {@link SslContext} instance cannot be created
+		 */
+		SslContext sslContext() throws SSLException;
 	}
 
 	final SslContext                   sslContext;
@@ -297,6 +356,14 @@ public final class SslProvider {
 				}
 				try {
 					this.sslContext = sslContextBuilder.build();
+				}
+				catch (SSLException e) {
+					throw Exceptions.propagate(e);
+				}
+			}
+			else if (builder.protocolSslContextSpec != null) {
+				try {
+					this.sslContext = builder.protocolSslContextSpec.sslContext();
 				}
 				catch (SSLException e) {
 					throw Exceptions.propagate(e);
@@ -468,16 +535,14 @@ public final class SslProvider {
 					.newHandler(channel.alloc(), sniInfo.getHostString(), sniInfo.getPort());
 
 			if (log.isDebugEnabled()) {
-				log.debug(format(channel, "SSL enabled using engine {} and SNI {}"),
-						sslHandler.engine().getClass().getSimpleName(), sniInfo);
+				log.debug(format(channel, "SSL enabled using engine {} and SNI {}"), sslHandler.engine(), sniInfo);
 			}
 		}
 		else {
 			sslHandler = getSslContext().newHandler(channel.alloc());
 
 			if (log.isDebugEnabled()) {
-				log.debug(format(channel, "SSL enabled using engine {}"),
-						sslHandler.engine().getClass().getSimpleName());
+				log.debug(format(channel, "SSL enabled using engine {}"), sslHandler.engine());
 			}
 		}
 
@@ -486,6 +551,9 @@ public final class SslProvider {
 		ChannelPipeline pipeline = channel.pipeline();
 		if (pipeline.get(NettyPipeline.ProxyHandler) != null) {
 			pipeline.addAfter(NettyPipeline.ProxyHandler, NettyPipeline.SslHandler, sslHandler);
+		}
+		else if (pipeline.get(NettyPipeline.NonSslRedirectDetector) != null) {
+			pipeline.addAfter(NettyPipeline.NonSslRedirectDetector, NettyPipeline.SslHandler, sslHandler);
 		}
 		else {
 			pipeline.addFirst(NettyPipeline.SslHandler, sslHandler);
@@ -544,6 +612,7 @@ public final class SslProvider {
 						"10000"));
 
 		SslContextBuilder sslCtxBuilder;
+		ProtocolSslContextSpec protocolSslContextSpec;
 		DefaultConfigurationType type;
 		SslContext sslContext;
 		Consumer<? super SslHandler> handlerConfigurator;
@@ -556,8 +625,16 @@ public final class SslProvider {
 		// SslContextSpec
 
 		@Override
+		public Builder sslContext(ProtocolSslContextSpec protocolSslContextSpec) {
+			this.protocolSslContextSpec = protocolSslContextSpec;
+			this.type = DefaultConfigurationType.NONE;
+			return this;
+		}
+
+		@Override
 		public final Builder sslContext(SslContext sslContext) {
 			this.sslContext = Objects.requireNonNull(sslContext, "sslContext");
+			this.type = DefaultConfigurationType.NONE;
 			return this;
 		}
 
@@ -682,14 +759,15 @@ public final class SslProvider {
 					Objects.equals(sslContext, build.sslContext) &&
 					Objects.equals(handlerConfigurator, build.handlerConfigurator) &&
 					Objects.equals(serverNames, build.serverNames) &&
-					confPerDomainName.equals(build.confPerDomainName);
+					confPerDomainName.equals(build.confPerDomainName) &&
+					Objects.equals(protocolSslContextSpec, build.protocolSslContextSpec);
 		}
 
 		@Override
 		public int hashCode() {
 			return Objects.hash(sslCtxBuilder, type, sslContext, handlerConfigurator,
 					handshakeTimeoutMillis, closeNotifyFlushTimeoutMillis, closeNotifyReadTimeoutMillis,
-					serverNames, confPerDomainName);
+					serverNames, confPerDomainName, protocolSslContextSpec);
 		}
 
 		void addInternal(String domainName, Consumer<? super SslProvider.SslContextSpec> sslProviderBuilder) {
@@ -713,7 +791,7 @@ public final class SslProvider {
 		public void channelRegistered(ChannelHandlerContext ctx) {
 			ChannelHandler handler = ctx.pipeline().get(NettyPipeline.ChannelMetricsHandler);
 			if (handler != null) {
-				recorder = ((ChannelMetricsHandler) handler).recorder();
+				recorder = ((AbstractChannelMetricsHandler) handler).recorder();
 				tlsHandshakeTimeStart = System.nanoTime();
 			}
 
@@ -745,19 +823,13 @@ public final class SslProvider {
 				SslHandshakeCompletionEvent handshake = (SslHandshakeCompletionEvent) evt;
 				if (handshake.isSuccess()) {
 					if (recorder != null) {
-						recorder.recordTlsHandshakeTime(
-								ctx.channel().remoteAddress(),
-								Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
-								SUCCESS);
+						recordTlsHandshakeTime(ctx, tlsHandshakeTimeStart, SUCCESS);
 					}
 					ctx.fireChannelActive();
 				}
 				else {
 					if (recorder != null) {
-						recorder.recordTlsHandshakeTime(
-								ctx.channel().remoteAddress(),
-								Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
-								ERROR);
+						recordTlsHandshakeTime(ctx, tlsHandshakeTimeStart, ERROR);
 					}
 					ctx.fireExceptionCaught(handshake.cause());
 				}
@@ -765,6 +837,23 @@ public final class SslProvider {
 			ctx.fireUserEventTriggered(evt);
 		}
 
+		void recordTlsHandshakeTime(ChannelHandlerContext ctx, long tlsHandshakeTimeStart, String status) {
+			if (recorder instanceof ContextAwareChannelMetricsRecorder) {
+				Connection connection = Connection.from(ctx.channel());
+				if (connection instanceof ConnectionObserver) {
+					((ContextAwareChannelMetricsRecorder) recorder).recordTlsHandshakeTime(
+							((ConnectionObserver) connection).currentContext(),
+							ctx.channel().remoteAddress(),
+							Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
+							status);
+					return;
+				}
+			}
+			recorder.recordTlsHandshakeTime(
+					ctx.channel().remoteAddress(),
+					Duration.ofNanos(System.nanoTime() - tlsHandshakeTimeStart),
+					status);
+		}
 	}
 
 	static final Logger log = Loggers.getLogger(SslProvider.class);

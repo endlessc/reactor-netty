@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -116,7 +116,7 @@ public final class ReactorNetty {
 
 	/**
 	 * Default max connections. Fallback to
-	 * available number of processors (but with a minimum value of 16)
+	 * 2 * available number of processors (but with a minimum value of 16)
 	 */
 	public static final String POOL_MAX_CONNECTIONS = "reactor.netty.pool.maxConnections";
 	/**
@@ -211,21 +211,40 @@ public final class ReactorNetty {
 		Objects.requireNonNull(msg, "msg");
 		if (LOG_CHANNEL_INFO) {
 			String channelStr;
+			StringBuilder result;
 			Connection connection = Connection.from(channel);
 			if (connection instanceof ChannelOperationsId) {
 				channelStr = ((ChannelOperationsId) connection).asLongText();
-				return new StringBuilder(1 + channelStr.length() + 2 + msg.length())
-						.append('[')
-						.append(channelStr)
-						.append("] ")
-						.append(msg)
+				if (channelStr.charAt(0) != TRACE_ID_PREFIX) {
+					result = new StringBuilder(1 + channelStr.length() + 2 + msg.length())
+							.append(CHANNEL_ID_PREFIX)
+							.append(channelStr)
+							.append(CHANNEL_ID_SUFFIX_1);
+				}
+				else {
+					result = new StringBuilder(channelStr.length() + 1 + msg.length())
+							.append(channelStr)
+							.append(CHANNEL_ID_SUFFIX_2);
+				}
+				return result.append(msg)
 						.toString();
 			}
 			else {
 				channelStr = channel.toString();
-				return new StringBuilder(channelStr.length() + 1 + msg.length())
-						.append(channelStr)
-						.append(' ')
+				if (channelStr.charAt(0) == CHANNEL_ID_PREFIX) {
+					channelStr = channelStr.substring(ORIGINAL_CHANNEL_ID_PREFIX_LENGTH);
+					result = new StringBuilder(1 + channelStr.length() + 1 + msg.length())
+							.append(CHANNEL_ID_PREFIX)
+							.append(channelStr);
+				}
+				else {
+					int ind = channelStr.indexOf(ORIGINAL_CHANNEL_ID_PREFIX);
+					result = new StringBuilder(1 + (channelStr.length() - ORIGINAL_CHANNEL_ID_PREFIX_LENGTH) + 1 + msg.length())
+							.append(channelStr.substring(0, ind))
+							.append(CHANNEL_ID_PREFIX)
+							.append(channelStr.substring(ind + ORIGINAL_CHANNEL_ID_PREFIX_LENGTH));
+				}
+				return result.append(CHANNEL_ID_SUFFIX_2)
 						.append(msg)
 						.toString();
 			}
@@ -314,7 +333,7 @@ public final class ReactorNetty {
 			channel.pipeline().addLast(name, handler);
 		}
 		else {
-			channel.pipeline().addBefore(NettyPipeline.ReactiveBridge, name, handler);
+			channel.pipeline().addBefore(before, name, handler);
 		}
 
 		registerForClose(context.isPersistent(),  name, context);
@@ -975,6 +994,13 @@ public final class ReactorNetty {
 	static final Predicate<Object>         PREDICATE_FLUSH       = o -> false;
 
 	static final ByteBuf                   BOUNDARY              = Unpooled.EMPTY_BUFFER;
+
+	static final char CHANNEL_ID_PREFIX = '[';
+	static final String CHANNEL_ID_SUFFIX_1 = "] ";
+	static final char CHANNEL_ID_SUFFIX_2 = ' ';
+	static final String ORIGINAL_CHANNEL_ID_PREFIX = "[id: 0x";
+	static final int ORIGINAL_CHANNEL_ID_PREFIX_LENGTH = ORIGINAL_CHANNEL_ID_PREFIX.length();
+	static final char TRACE_ID_PREFIX = '(';
 
 	@SuppressWarnings("ReferenceEquality")
 	//Design to use reference comparison here

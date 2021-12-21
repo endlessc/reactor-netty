@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,13 +19,13 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 
 import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.cookie.Cookie;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.NettyOutbound;
-import reactor.netty.http.HttpInfos;
 import reactor.netty.http.websocket.WebsocketInbound;
 import reactor.netty.http.websocket.WebsocketOutbound;
 
@@ -37,7 +37,7 @@ import reactor.netty.http.websocket.WebsocketOutbound;
  * @author Stephane Maldini
  * @since 0.5
  */
-public interface HttpServerResponse extends NettyOutbound, HttpInfos {
+public interface HttpServerResponse extends NettyOutbound, HttpServerInfos {
 
 	/**
 	 * Adds an outbound cookie
@@ -207,5 +207,32 @@ public interface HttpServerResponse extends NettyOutbound, HttpInfos {
 		return status(HttpResponseStatus.valueOf(status));
 	}
 
-
+	/**
+	 * Callback for setting outbound trailer headers.
+	 * The callback is invoked when the response is about to be completed.
+	 * <p><strong>Note:</strong>Only headers names declared with {@link HttpHeaderNames#TRAILER} are accepted.
+	 * <p><strong>Note:</strong>Trailer headers are sent only when a message body is encoded with the chunked transfer coding
+	 * <p><strong>Note:</strong>The headers below cannot be sent as trailer headers:
+	 * <ul>
+	 *     <li>Age</li>
+	 *     <li>Cache-Control</li>
+	 *     <li>Content-Encoding</li>
+	 *     <li>Content-Length</li>
+	 *     <li>Content-Range</li>
+	 *     <li>Content-Type</li>
+	 *     <li>Date</li>
+	 *     <li>Expires</li>
+	 *     <li>Location</li>
+	 *     <li>Retry-After</li>
+	 *     <li>Trailer</li>
+	 *     <li>Transfer-Encoding</li>
+	 *     <li>Vary</li>
+	 *     <li>Warning</li>
+	 * </ul>
+	 *
+	 * @param trailerHeaders netty headers map
+	 * @return this {@link HttpServerResponse}
+	 * @since 1.0.12
+	 */
+	HttpServerResponse trailerHeaders(Consumer<? super HttpHeaders> trailerHeaders);
 }

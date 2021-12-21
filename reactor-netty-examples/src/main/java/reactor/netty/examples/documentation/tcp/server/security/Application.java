@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,9 +15,10 @@
  */
 package reactor.netty.examples.documentation.tcp.server.security;
 
-import io.netty.handler.ssl.SslContextBuilder;
 import reactor.netty.DisposableServer;
 import reactor.netty.tcp.TcpServer;
+import reactor.netty.tcp.TcpSslContextSpec;
+
 import java.io.File;
 
 public class Application {
@@ -26,11 +27,11 @@ public class Application {
 		File cert = new File("certificate.crt");
 		File key = new File("private.key");
 
-		SslContextBuilder sslContextBuilder = SslContextBuilder.forServer(cert, key);
+		TcpSslContextSpec tcpSslContextSpec = TcpSslContextSpec.forServer(cert, key);
 
 		DisposableServer server =
 				TcpServer.create()
-				         .secure(spec -> spec.sslContext(sslContextBuilder))
+				         .secure(spec -> spec.sslContext(tcpSslContextSpec))
 				         .bindNow();
 
 		server.onDispose()

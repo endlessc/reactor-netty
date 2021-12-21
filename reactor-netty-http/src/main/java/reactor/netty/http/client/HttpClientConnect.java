@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.client;
 
 import java.net.InetSocketAddress;
@@ -203,6 +202,7 @@ class HttpClientConnect extends HttpClient {
 		}
 
 		@Override
+		@SuppressWarnings("deprecation")
 		public void subscribe(CoreSubscriber<? super Connection> actual) {
 			HttpClientHandler handler = new HttpClientHandler(config);
 
@@ -341,14 +341,41 @@ class HttpClientConnect extends HttpClient {
 					handler.previousRequestHeaders = ops.requestHeaders;
 				}
 			}
-			else if (AbortedException.isConnectionReset(error) && handler.shouldRetry) {
+			else if (handler.shouldRetry && AbortedException.isConnectionReset(error)) {
 				HttpClientOperations ops = connection.as(HttpClientOperations.class);
-				if (ops != null) {
-					ops.retrying = true;
+				if (ops != null && ops.hasSentHeaders()) {
+					// In some cases the channel close event may be delayed and thus the connection to be
+					// returned to the pool and later the eviction functionality to remote it from the pool.
+					// In some rare cases the connection might be acquired immediately, before the channel close
+					// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
+					// errors.
+					// Mark the connection as non-persistent here so that it never be returned to the pool and leave
+					// the channel close event to invalidate it.
+					ops.markPersistent(false);
+					// Disable retry if the headers or/and the body were sent
+					handler.shouldRetry = false;
+					if (log.isWarnEnabled()) {
+						log.warn(format(connection.channel(),
+								"The connection observed an error, the request cannot be " +
+										"retried as the headers/body were sent"), error);
+					}
 				}
-				if (log.isDebugEnabled()) {
-					log.debug(format(connection.channel(),
-							"The connection observed an error, the request will be retried"), error);
+				else {
+					if (ops != null) {
+						// In some cases the channel close event may be delayed and thus the connection to be
+						// returned to the pool and later the eviction functionality to remote it from the pool.
+						// In some rare cases the connection might be acquired immediately, before the channel close
+						// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
+						// errors.
+						// Mark the connection as non-persistent here so that it never be returned to the pool and leave
+						// the channel close event to invalidate it.
+						ops.markPersistent(false);
+						ops.retrying = true;
+					}
+					if (log.isDebugEnabled()) {
+						log.debug(format(connection.channel(),
+								"The connection observed an error, the request will be retried"), error);
+					}
 				}
 			}
 			else if (log.isWarnEnabled()) {
@@ -634,7 +661,7 @@ class HttpClientConnect extends HttpClient {
 				redirect(re.location);
 				return true;
 			}
-			if (AbortedException.isConnectionReset(throwable) && shouldRetry) {
+			if (shouldRetry && AbortedException.isConnectionReset(throwable)) {
 				shouldRetry = false;
 				redirect(toURI.toString());
 				return true;

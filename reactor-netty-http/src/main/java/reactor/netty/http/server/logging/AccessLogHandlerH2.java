@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,8 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http2.Http2DataFrame;
 import io.netty.handler.codec.http2.Http2HeadersFrame;
+import reactor.netty.channel.ChannelOperations;
+import reactor.netty.http.HttpInfos;
 import reactor.util.annotation.Nullable;
 
 import java.util.function.Function;
@@ -61,6 +63,11 @@ final class AccessLogHandlerH2 extends BaseAccessLogHandler {
 
 			accessLogArgProvider.responseHeaders(responseHeaders)
 					.chunked(true);
+
+			ChannelOperations<?, ?> ops = ChannelOperations.get(ctx.channel());
+			if (ops instanceof HttpInfos) {
+				accessLogArgProvider.cookies(((HttpInfos) ops).cookies());
+			}
 		}
 		if (msg instanceof Http2DataFrame) {
 			final Http2DataFrame data = (Http2DataFrame) msg;

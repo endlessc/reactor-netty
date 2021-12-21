@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,14 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.resources;
 
 import java.io.IOException;
 import java.net.SocketAddress;
+import java.time.Clock;
 import java.time.Duration;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiPredicate;
@@ -64,20 +62,14 @@ import static reactor.netty.ReactorNetty.format;
  * @author Violeta Georgieva
  */
 final class DefaultPooledConnectionProvider extends PooledConnectionProvider<DefaultPooledConnectionProvider.PooledConnection> {
-	final Map<SocketAddress, PoolFactory<PooledConnection>> poolFactoryPerRemoteHost = new HashMap<>();
-	final Map<SocketAddress, Integer> maxConnections = new HashMap<>();
 
 	DefaultPooledConnectionProvider(Builder builder) {
-		super(builder);
-		for (Map.Entry<SocketAddress, ConnectionPoolSpec<?>> entry : builder.confPerRemoteHost.entrySet()) {
-			poolFactoryPerRemoteHost.put(entry.getKey(), new PoolFactory<>(entry.getValue()));
-			maxConnections.put(entry.getKey(), entry.getValue().maxConnections);
-		}
+		this(builder, null);
 	}
 
-	@Override
-	public Map<SocketAddress, Integer> maxConnectionsPerHost() {
-		return maxConnections;
+	// Used only for testing purposes
+	DefaultPooledConnectionProvider(Builder builder, @Nullable Clock clock) {
+		super(builder, clock);
 	}
 
 	@Override
@@ -98,25 +90,6 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 			SocketAddress remoteAddress,
 			AddressResolverGroup<?> resolverGroup) {
 		return new PooledConnectionAllocator(config, poolFactory, remoteAddress, resolverGroup).pool;
-	}
-
-	@Override
-	protected PoolFactory<PooledConnection> poolFactory(SocketAddress remoteAddress) {
-		return poolFactoryPerRemoteHost.getOrDefault(remoteAddress, defaultPoolFactory);
-	}
-
-	static void logPoolState(Channel channel, InstrumentedPool<PooledConnection> pool, String msg) {
-		logPoolState(channel, pool, msg, null);
-	}
-
-	static void logPoolState(Channel channel, InstrumentedPool<PooledConnection> pool, String msg, @Nullable Throwable t) {
-		InstrumentedPool.PoolMetrics metrics = pool.metrics();
-		log.debug(format(channel, "{}, now: {} active connections, {} inactive connections and {} pending acquire requests."),
-				msg,
-				metrics.acquiredSize(),
-				metrics.idleSize(),
-				metrics.pendingAcquireSize(),
-				t == null ? "" : t);
 	}
 
 	static final Logger log = Loggers.getLogger(DefaultPooledConnectionProvider.class);
@@ -545,12 +518,12 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 
 				this.pooledConnection = pooledConnection;
 
-				pooledConnection.bind();
-
 				ch.attr(OWNER).compareAndSet(null, new PendingConnectionObserver(sink.currentContext()));
 				ch.pipeline().remove(this);
 				ch.pipeline()
 				  .addFirst(config.channelInitializer(pooledConnection, remoteAddress, false));
+
+				pooledConnection.bind();
 			}
 
 			@Override

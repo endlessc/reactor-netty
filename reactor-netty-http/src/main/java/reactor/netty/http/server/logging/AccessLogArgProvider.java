@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,9 +15,13 @@
  */
 package reactor.netty.http.server.logging;
 
+import io.netty.handler.codec.http.cookie.Cookie;
 import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
+import java.time.ZonedDateTime;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * A provider of the args required for access log.
@@ -31,9 +35,20 @@ public interface AccessLogArgProvider {
 	 * Returns the date-time string with a time-zone, (e.g. "30/Oct/2020:03:52:11 +0000").
 	 *
 	 * @return the date-time string with a time-zone
+	 * @deprecated as of 1.0.6. Prefer using {@link #accessDateTime()} This method will be removed in version 1.2.0.
 	 */
 	@Nullable
+	@Deprecated
 	String zonedDateTime();
+
+	/**
+	 * Returns the date-time of the moment when the request was received
+	 *
+	 * @return zoned date-time
+	 * @since 1.0.6
+	 */
+	@Nullable
+	ZonedDateTime accessDateTime();
 
 	/**
 	 * Returns the address of the remote peer or {@code null} in case of Unix Domain Sockets.
@@ -118,4 +133,15 @@ public interface AccessLogArgProvider {
 	@Nullable
 	CharSequence responseHeader(CharSequence name);
 
+	/**
+	 * Returns resolved HTTP cookies.
+	 * <p>
+	 * Warning: Be cautious with cookies information and what kind of sensitive data is written to the logs.
+	 * By default no cookies information is written to the access log.
+	 *
+	 * @return Resolved HTTP cookies
+	 * @since 1.0.6
+	 */
+	@Nullable
+	Map<CharSequence, Set<Cookie>> cookies();
 }

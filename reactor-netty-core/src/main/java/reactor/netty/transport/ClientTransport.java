@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,7 @@ package reactor.netty.transport;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Properties;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -239,15 +240,53 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 	 */
 	public T proxy(Consumer<? super ProxyProvider.TypeSpec> proxyOptions) {
 		Objects.requireNonNull(proxyOptions, "proxyOptions");
-		T dup = duplicate();
 		ProxyProvider.Build builder = (ProxyProvider.Build) ProxyProvider.builder();
 		proxyOptions.accept(builder);
+		return proxyWithProxyProvider(builder.build());
+	}
+
+	final T proxyWithProxyProvider(ProxyProvider proxy) {
+		T dup = duplicate();
 		CONF conf = dup.configuration();
-		conf.proxyProvider = builder.build();
+		conf.proxyProvider = proxy;
 		if (conf.resolver == null) {
 			conf.resolver = NoopAddressResolverGroup.INSTANCE;
 		}
 		return dup;
+	}
+
+	/**
+	 * Set up a proxy from the java system properties.
+	 * Supports http, https, socks4, socks5 proxies.
+	 * List of supported system properties https://docs.oracle.com/javase/7/docs/api/java/net/doc-files/net-properties.html
+	 * <p>
+	 * If both {@code https.proxyHost} and {@code http.proxyHost} are set
+	 * it chooses {@code https.proxyHost} over {@code http.proxyHost}.
+	 * Same with the http/https proxy port.
+	 * <p>
+	 * If a {@link ClientTransport} instance already has a proxy set via {@link ClientTransport#proxy(Consumer)}
+	 * the new instance created by this method has all proxy settings replaced
+	 * with proxy settings from the system properties only.
+	 * <p>
+	 * If the system properties do not have a configuration for a proxy, the new
+	 * instance returned by this method behaves as if there is no proxy settings,
+	 * regardless of configuration of the original {@link ClientTransport} instance.
+	 * <p>
+	 * @return a new {@link ClientTransport} reference
+	 * @since 1.0.8
+	 */
+	public final T proxyWithSystemProperties() {
+		return proxyWithSystemProperties(System.getProperties());
+	}
+
+	/**
+	 * Same as {@link #proxyWithSystemProperties()} but accepts properties and used in testing only.
+	 *
+	 * @return a new {@link ClientTransport} reference
+	 */
+	final T proxyWithSystemProperties(Properties properties) {
+		ProxyProvider proxy = ProxyProvider.createFrom(properties);
+		return proxy == null ? noProxy() : proxyWithProxyProvider(proxy);
 	}
 
 	/**
@@ -305,11 +344,13 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 		T dup = super.runOn(loopResources, preferNative);
 		CONF conf = dup.configuration();
 		if (conf.nameResolverProvider != null) {
-			conf.resolver = conf.nameResolverProvider.newNameResolverGroup(conf.loopResources(), conf.preferNative);
+			conf.resolver = ClientTransportConfig.getOrCreateResolver(
+					conf.nameResolverProvider, conf.loopResources(), conf.preferNative);
 		}
-		else {
-			conf.resolver = ClientTransportConfig.DEFAULT_NAME_RESOLVER_PROVIDER
-					.newNameResolverGroup(conf.loopResources(), conf.preferNative);
+		else if (conf.resolver == null) {
+			conf.nameResolverProvider = ClientTransportConfig.DEFAULT_NAME_RESOLVER_PROVIDER;
+			conf.resolver = ClientTransportConfig.getOrCreateResolver(
+					ClientTransportConfig.DEFAULT_NAME_RESOLVER_PROVIDER, conf.loopResources(), conf.preferNative);
 		}
 		return dup;
 	}

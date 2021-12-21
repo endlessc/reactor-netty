@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -54,16 +54,7 @@ final class Http2Resources extends TcpResources {
 	}
 
 	static ConnectionProvider newConnectionProvider(ConnectionProvider parent) {
-		Builder builder =
-				ConnectionProvider.builder("http2")
-				                  .maxConnections(parent.maxConnections())
-				                  .pendingAcquireMaxCount(-1);
-		if (parent.maxConnectionsPerHost() != null) {
-			parent.maxConnectionsPerHost()
-			      .forEach((address, maxConn) -> builder.forRemoteHost(address, spec -> spec.maxConnections(maxConn)));
-		}
-
-		return new Http2ConnectionProvider(parent, builder);
+		return new Http2ConnectionProvider(parent);
 	}
 
 	static final AtomicReference<Http2Resources> http2Resources;

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,13 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.server;
 
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Comparator;
 import java.util.Objects;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -252,6 +252,16 @@ public interface HttpServerRoutes extends
 	}
 
 	/**
+	 * A generic route predicate that if matched already register I/O handler use
+	 * {@link HttpServerRoutes#route(Predicate, BiFunction)} will be removed.
+	 *
+	 * @param condition a predicate given each http route handler {@link HttpRouteHandlerMetadata}
+	 * @return this {@link HttpServerRoutes}
+	 * @since 1.0.11
+	 */
+	HttpServerRoutes removeIf(Predicate<? super HttpRouteHandlerMetadata> condition);
+
+	/**
 	 * A generic route predicate that if matched invoke the passed I/O handler.
 	 *
 	 * @param condition a predicate given each inbound request
@@ -261,6 +271,26 @@ public interface HttpServerRoutes extends
 	 */
 	HttpServerRoutes route(Predicate<? super HttpServerRequest> condition,
 			BiFunction<? super HttpServerRequest, ? super HttpServerResponse, ? extends Publisher<Void>> handler);
+
+	/**
+	 * Use the provided {@link java.util.Comparator} to sort routes, rather than using configured order.Routes that were
+	 * already configured are also impacted by this change and will be sorted according to the comparator.You can revert
+	 * to using the declaration order by calling the {@link #noComparator()} method (which is the default).
+	 *
+	 * @param comparator a HttpRouteHandlerMetadata comparator.
+	 * @return this {@link HttpServerRoutes}
+	 * @since 1.0.7
+	 */
+	HttpServerRoutes comparator(Comparator<HttpRouteHandlerMetadata> comparator);
+
+	/**
+	 * Removes any previously applied {@link java.util.Comparator} customization using
+	 * {@link HttpServerRoutes#comparator(Comparator)}, and use the order in which the routes were configured.
+	 *
+	 * @return this {@link HttpServerRoutes}
+	 * @since 1.0.7
+	 */
+	HttpServerRoutes noComparator();
 
 	/**
 	 * Listens for websocket on the passed path to be used as a routing condition. Incoming

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,6 +23,7 @@ import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.channel.unix.DomainDatagramChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import reactor.netty.ChannelPipelineConfigurer;
@@ -117,19 +118,13 @@ public final class UdpServerConfig extends TransportConfig {
 
 	@Override
 	protected Class<? extends Channel> channelType(boolean isDomainSocket) {
-		if (isDomainSocket) {
-			throw new UnsupportedOperationException();
-		}
-		return DatagramChannel.class;
+		return isDomainSocket ? DomainDatagramChannel.class : DatagramChannel.class;
 	}
 
 	@Override
 	protected ChannelFactory<? extends Channel> connectionFactory(EventLoopGroup elg, boolean isDomainSocket) {
-		if (isDomainSocket) {
-			throw new UnsupportedOperationException();
-		}
 		if (isPreferNative()) {
-			return () -> loopResources().onChannel(DatagramChannel.class, elg);
+			return super.connectionFactory(elg, isDomainSocket);
 		}
 		else {
 			return () -> new NioDatagramChannel(family());

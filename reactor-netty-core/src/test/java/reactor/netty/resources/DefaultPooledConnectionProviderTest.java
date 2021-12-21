@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,16 +15,16 @@
  */
 package reactor.netty.resources;
 
-import java.io.IOException;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
@@ -39,10 +39,13 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.handler.logging.LoggingHandler;
+import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.DefaultAddressResolverGroup;
+import io.netty.util.NetUtil;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Signal;
@@ -54,14 +57,20 @@ import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.resources.DefaultPooledConnectionProvider.PooledConnection;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.tcp.TcpClientTests;
+import reactor.netty.tcp.TcpResources;
 import reactor.netty.tcp.TcpServer;
+import reactor.netty.transport.AddressUtils;
 import reactor.netty.transport.ClientTransportConfig;
+import reactor.netty.transport.NameResolverProvider;
 import reactor.pool.InstrumentedPool;
 import reactor.pool.PoolAcquirePendingLimitException;
 import reactor.pool.PooledRef;
+import reactor.scheduler.clock.SchedulerClock;
 import reactor.test.StepVerifier;
+import reactor.test.scheduler.VirtualTimeScheduler;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 class DefaultPooledConnectionProviderTest {
 
@@ -121,30 +130,30 @@ class DefaultPooledConnectionProviderTest {
 	}
 
 	@Test
-	void fixedPoolTwoAcquire()
-			throws ExecutionException, InterruptedException, IOException {
+	void fixedPoolTwoAcquire() throws Exception {
 		final ScheduledExecutorService service = Executors.newScheduledThreadPool(2);
 		int echoServerPort = SocketUtils.findAvailableTcpPort();
 		TcpClientTests.EchoServer echoServer = new TcpClientTests.EchoServer(echoServerPort);
+		EventLoopGroup group = new NioEventLoopGroup(2);
 
 		java.util.concurrent.Future<?> f1 = null;
 		java.util.concurrent.Future<?> f2 = null;
 		Future<?> sf = null;
-		try {
+		try (AddressResolverGroup<?> resolver =
+				NameResolverProvider.builder().build().newNameResolverGroup(TcpResources.get(), true)) {
 			final InetSocketAddress address = InetSocketAddress.createUnresolved("localhost", echoServerPort);
 			ConnectionProvider pool = ConnectionProvider.create("fixedPoolTwoAcquire", 2);
 
 			Supplier<? extends SocketAddress> remoteAddress = () -> address;
 			ConnectionObserver observer = ConnectionObserver.emptyListener();
-			EventLoopGroup group = new NioEventLoopGroup(2);
 			ClientTransportConfigImpl config =
-					new ClientTransportConfigImpl(group, pool, Collections.emptyMap(), remoteAddress);
+					new ClientTransportConfigImpl(group, pool, Collections.emptyMap(), remoteAddress, resolver);
 
 			//fail a couple
 			StepVerifier.create(pool.acquire(config, observer, remoteAddress, config.resolverInternal()))
-			            .verifyErrorMatches(msg -> msg.getMessage().contains("Connection refused"));
+			            .verifyErrorMatches(msg -> msg.getCause() instanceof ConnectException);
 			StepVerifier.create(pool.acquire(config, observer, remoteAddress, config.resolverInternal()))
-			            .verifyErrorMatches(msg -> msg.getMessage().contains("Connection refused"));
+			            .verifyErrorMatches(msg -> msg.getCause() instanceof ConnectException);
 
 			//start the echo server
 			f1 = service.submit(echoServer);
@@ -209,6 +218,9 @@ class DefaultPooledConnectionProviderTest {
 		finally {
 			service.shutdownNow();
 			echoServer.close();
+			group.shutdownGracefully()
+			     .get(5, TimeUnit.SECONDS);
+
 			assertThat(f1).isNotNull();
 			assertThat(f1.get()).isNull();
 			assertThat(f2).isNotNull();
@@ -363,6 +375,158 @@ class DefaultPooledConnectionProviderTest {
 		}
 	}
 
+	@Test
+	@SuppressWarnings("unchecked")
+	void testRetryConnect() throws Exception {
+		EventLoopGroup group = new NioEventLoopGroup(1);
+		InetSocketAddress address = AddressUtils.createUnresolved("localhost", 12122);
+
+		AddressResolverGroup<SocketAddress> resolverGroup = Mockito.mock(AddressResolverGroup.class);
+		AddressResolver<SocketAddress> resolver = Mockito.mock(AddressResolver.class);
+		io.netty.util.concurrent.Future<List<SocketAddress>> resolveFuture =
+				Mockito.mock(io.netty.util.concurrent.Future.class);
+		List<SocketAddress> resolveAllResult = Arrays.asList(
+				new InetSocketAddress(NetUtil.LOCALHOST4, 12122), // connection refused
+				new InetSocketAddress(NetUtil.LOCALHOST6, 12122), // connection refused
+				new InetSocketAddress("example.com", 80) // connection established
+		);
+		Mockito.when(resolverGroup.getResolver(group.next())).thenReturn(resolver);
+		Mockito.when(resolver.isSupported(address)).thenReturn(true);
+		Mockito.when(resolver.isResolved(address)).thenReturn(false);
+		Mockito.when(resolver.resolveAll(address)).thenReturn(resolveFuture);
+		Mockito.when(resolveFuture.isDone()).thenReturn(true);
+		Mockito.when(resolveFuture.cause()).thenReturn(null);
+		Mockito.when(resolveFuture.getNow()).thenReturn(resolveAllResult);
+
+		ConnectionProvider pool = ConnectionProvider.create("testRetryConnect", 1);
+		Supplier<? extends SocketAddress> remoteAddress = () -> address;
+		ConnectionObserver observer = ConnectionObserver.emptyListener();
+		ClientTransportConfigImpl config =
+				new ClientTransportConfigImpl(group, pool, Collections.emptyMap(), remoteAddress, resolverGroup);
+		Connection conn = null;
+		try {
+			conn = pool.acquire(config, observer, remoteAddress, config.resolverInternal())
+			           .block(Duration.ofSeconds(5));
+			assertThat(((InetSocketAddress) conn.address()).getHostString()).isEqualTo("example.com");
+		}
+		finally {
+			if (conn != null) {
+				conn.disposeNow(Duration.ofSeconds(5));
+			}
+			pool.disposeLater()
+			    .block(Duration.ofSeconds(5));
+			group.shutdownGracefully()
+			     .get(5, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
+	void testDisposeInactivePoolsInBackground() throws Exception {
+		EventLoopGroup group = new NioEventLoopGroup(1);
+		InetSocketAddress address = AddressUtils.createUnresolved("example.com", 80);
+		ConnectionProvider.Builder builder =
+				ConnectionProvider.builder("testDisposeInactivePoolsInBackground")
+				                  .maxConnections(1)
+				                  .disposeInactivePoolsInBackground(Duration.ofMillis(100), Duration.ofSeconds(1));
+		VirtualTimeScheduler vts = VirtualTimeScheduler.create();
+		DefaultPooledConnectionProvider pool = new DefaultPooledConnectionProvider(builder, SchedulerClock.of(vts));
+		Supplier<? extends SocketAddress> remoteAddress = () -> address;
+		ConnectionObserver observer = ConnectionObserver.emptyListener();
+		ClientTransportConfigImpl config = new ClientTransportConfigImpl(group, pool, Collections.emptyMap(),
+				remoteAddress, DefaultAddressResolverGroup.INSTANCE);
+		Connection conn = null;
+		try {
+			conn = pool.acquire(config, observer, remoteAddress, config.resolverInternal())
+			           .block(Duration.ofSeconds(5));
+			assertThat(((InetSocketAddress) conn.address()).getHostString()).isEqualTo("example.com");
+		}
+		finally {
+			if (conn != null) {
+				CountDownLatch latch = new CountDownLatch(1);
+				conn.channel()
+				    .close()
+				    .addListener(f -> latch.countDown());
+				assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+			}
+
+			assertThat(pool.channelPools.size()).isEqualTo(1);
+
+			vts.advanceTimeBy(Duration.ofSeconds(5));
+
+			await().atMost(500, TimeUnit.MILLISECONDS)
+			       .with()
+			       .pollInterval(10, TimeUnit.MILLISECONDS)
+			       .untilAsserted(() -> assertThat(pool.channelPools.size()).isEqualTo(0));
+
+			pool.disposeLater()
+			    .block(Duration.ofSeconds(5));
+			group.shutdownGracefully()
+			     .get(5, TimeUnit.SECONDS);
+		}
+	}
+
+	@Test
+	void testIssue1790FIFOPool() {
+		doTestIssue1790(true);
+	}
+
+	@Test
+	void testIssue1790LIFOPool() {
+		doTestIssue1790(false);
+	}
+
+	private void doTestIssue1790(boolean fifoPool) {
+		DefaultPooledConnectionProvider provider;
+		if (fifoPool) {
+			provider =
+			        (DefaultPooledConnectionProvider) ConnectionProvider.builder("testIssue1790")
+			                                                            .maxConnections(1)
+			                                                            .fifo()
+			                                                            .build();
+		}
+		else {
+			provider =
+			        (DefaultPooledConnectionProvider) ConnectionProvider.builder("testIssue1790")
+			                                                            .maxConnections(1)
+			                                                            .lifo()
+			                                                            .build();
+		}
+
+		DisposableServer disposableServer =
+				TcpServer.create()
+				         .port(0)
+				         .wiretap(true)
+				         .bindNow();
+
+		Connection connection = null;
+		try {
+			connection =
+					TcpClient.create(provider)
+					         .port(disposableServer.port())
+					         .wiretap(true)
+					         .connectNow();
+
+			assertThat(provider.channelPools).hasSize(1);
+
+			@SuppressWarnings({"unchecked", "rawtypes"})
+			InstrumentedPool<DefaultPooledConnectionProvider.PooledConnection> channelPool =
+					provider.channelPools.values().toArray(new InstrumentedPool[0])[0];
+			assertThat(channelPool.metrics())
+				.withFailMessage("Reactor-netty relies on Reactor-pool instrumented pool.metrics()" +
+								" to be the pool instance itself, got <%s> and <%s>",
+				channelPool.metrics(), channelPool)
+				.isSameAs(channelPool);
+		}
+		finally {
+			if (connection != null) {
+				connection.disposeNow();
+			}
+			disposableServer.disposeNow();
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
 	static final class PoolImpl extends AtomicInteger implements InstrumentedPool<PooledConnection> {
 
 		@Override
@@ -399,11 +563,14 @@ class DefaultPooledConnectionProviderTest {
 	static final class ClientTransportConfigImpl extends ClientTransportConfig<ClientTransportConfigImpl> {
 
 		final EventLoopGroup group;
+		final AddressResolverGroup<?> resolver;
 
 		ClientTransportConfigImpl(EventLoopGroup group, ConnectionProvider connectionProvider,
-				Map<ChannelOption<?>, ?> options, Supplier<? extends SocketAddress> remoteAddress) {
+				Map<ChannelOption<?>, ?> options, Supplier<? extends SocketAddress> remoteAddress,
+				AddressResolverGroup<?> resolver) {
 			super(connectionProvider, options, remoteAddress);
 			this.group = group;
+			this.resolver = resolver;
 		}
 
 		@Override
@@ -423,7 +590,7 @@ class DefaultPooledConnectionProviderTest {
 
 		@Override
 		protected AddressResolverGroup<?> defaultAddressResolverGroup() {
-			return DefaultAddressResolverGroup.INSTANCE;
+			return resolver;
 		}
 
 		@Override

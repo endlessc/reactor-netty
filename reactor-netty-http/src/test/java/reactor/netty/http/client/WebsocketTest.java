@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.client;
 
 import java.net.URI;
@@ -27,6 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import io.netty.buffer.Unpooled;
@@ -40,6 +41,7 @@ import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PingWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.PongWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakeException;
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus;
 import io.netty.handler.codec.http.websocketx.WebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketHandshakeException;
@@ -60,6 +62,7 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.test.StepVerifier;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.annotation.Nullable;
 import reactor.util.function.Tuple2;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1278,7 +1281,7 @@ class WebsocketTest extends BaseHttpTest {
 
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> ops.aggregateFrames(-1))
-				.withMessage("maxContentLength: -1 (expected: >= 0)");
+				.withMessageEndingWith("-1 (expected: >= 0)");
 
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> ops.send(null));
@@ -1377,5 +1380,53 @@ class WebsocketTest extends BaseHttpTest {
 		assertThat(statusServer.get())
 				.isNotNull()
 				.isEqualTo(WebSocketCloseStatus.EMPTY);
+	}
+
+	@Test
+	void testConnectionClosedWhenFailedUpgrade_NoErrorHandling() throws Exception {
+		doTestConnectionClosedWhenFailedUpgrade(httpClient -> httpClient, null);
+	}
+
+	@Test
+	void testConnectionClosedWhenFailedUpgrade_ClientErrorHandling() throws Exception {
+		AtomicReference<Throwable> error = new AtomicReference<>();
+		doTestConnectionClosedWhenFailedUpgrade(
+				httpClient -> httpClient.doOnRequestError((req, t) -> error.set(t)), null);
+		assertThat(error.get()).isNotNull()
+				.isInstanceOf(WebSocketClientHandshakeException.class);
+		assertThat(((WebSocketClientHandshakeException) error.get()).response().status())
+				.isEqualTo(HttpResponseStatus.NOT_FOUND);
+	}
+
+	@Test
+	void testConnectionClosedWhenFailedUpgrade_PublisherErrorHandling() throws Exception {
+		AtomicReference<Throwable> error = new AtomicReference<>();
+		doTestConnectionClosedWhenFailedUpgrade(httpClient -> httpClient, error::set);
+		assertThat(error.get()).isNotNull()
+				.isInstanceOf(WebSocketClientHandshakeException.class);
+		assertThat(((WebSocketClientHandshakeException) error.get()).response().status())
+				.isEqualTo(HttpResponseStatus.NOT_FOUND);
+	}
+
+	private void doTestConnectionClosedWhenFailedUpgrade(
+			Function<HttpClient, HttpClient> clientCustomizer,
+			@Nullable Consumer<Throwable> errorConsumer) throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendNotFound())
+				        .bindNow();
+
+		CountDownLatch latch = new CountDownLatch(1);
+		HttpClient client =
+				createClient(disposableServer.port())
+				          .doOnConnected(conn -> conn.channel().closeFuture().addListener(f -> latch.countDown()));
+
+		clientCustomizer.apply(client)
+		                .websocket()
+		                .uri("/")
+		                .connect()
+		                .subscribe(null, errorConsumer, null);
+
+		assertThat(latch.await(5, TimeUnit.SECONDS)).as("latch await").isTrue();
 	}
 }

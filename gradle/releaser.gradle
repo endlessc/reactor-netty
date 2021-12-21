@@ -3,13 +3,13 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoField
 
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -67,9 +67,9 @@ String getOrGenerateBuildNumber() {
 	if (project.hasProperty("buildNumber")) {
 		return project.findProperty("buildNumber")
 	}
-	def jenkinsNumber = System.getenv("BUILD_NUMBER")
-	if (jenkinsNumber != null) {
-		return jenkinsNumber
+	def ciNumber = System.getenv("GITHUB_RUN_NUMBER")
+	if (ciNumber != null) {
+		return ciNumber
 	}
 	ZonedDateTime now = ZonedDateTime.now(ZoneOffset.UTC)
 	long secondsInDay = now.toEpochSecond() - ZonedDateTime.now(ZoneOffset.UTC).withSecond(0).withHour(0).withMinute(0).toEpochSecond()
@@ -98,8 +98,12 @@ if (project.hasProperty("artifactory_publish_password")) {
 				}
 			}
 			clientConfig.setIncludeEnvVars(false)
-			clientConfig.info.setBuildName('Reactor - Releaser - Netty')
+			clientConfig.info.setBuildName('Reactor - Netty')
 			clientConfig.info.setBuildNumber(buildNumber)
+			if (System.getenv("GITHUB_ACTIONS") == "true") {
+				clientConfig.info.setBuildUrl(System.getenv("GITHUB_SERVER_URL") + "/" + System.getenv("GITHUB_REPOSITORY") + "/actions/runs/" + System.getenv("GITHUB_RUN_ID"))
+				clientConfig.info.setVcsRevision(System.getenv("GITHUB_SHA"))
+			}
 		}
 	}
 }

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -42,6 +42,7 @@ import reactor.netty.channel.ChannelOperations;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
 import reactor.util.Loggers;
+import reactor.util.Metrics;
 import reactor.util.annotation.Nullable;
 
 import static java.util.Objects.requireNonNull;
@@ -80,7 +81,7 @@ public abstract class TransportConfig {
 
 	public int channelHash() {
 		return Objects.hash(attrs, bindAddress != null ? bindAddress.get() : 0, channelGroup, doOnChannelInit,
-				loggingHandler, loopResources, metricsRecorder != null ? metricsRecorder.get() : 0, observer, options, preferNative);
+				loggingHandler, loopResources, metricsRecorder, observer, options, preferNative);
 	}
 
 	/**
@@ -169,7 +170,7 @@ public abstract class TransportConfig {
 	 */
 	@Nullable
 	public final Supplier<? extends ChannelMetricsRecorder> metricsRecorder() {
-		return this.metricsRecorder;
+		return this.metricsRecorder != null ? () -> this.metricsRecorder : null;
 	}
 
 	/**
@@ -193,7 +194,7 @@ public abstract class TransportConfig {
 	ChannelPipelineConfigurer                  doOnChannelInit;
 	LoggingHandler                             loggingHandler;
 	LoopResources                              loopResources;
-	Supplier<? extends ChannelMetricsRecorder> metricsRecorder;
+	ChannelMetricsRecorder                     metricsRecorder;
 	ConnectionObserver                         observer;
 	Map<ChannelOption<?>, ?>                   options;
 	boolean                                    preferNative;
@@ -311,8 +312,17 @@ public abstract class TransportConfig {
 		this.loggingHandler = loggingHandler;
 	}
 
-	protected void metricsRecorder(@Nullable Supplier<? extends ChannelMetricsRecorder> metricsRecorder) {
-		this.metricsRecorder = metricsRecorder;
+	/**
+	 * Obtains immediately the {@link ChannelMetricsRecorder} from the provided {@link Supplier}
+	 *
+	 * @param metricsRecorderSupplier a supplier for the {@link ChannelMetricsRecorder}
+	 */
+	protected void metricsRecorder(@Nullable Supplier<? extends ChannelMetricsRecorder> metricsRecorderSupplier) {
+		this.metricsRecorder = metricsRecorderSupplier != null ? metricsRecorderSupplier.get() : null;
+	}
+
+	protected ChannelMetricsRecorder metricsRecorderInternal() {
+		return metricsRecorder;
 	}
 
 	/**
@@ -363,17 +373,18 @@ public abstract class TransportConfig {
 			ChannelPipeline pipeline = channel.pipeline();
 
 			if (config.metricsRecorder != null) {
-				ChannelOperations.addMetricsHandler(channel,
-						requireNonNull(config.metricsRecorder.get(), "Metrics recorder supplier returned null"),
-						remoteAddress,
-						onServer);
+				ChannelOperations.addMetricsHandler(channel, config.metricsRecorder, remoteAddress, onServer);
 
-				ByteBufAllocator alloc = channel.alloc();
-				if (alloc instanceof PooledByteBufAllocator) {
-					ByteBufAllocatorMetrics.INSTANCE.registerMetrics("pooled", ((PooledByteBufAllocator) alloc).metric());
-				}
-				else if (alloc instanceof UnpooledByteBufAllocator) {
-					ByteBufAllocatorMetrics.INSTANCE.registerMetrics("unpooled", ((UnpooledByteBufAllocator) alloc).metric());
+				if (Metrics.isInstrumentationAvailable()) {
+					ByteBufAllocator alloc = channel.alloc();
+					if (alloc instanceof PooledByteBufAllocator) {
+						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("pooled", ((PooledByteBufAllocator) alloc).metric());
+					}
+					else if (alloc instanceof UnpooledByteBufAllocator) {
+						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("unpooled", ((UnpooledByteBufAllocator) alloc).metric());
+					}
+
+					MicrometerEventLoopMeterRegistrar.INSTANCE.registerMetrics(channel.eventLoop());
 				}
 			}
 

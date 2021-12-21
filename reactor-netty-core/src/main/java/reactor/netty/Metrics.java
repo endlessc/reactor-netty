@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -67,6 +67,12 @@ public class Metrics {
 	 * registered in Micrometer's global registry
 	 */
 	public static final String UDP_CLIENT_PREFIX = "reactor.netty.udp.client";
+
+	/**
+	 * Name prefix that will be used for Event Loop Group metrics
+	 * registered in Micrometer's global registry
+	 */
+	public static final String EVENT_LOOP_PREFIX = "reactor.netty.eventloop";
 
 	/**
 	 * Name prefix that will be used for the PooledConnectionProvider's metrics
@@ -142,6 +148,11 @@ public class Metrics {
 	public static final String ACTIVE_CONNECTIONS = ".active.connections";
 
 	/**
+	 * The maximum number of active connections that are allowed
+	 */
+	public static final String MAX_CONNECTIONS = ".max.connections";
+
+	/**
 	 * The number of the idle connections
 	 */
 	public static final String IDLE_CONNECTIONS = ".idle.connections";
@@ -150,6 +161,21 @@ public class Metrics {
 	 * The number of requests that are waiting for a connection
 	 */
 	public static final String PENDING_CONNECTIONS = ".pending.connections";
+
+	/**
+	 * The maximum number of requests that will be queued while waiting for a ready connection
+	 */
+	public static final String MAX_PENDING_CONNECTIONS = ".max.pending.connections";
+
+	/**
+	 * The number of the active HTTP/2 streams
+	 */
+	public static final String ACTIVE_STREAMS = ".active.streams";
+
+	/**
+	 * The number of requests that are waiting for opening HTTP/2 stream
+	 */
+	public static final String PENDING_STREAMS = ".pending.streams";
 
 
 	// ByteBufAllocator Metrics
@@ -192,6 +218,12 @@ public class Metrics {
 	 * The chunk size for an arena
 	 */
 	public static final String CHUNK_SIZE = ".chunk.size";
+
+	// EventLoop Metrics
+	/**
+	 * The number of tasks that are pending for processing on an event loop
+	 */
+	public static final String PENDING_TASKS = ".pending.tasks";
 
 
 	// Tags

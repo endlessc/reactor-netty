@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,7 @@ package reactor.netty.http.server;
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
 import java.security.cert.CertificateException;
+import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
@@ -44,6 +45,7 @@ import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.transport.AddressUtils;
+import reactor.test.StepVerifier;
 import reactor.util.annotation.Nullable;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -182,9 +184,11 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getHostString()).isEqualTo("192.168.0.1");
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(8080);
 				},
+				null,
 				httpClient -> httpClient,
 				httpServer -> httpServer.port(8080),
-				false);
+				false,
+				true);
 	}
 
 	@Test
@@ -533,6 +537,17 @@ class ConnectionInfoTests extends BaseHttpTest {
 			Function<HttpClient, HttpClient> clientConfigFunction,
 			Function<HttpServer, HttpServer> serverConfigFunction,
 			boolean useHttps) {
+		testClientRequest(clientRequestHeadersConsumer, serverRequestConsumer, forwardedHeaderHandler,
+				clientConfigFunction, serverConfigFunction, useHttps, false);
+	}
+
+	private void testClientRequest(Consumer<HttpHeaders> clientRequestHeadersConsumer,
+				Consumer<HttpServerRequest> serverRequestConsumer,
+				@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
+				Function<HttpClient, HttpClient> clientConfigFunction,
+				Function<HttpServer, HttpServer> serverConfigFunction,
+				boolean useHttps,
+				boolean is400BadRequest) {
 
 		HttpServer server = createServer().forwarded(true);
 		if (forwardedHeaderHandler != null) {
@@ -558,16 +573,29 @@ class ConnectionInfoTests extends BaseHttpTest {
 			uri += "https://localhost:" + this.disposableServer.port();
 		}
 
-		String response =
-				customizeClientOptions(clientConfigFunction.apply(createClient(this.disposableServer.port())))
-				        .headers(clientRequestHeadersConsumer)
-				        .get()
-				        .uri(uri)
-				        .responseContent()
-				        .aggregate()
-				        .asString()
-				        .block();
-
-		assertThat(response).isEqualTo("OK");
+		if (!is400BadRequest) {
+			customizeClientOptions(clientConfigFunction.apply(createClient(this.disposableServer.port())))
+			        .headers(clientRequestHeadersConsumer)
+			        .get()
+			        .uri(uri)
+			        .responseContent()
+			        .aggregate()
+			        .asString()
+			        .as(StepVerifier::create)
+			        .expectNext("OK")
+			        .expectComplete()
+			        .verify(Duration.ofSeconds(30));
+		}
+		else {
+			customizeClientOptions(clientConfigFunction.apply(createClient(this.disposableServer.port())))
+			        .headers(clientRequestHeadersConsumer)
+			        .get()
+			        .uri(uri)
+			        .responseSingle((res, bytes) -> Mono.just(res.status().toString()))
+			        .as(StepVerifier::create)
+			        .expectNext("400 Bad Request")
+			        .expectComplete()
+			        .verify(Duration.ofSeconds(30));
+		}
 	}
 }

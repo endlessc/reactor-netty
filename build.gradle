@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,33 +19,37 @@ import java.text.SimpleDateFormat
 buildscript {
 	repositories {
 		mavenCentral()
-		jcenter()
 		maven { url "https://plugins.gradle.org/m2/" }
 		maven { url "https://repo.spring.io/plugins-release" }
 	}
 	dependencies {
-		classpath 'org.springframework.build.gradle:propdeps-plugin:0.0.7'
+		classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:4.25.3' //applied in individual submodules
 	}
 }
 
 plugins {
-	id 'com.github.hierynomus.license' version '0.15.0'
-	id 'org.asciidoctor.convert' version '2.4.0'
+	id "com.diffplug.spotless" version "6.0.5"
+	id 'org.asciidoctor.jvm.convert' version '3.3.2' apply false
+	id 'org.asciidoctor.jvm.pdf' version '3.3.2' apply false
 	id 'com.google.osdetector' version '1.7.0'
-	id 'org.gradle.test-retry' version '1.2.0'
-	id 'io.spring.nohttp' version '0.0.5.RELEASE'
-	id 'com.github.johnrengelman.shadow' version '6.1.0' apply false
-	id 'com.jfrog.artifactory' version '4.16.1' apply false
-	id 'me.champeau.gradle.japicmp' version '0.2.9' apply false
-	id 'de.undercouch.download' version '4.1.1' apply false
+	id 'org.gradle.test-retry' version '1.3.1'
+	id 'io.spring.nohttp' version '0.0.10'
+	id 'com.github.johnrengelman.shadow' version '7.1.1' apply false
+	//we now need version of Artifactory gradle plugin deployed on Maven Central, see above
+	id 'me.champeau.gradle.japicmp' version '0.3.0' apply false
+	id 'de.undercouch.download' version '4.1.2' apply false
 	id 'io.spring.javadoc' version '0.0.1' apply false
 	id 'io.spring.javadoc-aggregate' version '0.0.1' apply false
-	id 'biz.aQute.bnd.builder' version '5.3.0' apply false
+	id 'biz.aQute.bnd.builder' version '6.1.0' apply false
 }
 
 description = 'Reactive Streams Netty driver'
 
 apply from: "gradle/releaser.gradle"
+
+repositories { //needed at root for nohttp-checkstyle
+	mavenCentral()
+}
 
 ext {
 	if (project.hasProperty('versionBranch') && version.toString().endsWith("-SNAPSHOT")) {
@@ -75,23 +79,23 @@ ext {
 	}
 
 	os_suffix = ""
-	if (osdetector.classifier in ["linux-x86_64"] || ["osx-x86_64"] || ["windows-x86_64"]) {
+	if (osdetector.classifier in ["linux-x86_64"] || ["osx-x86_64"] || ["osx-aarch_64"] || ["windows-x86_64"]) {
 		os_suffix = ":" + osdetector.classifier
 	}
 
 	//Metrics
 	micrometerVersion = '1.5.0' //optional baseline: technically could work with 1.2.x, should work with any 1.3.x
 
-	braveVersion = '5.13.3'
+	braveVersion = '5.13.5'
 
 	jsr305Version = '3.0.2'
 
 	// Logging
-	slf4jVersion = '1.7.30'
-	logbackVersion = '1.2.3'
+	slf4jVersion = '1.7.32'
+	logbackVersion = '1.2.9'
 
 	// Netty
-	nettyDefaultVersion = '4.1.60.Final'
+	nettyDefaultVersion = '4.1.72.Final'
 	if (!project.hasProperty("forceNettyVersion")) {
 		nettyVersion = nettyDefaultVersion
 	}
@@ -99,22 +103,30 @@ ext {
 		nettyVersion = forceNettyVersion
 		println "Netty version defined from command line: ${forceNettyVersion}"
 	}
-	nettyIoUringVersion = '0.0.4.Final'
+	nettyIoUringVersion = '0.0.11.Final'
+	nettyQuicVersion = '0.0.25.Final'
 
 	// Testing
-	jacksonDatabindVersion = '2.12.2'
+	jacksonDatabindVersion = '2.13.1'
 	testAddonVersion = reactorCoreVersion
-	assertJVersion = '3.19.0'
-	hoverflyJavaVersion = '0.14.0'
-	tomcatVersion = '9.0.43'
-	boringSslVersion = '2.0.36.Final'
-	junitVersion = '5.7.1'
-	junitPlatformLauncherVersion = '1.7.1'
-	mockitoVersion = '3.8.0'
-	blockHoundVersion = '1.0.4.RELEASE'
+	assertJVersion = '3.21.0'
+	awaitilityVersion = '4.1.1'
+	hoverflyJavaVersion = '0.14.1'
+	tomcatVersion = '9.0.56'
+	boringSslVersion = '2.0.46.Final'
+	junitVersion = '5.8.2'
+	junitPlatformLauncherVersion = '1.8.2'
+	mockitoVersion = '4.2.0'
+	blockHoundVersion = '1.0.6.RELEASE'
+	bouncycastleVersion = '1.70'
 
-	javadocLinks = ["https://docs.oracle.com/javase/7/docs/api/",
-					"https://docs.oracle.com/javaee/6/api/",
+	jdk = JavaVersion.current().majorVersion
+	jdkJavadoc = "https://docs.oracle.com/javase/${jdk}/docs/api/"
+	if (JavaVersion.current().isJava11Compatible()) {
+		jdkJavadoc = "https://docs.oracle.com/en/java/javase/${jdk}/docs/api/"
+	}
+	println "JDK Javadoc link for this build is ${jdkJavadoc}"
+	javadocLinks = [jdkJavadoc,
 					"https://fasterxml.github.io/jackson-databind/javadoc/2.5/",
 					"https://www.reactive-streams.org/reactive-streams-1.0.3-javadoc/",
 					"https://projectreactor.io/docs/core/release/api/",
@@ -127,14 +139,37 @@ nohttp {
 	source.exclude "**/build/**"
 }
 
+spotless {
+	if (project.hasProperty("spotlessFrom")) {
+		if (project.spotlessFrom == "ALL") {
+			println "[Spotless] Ratchet deactivated"
+		}
+		else {
+			println "[Spotless] Ratchet from $project.spotlessFrom"
+			ratchetFrom project.spotlessFrom
+		}
+	}
+	else if (System.getenv ()["GITHUB_ACTION"] != null) {
+		println "[Spotless] GitHub Action detected without explicit branch, not enforcing check"
+		enforceCheck false
+	}
+	else {
+		String spotlessBranch = "origin/main"
+		println "[Spotless] Local run detected, ratchet from $spotlessBranch"
+		ratchetFrom spotlessBranch
+	}
+	java {
+		target '**/*.java'
+		licenseHeaderFile('codequality/spotless/licenseSlashstarStyle.txt')
+	}
+}
+
 subprojects {
 	group = 'io.projectreactor.netty'
 
-	apply plugin: 'java'
+	apply plugin: 'java-library'
 	apply plugin: 'jacoco'
 	apply plugin: 'checkstyle'
-	apply plugin: 'propdeps'
-	apply plugin: 'license'
 	apply plugin: 'org.gradle.test-retry'
 	apply from: "${rootDir}/gradle/setup.gradle"
 	apply from: "${rootDir}/gradle/javadoc.gradle"
@@ -149,8 +184,8 @@ subprojects {
 
 	jacocoTestReport {
 		reports {
-			xml.enabled = true
-			html.enabled = true
+			xml.required = true
+			html.required = true
 		}
 	}
 
@@ -237,9 +272,7 @@ subprojects {
 			maxFailures = 10
 			maxRetries = 1
 		}
-	}
 
-	test {
 		testLogging {
 			showExceptions true
 			exceptionFormat "full"
@@ -247,23 +280,26 @@ subprojects {
 		}
 
 		onOutput { descriptor, event ->
-			if (event.message.contains("ResourceLeakDetector")) {
-				logger.error("ERROR: Test: " + descriptor + " produced resource leak: " + event.message)
+			def evMsg = event.message
+			if (evMsg.contains("ResourceLeakDetector")) {
+				if (!evMsg.contains(" -Dio.netty.leakDetection")
+						&& !evMsg.contains("DEBUG io.netty.util.ResourceLeakDetectorFactory")) {
+					logger.error("ERROR: Test: " + descriptor + " produced resource leak: " + event.message)
+				}
 			}
 		}
 	}
 
 	repositories {
 		mavenCentral()
-		jcenter()
 		maven { url "https://oss.sonatype.org/content/repositories/releases/" }
 		maven { url 'https://repo.spring.io/milestone' }
 		if (version.endsWith('-SNAPSHOT') || version.contains('-SNAPSHOT-')) { //classic or customized snapshots
-			if (System.getenv()["bamboo_buildNumber"] == null) {
+			if (System.getenv()["GITHUB_ACTION"] == null) {
 				mavenLocal()
 			}
 			else {
-				println 'Bamboo CI detected, avoiding use of mavenLocal()'
+				println 'GitHub Action detected, avoiding use of mavenLocal()'
 			}
 			maven { url 'https://repo.spring.io/snapshot' }
 			maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
@@ -283,16 +319,6 @@ subprojects {
 	}
 
 	check.dependsOn jacocoTestReport
-
-	license {
-		header rootProject.file("${rootDir}/codequality/HEADER")
-		includes(["**/*.java", "**/*.css"])
-		strictCheck true
-		mapping {
-			java = 'SLASHSTAR_STYLE'
-			css = 'SLASHSTAR_STYLE'
-		}
-	}
 }
 
 configurations.all {

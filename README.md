@@ -2,11 +2,11 @@
 
 [![Join the chat at https://gitter.im/reactor/reactor-netty](https://img.shields.io/gitter/room/nwjs/nw.js.svg)](https://gitter.im/reactor/reactor-netty)
 
-[![Reactor Netty](https://img.shields.io/maven-central/v/io.projectreactor.netty/reactor-netty.svg?colorB=brightgreen)](https://mvnrepository.com/artifact/io.projectreactor.netty/reactor-netty) [ ![Download](https://api.bintray.com/packages/spring/jars/io.projectreactor.netty/images/download.svg) ](https://bintray.com/spring/jars/io.projectreactor.netty/_latestVersion)
+[![Reactor Netty](https://img.shields.io/maven-central/v/io.projectreactor.netty/reactor-netty.svg?colorB=brightgreen)](https://mvnrepository.com/artifact/io.projectreactor.netty/reactor-netty)
 
-[![build](https://github.com/reactor/reactor-netty/workflows/Check%20Matrix/badge.svg?event=push)](https://github.com/reactor/reactor-netty/actions?query=workflow%3A%22Check+Matrix%22) [![CodeQL](https://github.com/reactor/reactor-netty/workflows/CodeQL/badge.svg?event=push)](https://github.com/reactor/reactor-netty/actions?query=workflow%3ACodeQL)
+[![publish](https://github.com/reactor/reactor-netty/actions/workflows/publish.yml/badge.svg)](https://github.com/reactor/reactor-netty/actions/workflows/publish.yml) [![CodeQL](https://github.com/reactor/reactor-netty/workflows/CodeQL/badge.svg?event=push)](https://github.com/reactor/reactor-netty/actions?query=workflow%3ACodeQL)
 
-`Reactor Netty` offers non-blocking and backpressure-ready `TCP`/`HTTP`/`UDP`
+`Reactor Netty` offers non-blocking and backpressure-ready `TCP`/`HTTP`/`UDP`/`QUIC`
 clients & servers based on `Netty` framework.
 
 ## Getting it
@@ -22,10 +22,10 @@ With `Gradle` from [repo.spring.io](https://repo.spring.io) or `Maven Central` r
     }
 
     dependencies {
-      //compile "io.projectreactor.netty:reactor-netty-core:1.0.5-SNAPSHOT"
-      compile "io.projectreactor.netty:reactor-netty-core:1.0.4"
-      //compile "io.projectreactor.netty:reactor-netty-http:1.0.5-SNAPSHOT"
-      compile "io.projectreactor.netty:reactor-netty-http:1.0.4"
+      //compile "io.projectreactor.netty:reactor-netty-core:1.0.15-SNAPSHOT"
+      compile "io.projectreactor.netty:reactor-netty-core:1.0.14"
+      //compile "io.projectreactor.netty:reactor-netty-http:1.0.15-SNAPSHOT"
+      compile "io.projectreactor.netty:reactor-netty-http:1.0.14"
     }
 ```
 
@@ -77,7 +77,7 @@ Having trouble with `Reactor Netty`? We'd like to help!
   tagged with [`reactor-netty`](https://stackoverflow.com/questions/tagged/reactor-netty). You can also chat
   with the community on [Gitter](https://gitter.im/reactor/reactor-netty).
 * Report bugs with `Reactor Netty` at [github.com/reactor/reactor-netty/issues](https://github.com/reactor/reactor-netty/issues).
-* More about [Support and Deprecation policies](https://github.com/reactor/.github/blob/master/SUPPORT.adoc)
+* More about [Support and Deprecation policies](https://github.com/reactor/.github/blob/main/SUPPORT.adoc)
 
 ## Reporting Issues
 `Reactor Netty` uses `GitHub’s` integrated issue tracking system to record bugs and feature requests.

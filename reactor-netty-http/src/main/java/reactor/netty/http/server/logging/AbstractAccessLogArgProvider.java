@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,12 +16,15 @@
 package reactor.netty.http.server.logging;
 
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.cookie.Cookie;
 import reactor.netty.ReactorNetty;
 import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -37,12 +40,14 @@ abstract class AbstractAccessLogArgProvider<SELF extends AbstractAccessLogArgPro
 	final SocketAddress remoteAddress;
 	final String user = MISSING;
 	String zonedDateTime;
+	ZonedDateTime accessDateTime;
 	CharSequence method;
 	CharSequence uri;
 	String protocol;
 	boolean chunked;
 	long contentLength = -1;
 	long startTime;
+	Map<CharSequence, Set<Cookie>> cookies;
 
 	AbstractAccessLogArgProvider(@Nullable SocketAddress remoteAddress) {
 		this.remoteAddress = remoteAddress;
@@ -50,8 +55,15 @@ abstract class AbstractAccessLogArgProvider<SELF extends AbstractAccessLogArgPro
 
 	@Override
 	@Nullable
+	@Deprecated
 	public String zonedDateTime() {
 		return zonedDateTime;
+	}
+
+	@Override
+	@Nullable
+	public ZonedDateTime accessDateTime() {
+		return accessDateTime;
 	}
 
 	@Override
@@ -94,12 +106,19 @@ abstract class AbstractAccessLogArgProvider<SELF extends AbstractAccessLogArgPro
 		return System.currentTimeMillis() - startTime;
 	}
 
+	@Override
+	@Nullable
+	public Map<CharSequence, Set<Cookie>> cookies() {
+		return cookies;
+	}
+
 	/**
 	 * Initialize some fields (e.g. ZonedDateTime startTime).
 	 * Should be called when a new request is received.
 	 */
 	void onRequest() {
-		this.zonedDateTime = ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM).format(DATE_TIME_FORMATTER);
+		this.accessDateTime = ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM);
+		this.zonedDateTime = accessDateTime.format(DATE_TIME_FORMATTER);
 		this.startTime = System.currentTimeMillis();
 	}
 
@@ -107,6 +126,7 @@ abstract class AbstractAccessLogArgProvider<SELF extends AbstractAccessLogArgPro
 	 * Remove non-final fields for reuse.
 	 */
 	void clear() {
+		this.accessDateTime = null;
 		this.zonedDateTime = null;
 		this.method = null;
 		this.uri = null;
@@ -114,6 +134,12 @@ abstract class AbstractAccessLogArgProvider<SELF extends AbstractAccessLogArgPro
 		this.chunked = false;
 		this.contentLength = -1;
 		this.startTime = 0;
+		this.cookies = null;
+	}
+
+	SELF cookies(Map<CharSequence, Set<Cookie>> cookies) {
+		this.cookies = cookies;
+		return get();
 	}
 
 	SELF chunked(boolean chunked) {

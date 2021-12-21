@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,6 +26,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
 import io.netty.util.AttributeKey;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.ConnectionObserver;
@@ -140,12 +141,12 @@ public abstract class Transport<T extends Transport<T, C>, C extends TransportCo
 						" to the class path first");
 			}
 			T dup = duplicate();
-			dup.configuration().metricsRecorder = () -> configuration().defaultMetricsRecorder();
+			dup.configuration().metricsRecorder(() -> configuration().defaultMetricsRecorder());
 			return dup;
 		}
 		else if (configuration().metricsRecorder != null) {
 			T dup = duplicate();
-			dup.configuration().metricsRecorder = null;
+			dup.configuration().metricsRecorder(null);
 			return dup;
 		}
 		else {
@@ -158,7 +159,8 @@ public abstract class Transport<T extends Transport<T, C>, C extends TransportCo
 	/**
 	 * Specifies whether the metrics are enabled on the {@link Transport}.
 	 * All generated metrics are provided to the specified recorder
-	 * which is only instantiated if metrics are being enabled.
+	 * which is only instantiated if metrics are being enabled (the instantiation is not lazy,
+	 * but happens immediately, while configuring the {@link Transport}).
 	 *
 	 * @param enable if true enables the metrics on the {@link Transport}.
 	 * @param recorder a supplier for the {@link ChannelMetricsRecorder}
@@ -167,12 +169,12 @@ public abstract class Transport<T extends Transport<T, C>, C extends TransportCo
 	public T metrics(boolean enable, Supplier<? extends ChannelMetricsRecorder> recorder) {
 		if (enable) {
 			T dup = duplicate();
-			dup.configuration().metricsRecorder = recorder;
+			dup.configuration().metricsRecorder(recorder);
 			return dup;
 		}
 		else if (configuration().metricsRecorder != null) {
 			T dup = duplicate();
-			dup.configuration().metricsRecorder = null;
+			dup.configuration().metricsRecorder(null);
 			return dup;
 		}
 		else {
@@ -367,8 +369,14 @@ public abstract class Transport<T extends Transport<T, C>, C extends TransportCo
 		Objects.requireNonNull(level, "level");
 		Objects.requireNonNull(format, "format");
 		Objects.requireNonNull(charset, "charset");
+		LoggingHandler loggingHandler = format.toLoggingHandler(category, level, charset);
+		if (loggingHandler.equals(configuration().loggingHandler)) {
+			@SuppressWarnings("unchecked")
+			T dup = (T) this;
+			return dup;
+		}
 		T dup = duplicate();
-		dup.configuration().loggingHandler = format.toLoggingHandler(category, level, charset);
+		dup.configuration().loggingHandler = loggingHandler;
 		return dup;
 	}
 

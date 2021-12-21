@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,8 +15,8 @@
  */
 package reactor.netty.examples.http.helloworld;
 
-import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
+import reactor.netty.http.Http11SslContextSpec;
 import reactor.netty.http.client.HttpClient;
 
 /**
@@ -39,8 +39,10 @@ public final class HelloWorldClient {
 				          .compress(COMPRESS);
 
 		if (SECURE) {
-			client = client.secure(
-					spec -> spec.sslContext(SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE)));
+			Http11SslContextSpec http11SslContextSpec =
+					Http11SslContextSpec.forClient()
+					                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+			client = client.secure(spec -> spec.sslContext(http11SslContextSpec));
 		}
 
 		String response =

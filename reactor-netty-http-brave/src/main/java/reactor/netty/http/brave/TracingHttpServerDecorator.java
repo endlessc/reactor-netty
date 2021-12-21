@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,8 +23,9 @@ import brave.http.HttpServerResponse;
 import brave.http.HttpTracing;
 import brave.propagation.CurrentTraceContext;
 import brave.propagation.TraceContext;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.EventLoop;
-import io.netty.util.AttributeKey;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import reactor.netty.Connection;
@@ -39,6 +40,8 @@ import java.util.regex.Pattern;
 
 import static java.util.Objects.requireNonNull;
 import static reactor.netty.ConnectionObserver.State.CONFIGURED;
+import static reactor.netty.http.brave.ReactorNettyHttpTracing.REQUEST_ATTR_KEY;
+import static reactor.netty.http.brave.ReactorNettyHttpTracing.SPAN_ATTR_KEY;
 import static reactor.netty.http.server.HttpServerState.REQUEST_DECODING_FAILED;
 
 final class TracingHttpServerDecorator {
@@ -56,12 +59,9 @@ final class TracingHttpServerDecorator {
 
 	HttpServer decorate(HttpServer server) {
 		return server.childObserve(new TracingConnectionObserver(currentTraceContext, handler, uriMapping))
+		             .doOnChannelInit(new TracingChannelPipelineConfigurer(currentTraceContext))
 		             .mapHandle(new TracingMapHandle(currentTraceContext, handler));
 	}
-
-	static final AttributeKey<HttpServerRequest> REQUEST_ATTR_KEY = AttributeKey.newInstance(HttpServerResponse.class.getName());
-
-	static final AttributeKey<Span> SPAN_ATTR_KEY = AttributeKey.newInstance(Span.class.getName());
 
 	static final class DelegatingHttpRequest extends HttpServerRequest {
 
@@ -195,12 +195,16 @@ final class TracingHttpServerDecorator {
 		final CurrentTraceContext currentTraceContext;
 		final HttpServerHandler<HttpServerRequest, HttpServerResponse> handler;
 		final Function<String, String> uriMapping;
+		final ChannelHandler inboundHandler;
+		final ChannelHandler outboundHandler;
 
 		TracingConnectionObserver(
 				CurrentTraceContext currentTraceContext,
 				HttpServerHandler<HttpServerRequest, HttpServerResponse> handler,
 				Function<String, String> uriMapping) {
 			this.currentTraceContext = currentTraceContext;
+			this.inboundHandler = new TracingChannelInboundHandler(currentTraceContext);
+			this.outboundHandler = new TracingChannelOutboundHandler(currentTraceContext);
 			this.handler = handler;
 			this.uriMapping = uriMapping;
 		}
@@ -215,6 +219,7 @@ final class TracingHttpServerDecorator {
 
 				connection.channel().attr(REQUEST_ATTR_KEY).set(braveRequest);
 				connection.channel().attr(SPAN_ATTR_KEY).set(span);
+
 				return;
 			}
 			if (state == REQUEST_DECODING_FAILED && connection instanceof reactor.netty.http.server.HttpServerResponse) {
@@ -269,6 +274,11 @@ final class TracingHttpServerDecorator {
 			                       HttpServerResponse braveResponse =
 			                               new DelegatingHttpResponse(response, braveRequest, throwable);
 			                       response.withConnection(conn -> {
+			                               conn.onTerminate()
+			                                   .subscribe(
+			                                           null,
+			                                           t -> cleanup(connection.channel()),
+			                                           () -> cleanup(connection.channel()));
 			                               EventLoop eventLoop = conn.channel().eventLoop();
 			                               if (eventLoop.inEventLoop()) {
 			                                   handler.handleSend(braveResponse, localSpan);
@@ -277,8 +287,6 @@ final class TracingHttpServerDecorator {
 			                                   eventLoop.execute(() -> handler.handleSend(braveResponse, localSpan));
 			                               }
 			                       });
-				                   connection.channel().attr(REQUEST_ATTR_KEY).set(null);
-				                   connection.channel().attr(SPAN_ATTR_KEY).set(null);
 			                   }
 			               })
 			               .doOnError(this::throwable)
@@ -288,6 +296,20 @@ final class TracingHttpServerDecorator {
 
 		void throwable(Throwable t) {
 			this.throwable = t;
+		}
+
+		void cleanup(Channel channel) {
+			EventLoop eventLoop = channel.eventLoop();
+			if (eventLoop.inEventLoop()) {
+				channel.attr(REQUEST_ATTR_KEY).set(null);
+				channel.attr(SPAN_ATTR_KEY).set(null);
+			}
+			else {
+				eventLoop.execute(() -> {
+					channel.attr(REQUEST_ATTR_KEY).set(null);
+					channel.attr(SPAN_ATTR_KEY).set(null);
+				});
+			}
 		}
 	}
 }

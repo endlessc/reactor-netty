@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.transport;
 
 import java.net.InetSocketAddress;
@@ -22,6 +21,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 class AddressUtilsTest {
 
@@ -147,8 +147,40 @@ class AddressUtilsTest {
 	}
 
 	@Test
+	void shouldNotParseAddressForIPv6WithoutBrackets_Strict() {
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> AddressUtils.parseAddress("1abc:2abc:3abc:0:0:0:5abc:6abc", 80, true))
+				.withMessage("Invalid IPv4 address 1abc:2abc:3abc:0:0:0:5abc:6abc");
+	}
+
+	@Test
 	void shouldParseAddressForIPv6WithNotNumericPort() {
 		InetSocketAddress socketAddress = AddressUtils.parseAddress("[1abc:2abc:3abc::5ABC:6abc]:abc42", 80);
+		assertThat(socketAddress.isUnresolved()).isFalse();
+		assertThat(socketAddress.getAddress().getHostAddress()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+		assertThat(socketAddress.getPort()).isEqualTo(80);
+		assertThat(socketAddress.getHostString()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+	}
+
+	@Test
+	void shouldNotParseAddressForIPv6WithNotNumericPort_Strict() {
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> AddressUtils.parseAddress("[1abc:2abc:3abc:0:0:0:5abc:6abc]:abc42", 80, true))
+				.withMessage("Failed to parse a port from [1abc:2abc:3abc:0:0:0:5abc:6abc]:abc42");
+	}
+
+	@Test
+	void shouldParseAddressForIPv6WithoutPort() {
+		InetSocketAddress socketAddress = AddressUtils.parseAddress("[1abc:2abc:3abc::5ABC:6abc]:", 80);
+		assertThat(socketAddress.isUnresolved()).isFalse();
+		assertThat(socketAddress.getAddress().getHostAddress()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+		assertThat(socketAddress.getPort()).isEqualTo(80);
+		assertThat(socketAddress.getHostString()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
+	}
+
+	@Test
+	void shouldParseAddressForIPv6WithoutPort_Strict() {
+		InetSocketAddress socketAddress = AddressUtils.parseAddress("[1abc:2abc:3abc::5ABC:6abc]:", 80);
 		assertThat(socketAddress.isUnresolved()).isFalse();
 		assertThat(socketAddress.getAddress().getHostAddress()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
 		assertThat(socketAddress.getPort()).isEqualTo(80);

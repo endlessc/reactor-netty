@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.channel;
 
 import java.net.SocketAddress;
@@ -27,6 +26,7 @@ import java.util.function.Predicate;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.util.ReferenceCounted;
 import org.reactivestreams.Publisher;
@@ -96,8 +96,11 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		if (remote == null) {
 			remote = ch.remoteAddress();
 		}
+		ChannelHandler handler = recorder instanceof ContextAwareChannelMetricsRecorder ?
+				new ContextAwareChannelMetricsHandler((ContextAwareChannelMetricsRecorder) recorder, remote, onServer) :
+				new ChannelMetricsHandler(recorder, remote, onServer);
 		ch.pipeline()
-		  .addFirst(NettyPipeline.ChannelMetricsHandler, new ChannelMetricsHandler(recorder, remote, onServer));
+		  .addFirst(NettyPipeline.ChannelMetricsHandler, handler);
 	}
 
 	/**
@@ -554,8 +557,7 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 			String localAddressStr = String.valueOf(localAddress);
 			String remoteAddressStr = String.valueOf(remoteAddress);
 			StringBuilder buf =
-					new StringBuilder(6 + shortText.length() + 4 + localAddressStr.length() + 3 + 2 + remoteAddressStr.length())
-					.append("id: 0x")
+					new StringBuilder(shortText.length() + 4 + localAddressStr.length() + 3 + 2 + remoteAddressStr.length())
 					.append(shortText)
 					.append(", L:")
 					.append(localAddressStr)
@@ -566,18 +568,14 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		}
 		else if (localAddress != null) {
 			String localAddressStr = String.valueOf(localAddress);
-			StringBuilder buf = new StringBuilder(6 + shortText.length() + 4 + localAddressStr.length())
-					.append("id: 0x")
+			StringBuilder buf = new StringBuilder(shortText.length() + 4 + localAddressStr.length())
 					.append(shortText)
 					.append(", L:")
 					.append(localAddressStr);
 			longId = buf.toString();
 		}
 		else {
-			StringBuilder buf = new StringBuilder(6 + shortText.length())
-					.append("id: 0x")
-					.append(shortText);
-			longId = buf.toString();
+			longId = shortText;
 		}
 
 		localActive = active;

@@ -2,6 +2,7 @@
 :examplesdir: ./../../reactor-netty-examples/src/main/java/reactor/netty/examples/documentation/tcp/server
 :javadoc: https://projectreactor.io/docs/netty/release/api
 :nettyjavadoc: https://netty.io/4.1/api
+:wirelogger: reactor.netty.tcp.TcpServer
 
 [[tcp-server]]
 = TCP Server
@@ -46,6 +47,21 @@ include::{examplesdir}/address/Application.java[lines=18..33]
 ----
 <1> Configures the `TCP` server host
 <2> Configures the `TCP` server port
+====
+
+To serve on multiple addresses, after having configured the `TcpServer` you can bind it multiple times to obtain separate `DisposableServer`s.
+All created servers will share resources such as `LoopResources` because they use the same configuration instance under the hood.
+
+====
+[source,java,indent=0]
+.{examplesdir}/address/MultiAddressApplication.java
+----
+include::{examplesdir}/address/MultiAddressApplication.java[lines=18..41]
+----
+<1> Configures the first `TCP` server host
+<2> Configures the first `TCP` server port
+<3> Configures the second `TCP` server host
+<4> Configures the second `TCP` server port
 ====
 
 == Eager Initialization
@@ -163,38 +179,7 @@ You can find more about `Netty` channel options at the following links:
 * https://docs.oracle.com/javase/8/docs/technotes/guides/net/socketOpt.html[Socket Options]
 
 [[server-tcp-level-configurations-event-wire-logger]]
-=== Using a Wire Logger
-
-Reactor Netty provides wire logging for when the traffic between the peers has to be inspected.
-By default, wire logging is disabled.
-To enable it, you must set the logger `reactor.netty.tcp.TcpServer` level to `DEBUG`
-and apply the following configuration;
-
-====
-[source,java,indent=0]
-.{examplesdir}/wiretap/Application.java
-----
-include::{examplesdir}/wiretap/Application.java[lines=18..32]
-----
-<1> Enables the wire logging
-====
-
-By default, the wire logging uses {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#HEX_DUMP[AdvancedByteBufFormat#HEX_DUMP]
-when printing the content.
-When you need to change this to {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#SIMPLE[AdvancedByteBufFormat#SIMPLE]
-or {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#TEXTUAL[AdvancedByteBufFormat#TEXTUAL],
-you can configure the `TcpServer` as follows:
-
-====
-[source,java,indent=0]
-.{examplesdir}/wiretap/custom/Application.java
-----
-include::{examplesdir}/wiretap/custom/Application.java[lines=18..34]
-----
-<1> Enables the wire logging,
-{javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#TEXTUAL[AdvancedByteBufFormat#TEXTUAL] is used for
-printing the content.
-====
+include::wire-logger.adoc[]
 
 [[server-tcp-level-configurations-event-loop-group]]
 === Using an Event Loop Group
@@ -210,7 +195,7 @@ The default configuration for the `Event Loop Group` is the following:
 [source,java,indent=0]
 .{sourcedir}/reactor/netty/ReactorNetty.java
 ----
-include::{sourcedir}/reactor/netty/ReactorNetty.java[lines=84..113]
+include::{sourcedir}/reactor/netty/ReactorNetty.java[lines=85..114]
 ----
 ====
 
@@ -241,7 +226,7 @@ The following example uses `SslContextBuilder`:
 [source,java,indent=0]
 .{examplesdir}/security/Application.java
 ----
-include::{examplesdir}/security/Application.java[lines=18..39]
+include::{examplesdir}/security/Application.java[lines=18..40]
 ----
 ====
 
@@ -277,6 +262,7 @@ The following table provides information for the TCP server metrics:
 These additional metrics are also available:
 
 include::alloc-metrics.adoc[]
+include::eventloop-metrics.adoc[]
 
 The following example enables that integration:
 

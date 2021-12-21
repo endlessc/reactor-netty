@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -258,6 +258,8 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		/**
 		 * Return the response status and headers as {@link HttpClientResponse}
 		 * <p> Will automatically close the response if necessary.
+		 * <p>Note: Will automatically close low-level network connection after returned
+		 * {@link Mono} terminates or is being cancelled.
 		 *
 		 * @return the response status and headers as {@link HttpClientResponse}
 		 */
@@ -1177,7 +1179,8 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	/**
 	 * Specifies whether the metrics are enabled on the {@link HttpClient}.
 	 * All generated metrics are provided to the specified recorder which is only
-	 * instantiated if metrics are being enabled.
+	 * instantiated if metrics are being enabled (the instantiation is not lazy,
+	 * but happens immediately, while configuring the {@link HttpClient}).
 	 * <p>{@code uriValue} function receives the actual uri and returns the uri value
 	 * that will be used when the metrics are propagated to the recorder.
 	 * For example instead of using the actual uri {@code "/users/1"} as uri value, templated uri
@@ -1307,33 +1310,40 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Specifies the response timeout duration in milliseconds.
-	 * This is time that takes to receive a response after sending a request.
-	 * If the {@code timeout} is {@code null}, any previous setting will be removed and no response timeout
-	 * will be applied.
-	 * If the {@code timeout} is less than {@code 1ms}, then {@code 1ms} will be the response timeout.
-	 * The response timeout setting on {@link HttpClientRequest} level overrides any response timeout
-	 * setting on {@link HttpClient} level.
+	 * Specifies the maximum duration allowed between each network-level read operation while reading a given response
+	 * (resolution: ms). In other words, {@link io.netty.handler.timeout.ReadTimeoutHandler} is added to the channel
+	 * pipeline after sending the request and is removed when the response is fully received.
+	 * If the {@code maxReadOperationInterval} is {@code null}, any previous setting will be removed and no
+	 * {@code maxReadOperationInterval} will be applied.
+	 * If the {@code maxReadOperationInterval} is less than {@code 1ms}, then {@code 1ms} will be the
+	 * {@code maxReadOperationInterval}.
+	 * The {@code maxReadOperationInterval} setting on {@link HttpClientRequest} level overrides any
+	 * {@code maxReadOperationInterval} setting on {@link HttpClient} level.
 	 *
-	 * @param timeout the response timeout duration (resolution: ms)
+	 * @param maxReadOperationInterval the maximum duration allowed between each network-level read operations
+	 *                                 (resolution: ms).
 	 * @return a new {@link HttpClient}
 	 * @since 0.9.11
+	 * @see io.netty.handler.timeout.ReadTimeoutHandler
 	 */
-	public final HttpClient responseTimeout(Duration timeout) {
-		Objects.requireNonNull(timeout, "timeout");
-		if (Objects.equals(timeout, configuration().responseTimeout)) {
+	public final HttpClient responseTimeout(@Nullable Duration maxReadOperationInterval) {
+		if (Objects.equals(maxReadOperationInterval, configuration().responseTimeout)) {
 			return this;
 		}
 		HttpClient dup = duplicate();
-		dup.configuration().responseTimeout = timeout;
+		dup.configuration().responseTimeout = maxReadOperationInterval;
 		return dup;
 	}
 
 	/**
-	 * Enable default sslContext support. The default {@link SslContext} will be
-	 * assigned to
-	 * with a default value of {@code 10} seconds handshake timeout unless
-	 * the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set.
+	 * Enable default sslContext support.
+	 * <p>By default {@link SslContext} is initialized with:
+	 * <ul>
+	 *     <li>{@code 10} seconds handshake timeout unless
+	 *     the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set</li>
+	 *     <li>hostname verification enabled</li>
+	 * </ul>
+	 * </p>
 	 *
 	 * @return a new {@link HttpClient}
 	 */
@@ -1348,13 +1358,16 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Apply an SSL configuration customization via the passed builder. The builder
-	 * will produce the {@link SslContext} to be passed to with a default value of
-	 * {@code 10} seconds handshake timeout unless the environment property {@code
-	 * reactor.netty.tcp.sslHandshakeTimeout} is set.
+	 * Apply an SSL configuration customization via the passed builder.
+	 * <p>The builder will produce the {@link SslContext} with:
+	 * <ul>
+	 *     <li>{@code 10} seconds handshake timeout unless the passed builder sets another configuration or
+	 *     the environment property {@code reactor.netty.tcp.sslHandshakeTimeout} is set</li>
+	 *     <li>hostname verification enabled</li>
+	 * </ul>
+	 * </p>
 	 *
 	 * @param sslProviderBuilder builder callback for further customization of SslContext.
-	 *
 	 * @return a new {@link HttpClient}
 	 */
 	public final HttpClient secure(Consumer<? super SslProvider.SslContextSpec> sslProviderBuilder) {
@@ -1372,6 +1385,21 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 
 	/**
 	 * Apply an SSL configuration via the passed {@link SslProvider}.
+	 * <p>Note: Hostname verification is not enabled by default.
+	 * If hostname verification is needed, please apply the
+	 * {@link HttpClientSecurityUtils#HOSTNAME_VERIFICATION_CONFIGURER}
+	 * configuration to the {@link SslProvider}:
+	 * </p>
+	 * <p>
+	 * <pre>
+	 * {@code
+	 * SslProvider.builder()
+	 *            .sslContext(...)
+	 *            .handlerConfigurator(HttpClientSecurityUtils.HOSTNAME_VERIFICATION_CONFIGURER)
+	 *            .build();
+	 * }
+	 * </pre>
+	 * </p>
 	 *
 	 * @param sslProvider The provider to set when configuring SSL
 	 * @return a new {@link HttpClient}

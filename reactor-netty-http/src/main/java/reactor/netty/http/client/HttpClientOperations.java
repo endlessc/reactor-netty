@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.client;
 
 import java.net.InetSocketAddress;
@@ -73,6 +72,7 @@ import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Operators;
+import reactor.core.publisher.Sinks;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.FutureMono;
@@ -97,11 +97,12 @@ import static reactor.netty.ReactorNetty.format;
 class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		implements HttpClientResponse, HttpClientRequest {
 
-	final boolean               isSecure;
-	final HttpRequest           nettyRequest;
-	final HttpHeaders           requestHeaders;
-	final ClientCookieEncoder   cookieEncoder;
-	final ClientCookieDecoder   cookieDecoder;
+	final boolean                isSecure;
+	final HttpRequest            nettyRequest;
+	final HttpHeaders            requestHeaders;
+	final ClientCookieEncoder    cookieEncoder;
+	final ClientCookieDecoder    cookieDecoder;
+	final Sinks.One<HttpHeaders> trailerHeaders;
 
 	Supplier<String>[]          redirectedFrom = EMPTY_REDIRECTIONS;
 	String                      resourceUrl;
@@ -140,6 +141,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.path = replaced.path;
 		this.responseTimeout = replaced.responseTimeout;
 		this.is100Continue = replaced.is100Continue;
+		this.trailerHeaders = replaced.trailerHeaders;
 	}
 
 	HttpClientOperations(Connection c, ConnectionObserver listener, ClientCookieEncoder encoder, ClientCookieDecoder decoder) {
@@ -151,6 +153,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.requestHeaders = nettyRequest.headers();
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
+		this.trailerHeaders = Sinks.unsafe().one();
 	}
 
 	@Override
@@ -334,9 +337,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	}
 
 	@Override
-	public HttpClientRequest responseTimeout(Duration timeout) {
+	public HttpClientRequest responseTimeout(Duration maxReadOperationInterval) {
 		if (!hasSentHeaders()) {
-			this.responseTimeout = timeout;
+			this.responseTimeout = maxReadOperationInterval;
 		}
 		else {
 			throw new IllegalStateException("Status and headers already sent");
@@ -479,6 +482,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			return responseState.response.status();
 		}
 		throw new IllegalStateException("Trying to access status() while missing response");
+	}
+
+	@Override
+	public Mono<HttpHeaders> trailerHeaders() {
+		return trailerHeaders.asMono();
 	}
 
 	@Override
@@ -677,6 +685,15 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 					super.onInboundNext(ctx, msg);
 				}
 			}
+
+			if (redirecting == null) {
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitValue(((LastHttpContent) msg).trailingHeaders());
+			}
+
 			//force auto read to enable more accurate close selection now inbound is done
 			channel().config().setAutoRead(true);
 			if (markSentBody()) {

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,6 @@
 package reactor.netty.http;
 
 import io.netty.buffer.ByteBuf;
-import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.junit.jupiter.api.BeforeAll;
@@ -30,11 +29,12 @@ import reactor.netty.ByteBufFlux;
 import reactor.netty.ByteBufMono;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
+import reactor.netty.internal.shaded.reactor.pool.PoolAcquireTimeoutException;
 import reactor.netty.resources.ConnectionProvider;
+import reactor.netty.tcp.SslProvider.ProtocolSslContextSpec;
 import reactor.test.StepVerifier;
 import reactor.util.function.Tuple2;
 
-import java.io.IOException;
 import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.List;
@@ -44,6 +44,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -85,7 +86,7 @@ class Http2Tests extends BaseHttpTest {
 
 	@Test
 	void testHttpSslH2CFails() {
-		SslContextBuilder serverOptions = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverOptions = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
 
 		StepVerifier.create(
 		        createServer()
@@ -158,15 +159,14 @@ class Http2Tests extends BaseHttpTest {
 
 	@Test
 	void testMaxActiveStreams_1_CustomPool() throws Exception {
-		ConnectionProvider provider = ConnectionProvider.create("testMaxActiveStreams_1", 1);
+		ConnectionProvider provider =
+				ConnectionProvider.builder("testMaxActiveStreams_1_CustomPool")
+				                  .maxConnections(1)
+				                  .pendingAcquireTimeout(Duration.ofMillis(10)) // the default is 45s
+				                  .build();
 		doTestMaxActiveStreams(HttpClient.create(provider), 1, 1, 1);
 		provider.disposeLater()
 		        .block();
-	}
-
-	@Test
-	void testMaxActiveStreams_1_NoPool() throws Exception {
-		doTestMaxActiveStreams(HttpClient.newConnection(), 1, 1, 1);
 	}
 
 	@Test
@@ -188,9 +188,14 @@ class Http2Tests extends BaseHttpTest {
 	}
 
 	void doTestMaxActiveStreams(HttpClient baseClient, int maxActiveStreams, int expectedOnNext, int expectedOnError) throws Exception {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		doTestMaxActiveStreams(baseClient, maxActiveStreams, 256, 32, expectedOnNext, expectedOnError);
+	}
+
+	void doTestMaxActiveStreams(HttpClient baseClient, int maxActiveStreams, int concurrency, int prefetch, int expectedOnNext, int expectedOnError) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		disposableServer =
 				createServer()
 				          .protocol(HttpProtocol.H2)
@@ -220,7 +225,7 @@ class Http2Tests extends BaseHttpTest {
 				                  .aggregate()
 				                  .asString()
 				                  .materialize(),
-				    256, 32)
+				    concurrency, prefetch)
 				    .collectList()
 				    .doFinally(fin -> latch.countDown())
 				    .block(Duration.ofSeconds(30));
@@ -231,13 +236,13 @@ class Http2Tests extends BaseHttpTest {
 
 		int onNext = 0;
 		int onError = 0;
-		String msg = "Max active streams is reached";
+		String msg = "Pool#acquire(Duration) has been pending for more than the configured timeout of 10ms";
 		for (int i = 0; i < 2; i++) {
 			Signal<? extends String> signal = list.get(i);
 			if (signal.isOnNext()) {
 				onNext++;
 			}
-			else if (signal.getThrowable() instanceof IOException &&
+			else if (signal.getThrowable() instanceof PoolAcquireTimeoutException &&
 					signal.getThrowable().getMessage().contains(msg)) {
 				onError++;
 			}
@@ -248,155 +253,11 @@ class Http2Tests extends BaseHttpTest {
 	}
 
 	@Test
-	void testConcurrentStreamsH2_DefaultPool() {
-		doTestConcurrentStreams(HttpClient.create(), true, HttpProtocol.H2);
-	}
-
-	@Test
-	void testConcurrentStreamsH2_CustomPool() {
-		ConnectionProvider provider = ConnectionProvider.create("testConcurrentStreams", 1);
-		doTestConcurrentStreams(HttpClient.create(provider), true, HttpProtocol.H2);
-		provider.disposeLater()
-		        .block();
-	}
-
-	@Test
-	void testConcurrentStreamsH2_NoPool() {
-		doTestConcurrentStreams(HttpClient.newConnection(), true, HttpProtocol.H2);
-	}
-
-	@Test
-	void testConcurrentStreamsH2C_DefaultPool() {
-		doTestConcurrentStreams(HttpClient.create(), false, HttpProtocol.H2C);
-	}
-
-	@Test
-	void testConcurrentStreamsH2C_CustomPool() {
-		ConnectionProvider provider = ConnectionProvider.create("testConcurrentStreams", 1);
-		doTestConcurrentStreams(HttpClient.create(provider), false, HttpProtocol.H2C);
-		provider.disposeLater()
-		        .block();
-	}
-
-	@Test
-	void testConcurrentStreamsH2C_NoPool() {
-		doTestConcurrentStreams(HttpClient.newConnection(), false, HttpProtocol.H2C);
-	}
-
-	@Test
-	void testConcurrentStreamsH2CUpgrade_DefaultPool() {
-		doTestConcurrentStreams(HttpClient.create(), false, HttpProtocol.H2C, HttpProtocol.HTTP11);
-	}
-
-	@Test
-	void testConcurrentStreamsH2CUpgrade_CustomPool() {
-		ConnectionProvider provider = ConnectionProvider.create("testConcurrentStreamsH2CUpgrade", 1);
-		doTestConcurrentStreams(HttpClient.create(provider), false, HttpProtocol.H2C, HttpProtocol.HTTP11);
-		provider.disposeLater()
-		        .block();
-	}
-
-	@Test
-	void testConcurrentStreamsH2CUpgrade_NoPool() {
-		doTestConcurrentStreams(HttpClient.newConnection(), false, HttpProtocol.H2C, HttpProtocol.HTTP11);
-	}
-
-	@Test
-	void testConcurrentStreamsNegotiatedProtocolHTTP11_DefaultPool() {
-		doTestConcurrentStreams(HttpClient.create(), true, new HttpProtocol[]{HttpProtocol.HTTP11},
-				new HttpProtocol[]{HttpProtocol.H2, HttpProtocol.HTTP11});
-	}
-
-	@Test
-	void testConcurrentStreamsNegotiatedProtocolHTTP11_CustomPool() {
-		ConnectionProvider provider = ConnectionProvider.create("testConcurrentStreamsH2CUpgrade", 1);
-		doTestConcurrentStreams(HttpClient.create(provider), true, new HttpProtocol[]{HttpProtocol.HTTP11},
-				new HttpProtocol[]{HttpProtocol.H2, HttpProtocol.HTTP11});
-		provider.disposeLater()
-		        .block();
-	}
-
-	@Test
-	void testConcurrentStreamsNegotiatedProtocolHTTP11_NoPool() {
-		doTestConcurrentStreams(HttpClient.newConnection(), true, new HttpProtocol[]{HttpProtocol.HTTP11},
-				new HttpProtocol[]{HttpProtocol.H2, HttpProtocol.HTTP11});
-	}
-
-	@Test
-	void testConcurrentStreamsNegotiatedProtocolH2_DefaultPool() {
-		doTestConcurrentStreams(HttpClient.create(), true, new HttpProtocol[]{HttpProtocol.H2},
-				new HttpProtocol[]{HttpProtocol.H2, HttpProtocol.HTTP11});
-	}
-
-	@Test
-	void testConcurrentStreamsNegotiatedProtocolH2_CustomPool() {
-		ConnectionProvider provider = ConnectionProvider.create("testConcurrentStreams", 1);
-		doTestConcurrentStreams(HttpClient.create(provider), true, new HttpProtocol[]{HttpProtocol.H2},
-				new HttpProtocol[]{HttpProtocol.H2, HttpProtocol.HTTP11});
-		provider.disposeLater()
-		        .block();
-	}
-
-	@Test
-	void testConcurrentStreamsNegotiatedProtocolH2_NoPool() {
-		doTestConcurrentStreams(HttpClient.newConnection(), true, new HttpProtocol[]{HttpProtocol.H2},
-				new HttpProtocol[]{HttpProtocol.H2, HttpProtocol.HTTP11});
-	}
-
-	private void doTestConcurrentStreams(HttpClient baseClient, boolean isSecured, HttpProtocol... protocols) {
-		doTestConcurrentStreams(baseClient, isSecured, protocols, protocols);
-	}
-
-	private void doTestConcurrentStreams(HttpClient baseClient, boolean isSecured,
-			HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
-
-		HttpServer httpServer =
-				createServer()
-				          .protocol(serverProtocols)
-				          .handle((req, res) -> res.sendString(Mono.just("test")));
-		if (isSecured) {
-			httpServer = httpServer.secure(spec -> spec.sslContext(serverCtx));
-		}
-
-		disposableServer = httpServer.bindNow();
-
-		HttpClient client;
-		if (isSecured) {
-			client = baseClient.port(disposableServer.port())
-			                   .protocol(clientProtocols)
-			                   .secure(spec -> spec.sslContext(clientCtx));
-		}
-		else {
-			client = baseClient.port(disposableServer.port())
-			                   .protocol(clientProtocols);
-		}
-
-		CountDownLatch latch = new CountDownLatch(1);
-		List<String> responses =
-				Flux.range(0, 10)
-				    .flatMapDelayError(i ->
-				        client.get()
-				              .uri("/")
-				              .responseContent()
-				              .aggregate()
-				              .asString(),
-				        256, 32)
-				        .collectList()
-				        .doFinally(fin -> latch.countDown())
-				        .block(Duration.ofSeconds(30));
-
-		assertThat(responses).isNotNull();
-		assertThat(responses.size()).isEqualTo(10);
-	}
-
-	@Test
 	void testHttp2ForMemoryLeaks() {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 
 		disposableServer =
 				HttpServer.create()
@@ -481,9 +342,10 @@ class Http2Tests extends BaseHttpTest {
 	}
 
 	private void doTestMonoRequestBodySentAsFullRequest(Publisher<? extends ByteBuf> body, int expectedMsg) {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
-		SslContextBuilder clientCtx = SslContextBuilder.forClient()
-		                                               .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 
 		AtomicInteger counter = new AtomicInteger();
 		disposableServer =
@@ -552,7 +414,13 @@ class Http2Tests extends BaseHttpTest {
 				          .handle((req, res) -> res.sendString(Mono.just("testIssue1394")))
 				          .bindNow(Duration.ofSeconds(30));
 
-		SslContextBuilder clientCtx = SslContextBuilder.forClient();
+		ProtocolSslContextSpec clientCtx;
+		if (protocols.length == 1 && protocols[0] == HttpProtocol.HTTP11) {
+			clientCtx = Http11SslContextSpec.forClient();
+		}
+		else {
+			clientCtx = Http2SslContextSpec.forClient();
+		}
 		HttpClient.create()
 		          .protocol(protocols)
 		          .secure(spec -> spec.sslContext(clientCtx))
@@ -629,5 +497,63 @@ class Http2Tests extends BaseHttpTest {
 		          .as(StepVerifier::create)
 		          .expectErrorMessage(expectedMessage)
 		          .verify(Duration.ofSeconds(30));
+	}
+
+	/**
+	 * https://github.com/reactor/reactor-netty/issues/1813
+	 */
+	@Test
+	void testTooManyPermitsReturned_DefaultPool() {
+		testTooManyPermitsReturned(createClient(() -> disposableServer.address()));
+	}
+
+	/**
+	 * https://github.com/reactor/reactor-netty/issues/1813
+	 */
+	@Test
+	void testTooManyPermitsReturned_CustomPool() {
+		ConnectionProvider provider = ConnectionProvider.create("testTooManyPermitsReturned_CustomPool", 2);
+		try {
+			testTooManyPermitsReturned(createClient(provider, () -> disposableServer.address()));
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	private void testTooManyPermitsReturned(HttpClient client) {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+
+		disposableServer =
+				createServer()
+				        .protocol(HttpProtocol.H2)
+				        .secure(sslContextSpec -> sslContextSpec.sslContext(serverCtx))
+				        .handle((req, res) -> res.sendString(Mono.just("testTooManyPermitsReturned")))
+				        .bindNow();
+
+		HttpClient newClient =
+				client.secure(sslContextSpec -> sslContextSpec.sslContext(clientCtx))
+				      .protocol(HttpProtocol.H2);
+
+		IntStream.range(0, 10)
+		         .forEach(index ->
+		             newClient.get()
+		                      .uri("/")
+		                      .responseContent()
+		                      .aggregate()
+		                      .asString()
+		                      .as(StepVerifier::create)
+		                      .expectNext("testTooManyPermitsReturned")
+		                      .expectComplete()
+		                      .verify(Duration.ofSeconds(30)));
+	}
+
+	@Test
+	void testIssue1789() throws Exception {
+		doTestMaxActiveStreams(HttpClient.create(), 1, 1, 1, 2, 0);
 	}
 }

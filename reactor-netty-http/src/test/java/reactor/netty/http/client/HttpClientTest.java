@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.client;
 
 import java.io.IOException;
@@ -34,6 +33,7 @@ import java.nio.file.StandardOpenOption;
 import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -60,10 +60,12 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelId;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
+import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.HttpClientCodec;
@@ -83,6 +85,7 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.resolver.AddressResolverGroup;
+import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import org.junit.jupiter.api.BeforeAll;
@@ -99,6 +102,8 @@ import reactor.netty.Connection;
 import reactor.netty.FutureMono;
 import reactor.netty.NettyPipeline;
 import reactor.netty.SocketUtils;
+import reactor.netty.http.Http11SslContextSpec;
+import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.resources.ConnectionPoolMetrics;
@@ -893,8 +898,8 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	void testIssue473() {
-		SslContextBuilder serverSslContextBuilder =
-				SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey());
+		Http11SslContextSpec serverSslContextBuilder =
+				Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
 		disposableServer =
 				createServer()
 				          .secure(spec -> spec.sslContext(serverSslContextBuilder))
@@ -915,7 +920,7 @@ class HttpClientTest extends BaseHttpTest {
 		disposableServer =
 				createServer()
 				          .secure(spec -> spec.sslContext(
-				                  SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())))
+				              Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())))
 				          .handle((req, res) -> res.sendString(Mono.just("test")))
 				          .bindNow(Duration.ofSeconds(30));
 
@@ -923,8 +928,8 @@ class HttpClientTest extends BaseHttpTest {
 		HttpClient client =
 				createHttpClientForContextWithAddress(provider)
 				        .secure(spec -> spec.sslContext(
-				                SslContextBuilder.forClient()
-				                                 .trustManager(InsecureTrustManagerFactory.INSTANCE)));
+				            Http11SslContextSpec.forClient()
+				                                .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE))));
 
 		AtomicReference<Channel> ch1 = new AtomicReference<>();
 		StepVerifier.create(client.doOnConnected(c -> ch1.set(c.channel()))
@@ -953,9 +958,8 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(
 				client.doOnConnected(c -> ch3.set(c.channel()))
 				      .secure(spec -> spec.sslContext(
-				              SslContextBuilder.forClient()
-				                               .trustManager(InsecureTrustManagerFactory.INSTANCE))
-				                          .defaultConfiguration(SslProvider.DefaultConfigurationType.TCP))
+				          Http11SslContextSpec.forClient()
+				                              .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE))))
 				      .post()
 				      .uri("/3")
 				      .responseContent()
@@ -977,17 +981,20 @@ class HttpClientTest extends BaseHttpTest {
 		disposableServer =
 				createServer()
 				          .secure(spec -> spec.sslContext(
-				                  SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())))
+				              Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())))
 				          .handle((req, res) -> res.sendString(Mono.just("test")))
 				          .bindNow(Duration.ofSeconds(30));
 
-		SslContextBuilder clientSslContextBuilder =
-				SslContextBuilder.forClient()
-				                 .trustManager(InsecureTrustManagerFactory.INSTANCE);
+		Http11SslContextSpec clientSslContextBuilder1 =
+				Http11SslContextSpec.forClient()
+				                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		Http11SslContextSpec clientSslContextBuilder2 =
+				Http11SslContextSpec.forClient()
+				                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		ConnectionProvider provider = ConnectionProvider.create("testIssue407_2", 1);
 		HttpClient client =
 				createHttpClientForContextWithAddress(provider)
-				        .secure(spec -> spec.sslContext(clientSslContextBuilder));
+				        .secure(spec -> spec.sslContext(clientSslContextBuilder1));
 
 		AtomicReference<Channel> ch1 = new AtomicReference<>();
 		StepVerifier.create(client.doOnConnected(c -> ch1.set(c.channel()))
@@ -1015,8 +1022,7 @@ class HttpClientTest extends BaseHttpTest {
 		AtomicReference<Channel> ch3 = new AtomicReference<>();
 		StepVerifier.create(
 				client.doOnConnected(c -> ch3.set(c.channel()))
-				      .secure(spec -> spec.sslContext(clientSslContextBuilder)
-				                          .defaultConfiguration(SslProvider.DefaultConfigurationType.TCP))
+				      .secure(spec -> spec.sslContext(clientSslContextBuilder2))
 				      .post()
 				      .uri("/3")
 				      .responseContent()
@@ -1259,15 +1265,20 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	void testRetryNotEndlessIssue587() throws Exception {
-		doTestRetry(false);
+		doTestRetry(false, true);
+	}
+
+	@Test
+	void testRetryDisabledWhenHeadersSent() throws Exception {
+		doTestRetry(false, false);
 	}
 
 	@Test
 	void testRetryDisabledIssue995() throws Exception {
-		doTestRetry(true);
+		doTestRetry(true, false);
 	}
 
-	private void doTestRetry(boolean retryDisabled) throws Exception {
+	private void doTestRetry(boolean retryDisabled, boolean expectRetry) throws Exception {
 		ExecutorService threadPool = Executors.newCachedThreadPool();
 		int serverPort = SocketUtils.findAvailableTcpPort();
 		ConnectionResetByPeerServer server = new ConnectionResetByPeerServer(serverPort);
@@ -1290,20 +1301,27 @@ class HttpClientTest extends BaseHttpTest {
 		}
 
 		AtomicReference<Throwable> error = new AtomicReference<>();
-		StepVerifier.create(client.get()
+		StepVerifier.create(client.request(HttpMethod.GET)
 		                          .uri("/")
+		                          .send((req, out) -> {
+		                              if (expectRetry) {
+		                                  return Mono.error(new IOException("Connection reset by peer"));
+		                              }
+		                              return out;
+		                          })
 		                          .responseContent())
 		            .expectErrorMatches(t -> {
 		                error.set(t);
 		                return t.getMessage() != null &&
 		                               (t.getMessage().contains("Connection reset by peer") ||
+				                                t.getMessage().contains("readAddress(..)") || // https://github.com/reactor/reactor-netty/issues/1673
 		                                        t.getMessage().contains("Connection prematurely closed BEFORE response"));
 		            })
 		            .verify(Duration.ofSeconds(30));
 
 		int requestCount = 1;
 		int requestErrorCount = 1;
-		if (!retryDisabled && !(error.get() instanceof PrematureCloseException)) {
+		if (expectRetry && !(error.get() instanceof PrematureCloseException)) {
 			requestCount = 2;
 			requestErrorCount = 2;
 		}
@@ -1591,9 +1609,9 @@ class HttpClientTest extends BaseHttpTest {
 	@Test
 	void httpClientResponseConfigInjectAttributes() {
 		AtomicReference<Channel> channelRef = new AtomicReference<>();
-		AtomicReference<Boolean> validate = new AtomicReference<>();
-		AtomicReference<Integer> chunkSize = new AtomicReference<>();
-
+		AtomicBoolean validate = new AtomicBoolean();
+		AtomicInteger chunkSize = new AtomicInteger();
+		AtomicBoolean allowDuplicateContentLengths = new AtomicBoolean();
 		disposableServer =
 				createServer()
 				          .handle((req, resp) -> req.receive()
@@ -1607,7 +1625,8 @@ class HttpClientTest extends BaseHttpTest {
 		                                       .validateHeaders(false)
 		                                       .initialBufferSize(10)
 		                                       .failOnMissingResponse(true)
-		                                       .parseHttpAfterConnectRequest(true))
+		                                       .parseHttpAfterConnectRequest(true)
+		                                       .allowDuplicateContentLengths(true))
 		        .doOnConnected(c -> {
 		                    channelRef.set(c.channel());
 		                    HttpClientCodec codec = c.channel()
@@ -1616,6 +1635,7 @@ class HttpClientTest extends BaseHttpTest {
 		                    HttpObjectDecoder decoder = (HttpObjectDecoder) getValueReflection(codec, "inboundHandler", 1);
 		                    chunkSize.set((Integer) getValueReflection(decoder, "maxChunkSize", 2));
 		                    validate.set((Boolean) getValueReflection(decoder, "validateHeaders", 2));
+		                    allowDuplicateContentLengths.set((Boolean) getValueReflection(decoder, "allowDuplicateContentLengths", 2));
 		                })
 		        .post()
 		        .uri("/")
@@ -1626,9 +1646,9 @@ class HttpClientTest extends BaseHttpTest {
 		        .block(Duration.ofSeconds(30));
 
 		assertThat(channelRef.get()).isNotNull();
-
-		assertThat(chunkSize.get()).as("line length").isEqualTo(789);
-		assertThat(validate.get()).as("validate headers").isFalse();
+		assertThat(chunkSize).as("line length").hasValue(789);
+		assertThat(validate).as("validate headers").isFalse();
+		assertThat(allowDuplicateContentLengths).as("allow duplicate Content-Length").isTrue();
 	}
 
 	private Object getValueReflection(Object obj, String fieldName, int superLevel) {
@@ -1739,7 +1759,7 @@ class HttpClientTest extends BaseHttpTest {
 
 		if (ssl) {
 			server = server.secure(spec -> spec.sslContext(
-					SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())));
+					Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())));
 		}
 
 		disposableServer = server.bindNow();
@@ -1747,8 +1767,9 @@ class HttpClientTest extends BaseHttpTest {
 		HttpClient client = createHttpClientForContextWithAddress();
 		if (ssl) {
 			client = client.secure(spec ->
-					spec.sslContext(SslContextBuilder.forClient()
-					                                 .trustManager(InsecureTrustManagerFactory.INSTANCE)));
+					spec.sslContext(
+							Http11SslContextSpec.forClient()
+							                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE))));
 		}
 
 		StepVerifier.create(
@@ -1934,60 +1955,180 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	void testConnectionLifeTimeFixedPool() throws Exception {
+	void testConnectionLifeTimeFixedPoolHttp1() throws Exception {
 		ConnectionProvider provider =
-				ConnectionProvider.builder("testConnectionLifeTimeFixedPool")
+				ConnectionProvider.builder("testConnectionLifeTimeFixedPoolHttp1")
 				                  .maxConnections(1)
 				                  .pendingAcquireTimeout(Duration.ofMillis(100))
 				                  .maxLifeTime(Duration.ofMillis(30))
 				                  .build();
-		ChannelId[] ids = doTestConnectionLifeTime(provider);
-		assertThat(ids[0]).isNotEqualTo(ids[1]);
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(createServer(),
+					createClient(provider, () -> disposableServer.address()));
+			assertThat(ids[0]).isNotEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
 	}
 
 	@Test
-	void testConnectionLifeTimeElasticPool() throws Exception {
+	void testConnectionLifeTimeFixedPoolHttp2_1() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		ConnectionProvider provider =
-				ConnectionProvider.builder("testConnectionNoLifeTimeElasticPool")
+				ConnectionProvider.builder("testConnectionLifeTimeFixedPoolHttp2_1")
+				                  .maxConnections(1)
+				                  .pendingAcquireTimeout(Duration.ofMillis(100))
+				                  .maxLifeTime(Duration.ofMillis(30))
+				                  .build();
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(
+					createServer().protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
+					createClient(provider, () -> disposableServer.address()).protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)));
+			assertThat(ids[0]).isNotEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	@Test
+	void testConnectionLifeTimeElasticPoolHttp1() throws Exception {
+		ConnectionProvider provider =
+				ConnectionProvider.builder("testConnectionLifeTimeElasticPoolHttp1")
 				                  .maxConnections(Integer.MAX_VALUE)
 				                  .maxLifeTime(Duration.ofMillis(30))
 				                  .build();
-		ChannelId[] ids = doTestConnectionLifeTime(provider);
-		assertThat(ids[0]).isNotEqualTo(ids[1]);
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(createServer(),
+					createClient(provider, () -> disposableServer.address()));
+			assertThat(ids[0]).isNotEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
 	}
 
 	@Test
-	void testConnectionNoLifeTimeFixedPool() throws Exception {
+	void testConnectionLifeTimeElasticPoolHttp2() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		ConnectionProvider provider =
-				ConnectionProvider.builder("testConnectionNoLifeTimeFixedPool")
+				ConnectionProvider.builder("testConnectionLifeTimeElasticPoolHttp2")
+				                  .maxConnections(Integer.MAX_VALUE)
+				                  .maxLifeTime(Duration.ofMillis(30))
+				                  .build();
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(
+					createServer().protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
+					createClient(provider, () -> disposableServer.address()).protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)));
+			assertThat(ids[0]).isNotEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	@Test
+	void testConnectionNoLifeTimeFixedPoolHttp1() throws Exception {
+		ConnectionProvider provider =
+				ConnectionProvider.builder("testConnectionNoLifeTimeFixedPoolHttp1")
 				                  .maxConnections(1)
 				                  .pendingAcquireTimeout(Duration.ofMillis(100))
 				                  .build();
-		ChannelId[] ids = doTestConnectionLifeTime(provider);
-		assertThat(ids[0]).isEqualTo(ids[1]);
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(createServer(),
+					createClient(provider, () -> disposableServer.address()));
+			assertThat(ids[0]).isEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
 	}
 
 	@Test
-	void testConnectionNoLifeTimeElasticPool() throws Exception {
+	void testConnectionNoLifeTimeFixedPoolHttp2() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
 		ConnectionProvider provider =
-				ConnectionProvider.create("testConnectionNoLifeTimeElasticPool", Integer.MAX_VALUE);
-		ChannelId[] ids = doTestConnectionLifeTime(provider);
-		assertThat(ids[0]).isEqualTo(ids[1]);
+				ConnectionProvider.builder("testConnectionNoLifeTimeFixedPoolHttp2")
+				                  .maxConnections(1)
+				                  .pendingAcquireTimeout(Duration.ofMillis(100))
+				                  .build();
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(
+					createServer().protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
+					createClient(provider, () -> disposableServer.address()).protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)));
+			assertThat(ids[0]).isEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
 	}
 
-	private ChannelId[] doTestConnectionLifeTime(ConnectionProvider provider) throws Exception {
-		disposableServer =
-				createServer()
-				          .handle((req, resp) ->
-				              resp.sendObject(ByteBufFlux.fromString(Mono.delay(Duration.ofMillis(30))
-				                                                         .map(Objects::toString))))
-				          .bindNow();
+	@Test
+	void testConnectionNoLifeTimeElasticPoolHttp1() throws Exception {
+		ConnectionProvider provider =
+				ConnectionProvider.create("testConnectionNoLifeTimeElasticPoolHttp1", Integer.MAX_VALUE);
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(createServer(),
+					createClient(provider, () -> disposableServer.address()));
+			assertThat(ids[0]).isEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
 
-		Flux<ChannelId> id = createHttpClientForContextWithAddress(provider)
-		                       .get()
-		                       .uri("/")
-		                       .responseConnection((res, conn) -> Mono.just(conn.channel().id())
-		                                                              .delayUntil(ch -> conn.inbound().receive()));
+	@Test
+	void testConnectionNoLifeTimeElasticPoolHttp2() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		ConnectionProvider provider =
+				ConnectionProvider.create("testConnectionNoLifeTimeElasticPoolHttp2", Integer.MAX_VALUE);
+		try {
+			ChannelId[] ids = doTestConnectionLifeTime(
+					createServer().protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(serverCtx)),
+					createClient(provider, () -> disposableServer.address()).protocol(HttpProtocol.H2).secure(spec -> spec.sslContext(clientCtx)));
+			assertThat(ids[0]).isEqualTo(ids[1]);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	private ChannelId[] doTestConnectionLifeTime(HttpServer server, HttpClient client) throws Exception {
+		disposableServer =
+				server.handle((req, resp) ->
+				          resp.sendObject(ByteBufFlux.fromString(Mono.delay(Duration.ofMillis(30))
+				                                                     .map(Objects::toString))))
+				      .bindNow();
+
+		Flux<ChannelId> id = client.get()
+		                           .uri("/")
+		                           .responseConnection((res, conn) -> {
+		                               Channel channel = !client.configuration().checkProtocol(HttpClientConfig.h2) ?
+		                                   conn.channel() : conn.channel().parent();
+		                               return Mono.just(channel.id())
+		                                          .delayUntil(ch -> conn.inbound().receive());
+		                           });
 
 		ChannelId id1 = id.blockLast(Duration.ofSeconds(30));
 		Thread.sleep(10);
@@ -1996,10 +2137,62 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(id1).isNotNull();
 		assertThat(id2).isNotNull();
 
-		provider.dispose();
 		return new ChannelId[] {id1, id2};
 	}
 
+	@Test
+	void testConnectionLifeTimeFixedPoolHttp2_2() {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+
+		disposableServer =
+				createServer()
+				        .protocol(HttpProtocol.H2)
+				        .secure(spec -> spec.sslContext(serverCtx))
+				        .http2Settings(setting -> setting.maxConcurrentStreams(2))
+				        .handle((req, resp) ->
+				            resp.sendObject(ByteBufFlux.fromString(Mono.delay(Duration.ofMillis(30))
+				                                                       .map(Objects::toString))))
+				        .bindNow();
+
+		ConnectionProvider provider =
+				ConnectionProvider.builder("testConnectionLifeTimeFixedPoolHttp2_2")
+				                  .maxConnections(1)
+				                  .maxLifeTime(Duration.ofMillis(30))
+				                  .build();
+
+		HttpClient client =
+				createClient(provider, () -> disposableServer.address())
+				        .protocol(HttpProtocol.H2)
+				        .secure(spec -> spec.sslContext(clientCtx));
+
+		Flux<ChannelId> id = client.get()
+		                           .uri("/")
+		                           .responseConnection((res, conn) ->
+		                               Mono.just(conn.channel().parent().id())
+		                                   .delayUntil(ch -> conn.inbound().receive()));
+		try {
+			//warmup
+			id.blockLast(Duration.ofSeconds(5));
+
+			List<ChannelId> ids =
+					Flux.range(0, 3)
+					    .flatMap(i -> id)
+					    .collectList()
+					    .block(Duration.ofSeconds(5));
+
+			assertThat(ids).isNotNull().hasSize(3);
+
+			assertThat(ids.get(0)).isEqualTo(ids.get(1));
+			assertThat(ids.get(0)).isNotEqualTo(ids.get(2));
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
 
 	@Test
 	void testResourceUrlSetInResponse() {
@@ -2647,16 +2840,26 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	void testSameNameResolver_WithConnectionPool() {
-		doTestSameNameResolver(true);
+	void testSameNameResolver_WithConnectionPoolNoMetrics() {
+		doTestSameNameResolver(true, false);
 	}
 
 	@Test
-	void testSameNameResolver_NoConnectionPool() {
-		doTestSameNameResolver(false);
+	void testSameNameResolver_WithConnectionPoolWithMetrics() {
+		doTestSameNameResolver(true, true);
 	}
 
-	private void doTestSameNameResolver(boolean useConnectionPool) {
+	@Test
+	void testSameNameResolver_NoConnectionPoolNoMetrics() {
+		doTestSameNameResolver(false, false);
+	}
+
+	@Test
+	void testSameNameResolver_NoConnectionPoolWithMetrics() {
+		doTestSameNameResolver(false, true);
+	}
+
+	private void doTestSameNameResolver(boolean useConnectionPool, boolean enableMetrics) {
 		disposableServer =
 				createServer()
 				        .handle((req, res) -> res.sendString(Mono.just("doTestSameNameResolver")))
@@ -2666,8 +2869,10 @@ class HttpClientTest extends BaseHttpTest {
 		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
 		Flux.range(0, 2)
 		    .flatMap(i -> {
+		        // HttpClient creation multiple times is deliberate
 		        HttpClient client = useConnectionPool ? createClient(port) : createClientNewConnection(port);
-		        return client.doOnConnect(config -> resolvers.get().add(config.resolverInternal()))
+		        return client.metrics(enableMetrics, Function.identity())
+		                     .doOnConnect(config -> resolvers.get().add(config.resolverInternal()))
 		                     .get()
 		                     .uri("/")
 		                     .responseContent()
@@ -2681,5 +2886,248 @@ class HttpClientTest extends BaseHttpTest {
 
 		assertThat(resolvers.get()).isNotNull();
 		assertThat(resolvers.get().get(0)).isSameAs(resolvers.get().get(1));
+	}
+
+	@Test
+	void testIssue1547() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(Mono.just("testIssue1547")))
+				        .bindNow();
+
+		NioEventLoopGroup loop = new NioEventLoopGroup(1);
+		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
+		AtomicReference<List<AddressResolverGroup<?>>> resolversInternal = new AtomicReference<>(new ArrayList<>());
+		try {
+			HttpClient client = createClientNewConnection(disposableServer.port()).runOn(useNative -> loop);
+
+			Flux.range(0, 2)
+			    .flatMap(i -> client.metrics(true, Function.identity())
+			                        .doOnConnect(config -> {
+			                            resolvers.get().add(config.resolver());
+			                            resolversInternal.get().add(config.resolverInternal());
+			                        })
+			                       .get()
+			                       .uri("/")
+			                       .responseContent()
+			                       .aggregate()
+			                       .asString())
+			    .as(StepVerifier::create)
+			    .expectNext("testIssue1547", "testIssue1547")
+			    .expectComplete()
+			    .verify(Duration.ofSeconds(5));
+
+			assertThat(resolvers.get()).isNotNull();
+			assertThat(resolvers.get().get(0))
+					.isSameAs(resolvers.get().get(1))
+					.isInstanceOf(DnsAddressResolverGroup.class);
+
+			assertThat(resolversInternal.get()).isNotNull();
+			assertThat(resolversInternal.get().get(0)).isSameAs(resolversInternal.get().get(1));
+			assertThat(resolversInternal.get().get(0).getClass().getSimpleName()).isEqualTo("AddressResolverGroupMetrics");
+		}
+		finally {
+			// Closing the executor cleans the AddressResolverGroup internal structures and closes the resolver
+			loop.shutdownGracefully()
+			    .get(500, TimeUnit.SECONDS);
+		}
+
+		assertThatExceptionOfType(IllegalStateException.class)
+				.isThrownBy(() ->
+						resolvers.get()
+						         .get(0)
+						         .getResolver(loop.next()))
+				.withMessage("executor not accepting a task");
+
+		assertThatExceptionOfType(IllegalStateException.class)
+				.isThrownBy(() ->
+						resolversInternal.get()
+						                 .get(0)
+						                 .getResolver(loop.next()))
+				.withMessage("executor not accepting a task");
+	}
+
+	@Test
+	void testCustomUserAgentHeaderPreserved() {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(Mono.just(req.requestHeaders()
+				                                                          .get(HttpHeaderNames.USER_AGENT, ""))))
+				        .bindNow();
+
+		HttpClient client = createClient(disposableServer.port());
+		Flux.just("User-Agent", "user-agent")
+		    .flatMap(s -> client.headers(h -> h.set(s, "custom"))
+		                        .get()
+		                        .responseContent()
+		                        .aggregate()
+		                        .asString())
+		    .collectList()
+		    .as(StepVerifier::create)
+		    .expectNext(Arrays.asList("custom", "custom"))
+		    .expectComplete()
+		    .verify(Duration.ofSeconds(5));
+	}
+
+	@Test
+	void testCustomHandlerAddedOnChannelInitAlwaysAvailable() {
+		doTestCustomHandlerAddedOnCallbackAlwaysAvailable(
+				client -> client.doOnChannelInit((observer, channel, address) ->
+						Connection.from(channel).addHandlerLast("custom", new ChannelDuplexHandler())));
+	}
+
+	@Test
+	void testCustomHandlerAddedOnChannelConnectedAlwaysAvailable() {
+		doTestCustomHandlerAddedOnCallbackAlwaysAvailable(
+				client -> client.doOnConnected(conn -> conn.addHandlerLast("custom", new ChannelDuplexHandler())));
+	}
+
+	private void doTestCustomHandlerAddedOnCallbackAlwaysAvailable(Function<HttpClient, HttpClient> customizer) {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(Mono.just("testCustomHandlerAddedOnCallback")))
+				        .bindNow();
+
+		ConnectionProvider provider = ConnectionProvider.create("testCustomHandlerAddedOnCallback", 1);
+		AtomicBoolean handlerExists = new AtomicBoolean();
+		HttpClient client = customizer.apply(
+				createHttpClientForContextWithPort(provider)
+				        .doOnRequest((req, conn) -> handlerExists.set(conn.channel().pipeline().get("custom") != null)));
+		try {
+			Flux.range(0, 2)
+			    .flatMap(i -> client.get()
+			                        .uri("/")
+			                        .responseContent()
+			                        .aggregate()
+			                        .asString())
+			    .collectList()
+			    .as(StepVerifier::create)
+			    .expectNext(Arrays.asList("testCustomHandlerAddedOnCallback", "testCustomHandlerAddedOnCallback"))
+			    .expectComplete()
+			    .verify(Duration.ofSeconds(5));
+
+			assertThat(handlerExists).isTrue();
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	@Test
+	void testIssue1697() {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(Mono.just("testIssue1697")))
+				        .bindNow();
+
+		AtomicBoolean onRequest = new AtomicBoolean();
+		AtomicBoolean onResponse = new AtomicBoolean();
+		AtomicBoolean onDisconnected = new AtomicBoolean();
+		HttpClient client =
+				createHttpClientForContextWithAddress()
+				        .doOnRequest((req, conn) -> {
+				            onRequest.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null);
+				        })
+				        .doOnResponse((req, conn) -> {
+				            onResponse.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null);
+				        })
+				        .doOnDisconnected(conn ->
+				            onDisconnected.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null))
+						.responseTimeout(Duration.ofMillis(100));
+
+		doTestIssue1697(client, true, onRequest, onResponse, onDisconnected);
+		doTestIssue1697(client.responseTimeout(null), false, onRequest, onResponse, onDisconnected);
+	}
+
+	private void doTestIssue1697(HttpClient client, boolean hasTimeout, AtomicBoolean onRequest,
+			AtomicBoolean onResponse, AtomicBoolean onDisconnected) {
+		String response =
+				client.post()
+				      .uri("/")
+				      .responseContent()
+				      .aggregate()
+				      .asString()
+				      .block(Duration.ofSeconds(5));
+
+		assertThat(response).isEqualTo("testIssue1697");
+		assertThat(onRequest.get()).isFalse();
+		if (hasTimeout) {
+			assertThat(onResponse.get()).isTrue();
+		}
+		else {
+			assertThat(onResponse.get()).isFalse();
+		}
+		assertThat(onDisconnected.get()).isFalse();
+	}
+
+	@Test
+	public void testSharedNameResolver_SharedClientWithConnectionPool() throws InterruptedException {
+		doTestSharedNameResolver(HttpClient.create(), true);
+	}
+
+	@Test
+	public void testSharedNameResolver_SharedClientNoConnectionPool() throws InterruptedException {
+		doTestSharedNameResolver(HttpClient.newConnection(), true);
+	}
+
+	@Test
+	public void testSharedNameResolver_NotSharedClientWithConnectionPool() throws InterruptedException {
+		doTestSharedNameResolver(HttpClient.create(), false);
+	}
+
+	@Test
+	public void testSharedNameResolver_NotSharedClientNoConnectionPool() throws InterruptedException {
+		doTestSharedNameResolver(HttpClient.newConnection(), false);
+	}
+
+	private void doTestSharedNameResolver(HttpClient client, boolean sharedClient) throws InterruptedException {
+		disposableServer =
+				HttpServer.create()
+				          .port(0)
+				          .handle((req, res) -> res.sendString(Mono.just("testNoOpenedFileDescriptors")))
+				          .bindNow(Duration.ofSeconds(30));
+
+		LoopResources loop = LoopResources.create("doTestSharedNameResolver", 4, true);
+		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
+		try {
+			int count = 8;
+			CountDownLatch latch = new CountDownLatch(count);
+			HttpClient localClient = null;
+			if (sharedClient) {
+				localClient = client.runOn(loop)
+				                    .port(disposableServer.port())
+				                    .doOnConnect(config -> resolvers.get().add(config.resolver()))
+				                    .doOnConnected(conn ->
+				                            conn.onTerminate()
+				                                .subscribe(null, t -> latch.countDown(), latch::countDown));
+			}
+			for (int i = 0; i < count; i++) {
+				if (!sharedClient) {
+					localClient = client.runOn(loop)
+					                    .port(disposableServer.port())
+					                    .doOnConnect(config -> resolvers.get().add(config.resolver()))
+					                    .doOnConnected(conn ->
+					                            conn.onTerminate()
+					                                .subscribe(null, t -> latch.countDown(), latch::countDown));
+				}
+				localClient.get()
+				           .uri("/")
+				           .responseContent()
+				           .aggregate()
+				           .asString()
+				           .subscribe();
+			}
+
+			assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+
+			assertThat(resolvers.get().size()).isEqualTo(count);
+			AddressResolverGroup<?> resolver = resolvers.get().get(0);
+			assertThat(resolvers.get()).allMatch(addressResolverGroup -> addressResolverGroup == resolver);
+		}
+		finally {
+			loop.disposeLater()
+			    .block();
+		}
 	}
 }

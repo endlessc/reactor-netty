@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -18,6 +18,8 @@ package reactor.netty.transport;
 import java.net.SocketAddress;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -29,10 +31,12 @@ import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.unix.DomainSocketChannel;
 import io.netty.resolver.AddressResolverGroup;
+import io.netty.resolver.dns.DnsAddressResolverGroup;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.resources.ConnectionProvider;
+import reactor.netty.resources.LoopResources;
 import reactor.util.annotation.Nullable;
 
 /**
@@ -211,19 +215,30 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		return loopResources().onClient(isPreferNative());
 	}
 
-	protected void proxyProvider(ProxyProvider proxyProvider) {
+	protected void proxyProvider(@Nullable ProxyProvider proxyProvider) {
 		this.proxyProvider = proxyProvider;
 	}
 
 	protected AddressResolverGroup<?> resolverInternal() {
 		AddressResolverGroup<?> resolverGroup = resolver != null ? resolver : defaultAddressResolverGroup();
 		if (metricsRecorder != null) {
-			return new AddressResolverGroupMetrics<>(resolverGroup,
-					Objects.requireNonNull(metricsRecorder.get(), "Metrics recorder supplier returned null"));
+			return AddressResolverGroupMetrics.getOrCreate(resolverGroup, metricsRecorder);
 		}
 		else {
 			return resolverGroup;
 		}
+	}
+
+	static final ConcurrentMap<Integer, DnsAddressResolverGroup> RESOLVERS_CACHE = new ConcurrentHashMap<>();
+
+	static DnsAddressResolverGroup getOrCreateResolver(
+			NameResolverProvider nameResolverProvider,
+			LoopResources loopResources,
+			boolean preferNative) {
+		int hash = Objects.hash(nameResolverProvider, loopResources, preferNative);
+		DnsAddressResolverGroup resolverGroup = RESOLVERS_CACHE.get(hash);
+		return resolverGroup != null ? resolverGroup : RESOLVERS_CACHE.computeIfAbsent(hash,
+				key -> nameResolverProvider.newNameResolverGroup(loopResources, preferNative));
 	}
 
 	static final NameResolverProvider DEFAULT_NAME_RESOLVER_PROVIDER = NameResolverProvider.builder().build();

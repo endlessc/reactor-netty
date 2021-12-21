@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,12 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import org.gradle.util.VersionNumber
+
 if (project.name == 'reactor-netty-examples') {
 	return
 }
 
 apply plugin: 'maven-publish'
-apply plugin: 'com.jfrog.artifactory'
+//we also conditionally apply artifactory and signing plugins below
 
 task sourcesJar(type: Jar) {
 	archiveClassifier.set('sources')
@@ -30,12 +32,60 @@ task javadocJar(type: Jar) {
 	from javadoc
 }
 
+static def qualifyVersion(String v) {
+	def versionNumber = VersionNumber.parse(v)
+
+	if (versionNumber == VersionNumber.UNKNOWN) return "BAD";
+
+	if (versionNumber.qualifier == null || versionNumber.qualifier.size() == 0) return "RELEASE" //new scheme
+	if (versionNumber.qualifier == "RELEASE") return "RELEASE" //old scheme
+	if (versionNumber.qualifier.matches("(?:M|RC)\\d+")) return "MILESTONE"
+	if (versionNumber.qualifier == "SNAPSHOT" || versionNumber.qualifier == "BUILD-SNAPSHOT") return "SNAPSHOT"
+
+	return "BAD"
+}
+
+task qualifyVersionGha() {
+	doLast {
+		def versionType = qualifyVersion("$version")
+		if (versionType == "BAD") {
+			println "::error ::Unable to parse $version to a VersionNumber with recognizable qualifier"
+			throw new TaskExecutionException(tasks.getByName("qualifyVersionGha"), new IllegalArgumentException("Unable to parse $version to a VersionNumber with recognizable qualifier"))
+		}
+
+		if (project.name != 'reactor-netty') {
+			return
+		}
+		println "::set-output name=versionType::$versionType"
+		println "::set-output name=fullVersion::$version"
+	}
+}
+
 publishing {
+	repositories {
+		maven {
+			name = "mock"
+			url = "${rootProject.buildDir}/mockRepo"
+		}
+		if (qualifyVersion("$version") == "RELEASE") {
+			maven {
+				name = "sonatype"
+				url = "https://s01.oss.sonatype.org/service/local/staging/deploy/maven2"
+				credentials {
+					username findProperty("sonatypeUsername")
+					password findProperty("sonatypePassword")
+				}
+			}
+		}
+	}
+
 	publications {
 		mavenJava(MavenPublication) {
 			from components.java
 			artifact sourcesJar
 			artifact javadocJar
+
+			//consider adding extra artifacts here, conditionally on submodule's name and perhaps in an afterEvaluate block
 
 			pom {
 				afterEvaluate {
@@ -63,19 +113,14 @@ publishing {
 				}
 				developers {
 					developer {
-						id = 'smaldini'
-						name = 'Stephane Maldini'
-						email = 'smaldini@pivotal.io'
-					}
-					developer {
 						id = 'simonbasle'
 						name = 'Simon Baslé'
-						email = 'sbasle@pivotal.io'
+						email = 'sbasle@vmware.com'
 					}
 					developer {
 						id = 'violetagg'
 						name = 'Violeta Georgieva'
-						email = 'vgeorgieva@pivotal.io'
+						email = 'violetag@vmware.com'
 					}
 				}
 				issueManagement {
@@ -84,17 +129,6 @@ publishing {
 				}
 
 				withXml {
-					//set optional true for compileOnly dependencies, which are not in there by default
-					asNode().dependencies[0].each { node ->
-						def group = node.groupId.text()
-						def artifact = node.artifactId.text()
-						def version = node.version.text()
-						def isOptional = project.configurations.optional.allDependencies.any { dep -> dep.group == group && dep.name == artifact }
-						if (isOptional) {
-							node.appendNode('optional', true)
-							println "$group:$artifact:$version has been marked as optional in generated pom"
-						}
-					}
 					//groovy magic incantation to sort dependencies alphabetically (scope/group/name..)
 					def sorted = asNode().dependencies[0].children().collect().sort { it.scope.text() + it.groupId.text() + it.artifactId.text() }
 					asNode().dependencies[0].children().with { deps ->
@@ -107,8 +141,27 @@ publishing {
 	}
 }
 
-artifactoryPublish {
-	//don't activate the onlyIf clause below yet, so that Bamboo builds will publish stuff...
-	//onlyIf { project.hasProperty("artifactory_publish_password") }
-	publications(publishing.publications.mavenJava)
+if (rootProject.hasProperty("artifactory_publish_password")) {
+	apply plugin: "com.jfrog.artifactory"
+
+	artifactoryPublish {
+		publications(publishing.publications.mavenJava)
+	}
+}
+
+if (qualifyVersion("$version") in ["RELEASE", "MILESTONE"] || rootProject.hasProperty("forceSigning")) {
+	apply plugin: 'signing'
+
+	signing {
+		//requiring signature if there is a publish task that is not to MavenLocal
+		required { gradle.taskGraph.allTasks.any { it.name.toLowerCase().contains("publish") && !it.name.contains("MavenLocal") } }
+		def signingKey = findProperty("signingKey")
+		def signingPassword = findProperty("signingPassword")
+
+		useInMemoryPgpKeys(signingKey, signingPassword)
+
+		afterEvaluate {
+			sign publishing.publications.mavenJava
+		}
+	}
 }

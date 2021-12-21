@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.resources;
 
 import io.netty.resolver.AddressResolverGroup;
@@ -47,7 +46,7 @@ public interface ConnectionProvider extends Disposable {
 
 	/**
 	 * Default max connections. Fallback to
-	 * available number of processors (but with a minimum value of 16)
+	 * 2 * available number of processors (but with a minimum value of 16)
 	 */
 	int DEFAULT_POOL_MAX_CONNECTIONS =
 			Integer.parseInt(System.getProperty(ReactorNetty.POOL_MAX_CONNECTIONS,
@@ -233,6 +232,28 @@ public interface ConnectionProvider extends Disposable {
 	}
 
 	/**
+	 * Returns a builder to mutate properties of this {@link ConnectionProvider}
+	 *
+	 * @return a builder to mutate properties of this {@link ConnectionProvider}
+	 * @since 1.0.14
+	 */
+	@Nullable
+	default Builder mutate() {
+		return null;
+	}
+
+	/**
+	 * Returns {@link ConnectionProvider} name used for metrics
+	 *
+	 * @return {@link ConnectionProvider} name used for metrics
+	 * @since 1.0.14
+	 */
+	@Nullable
+	default String name() {
+		return null;
+	}
+
+	/**
 	 * Build a {@link ConnectionProvider} to cache and reuse a fixed maximum number of
 	 * {@link Connection}. Further connections will be pending acquisition depending on
 	 * pendingAcquireTime. The maximum number of connections is for the connections in a single
@@ -243,7 +264,12 @@ public interface ConnectionProvider extends Disposable {
 	 */
 	final class Builder extends ConnectionPoolSpec<Builder> {
 
+		static final Duration DISPOSE_INACTIVE_POOLS_IN_BACKGROUND_DISABLED = Duration.ZERO;
+
 		String name;
+		Duration inactivePoolDisposeInterval = DISPOSE_INACTIVE_POOLS_IN_BACKGROUND_DISABLED;
+		Duration poolInactivity;
+		Duration disposeTimeout;
 		final Map<SocketAddress, ConnectionPoolSpec<?>> confPerRemoteHost = new HashMap<>();
 
 		/**
@@ -256,6 +282,15 @@ public interface ConnectionProvider extends Disposable {
 			name(name);
 		}
 
+		Builder(Builder copy) {
+			super(copy);
+			this.name = copy.name;
+			this.inactivePoolDisposeInterval = copy.inactivePoolDisposeInterval;
+			this.poolInactivity = copy.poolInactivity;
+			this.disposeTimeout = copy.disposeTimeout;
+			copy.confPerRemoteHost.forEach((address, spec) -> this.confPerRemoteHost.put(address, new ConnectionPoolSpec<>(spec)));
+		}
+
 		/**
 		 * {@link ConnectionProvider} name is used for metrics
 		 *
@@ -266,6 +301,44 @@ public interface ConnectionProvider extends Disposable {
 		public final Builder name(String name) {
 			this.name = Objects.requireNonNull(name, "name");
 			return this;
+		}
+
+		/**
+		 * Set the options to use for configuring {@link ConnectionProvider} background disposal for inactive connection pools.
+		 * When this option is enabled, the connection pools are regularly checked whether they are empty and inactive
+		 * for a specified time, thus applicable for disposal.
+		 * Default to {@link #DISPOSE_INACTIVE_POOLS_IN_BACKGROUND_DISABLED} - the background disposal is disabled.
+		 * Providing a {@code disposeInterval} of {@link Duration#ZERO zero} means the background disposal is disabled.
+		 *
+		 * @param disposeInterval specifies the interval to be used for checking the connection pool inactivity, (resolution: ms)
+		 * @param poolInactivity specifies the duration after which an empty pool with
+		 * no recorded interactions is considered inactive (resolution: seconds)
+		 * @return {@literal this}
+		 * @since 1.0.7
+		 */
+		public final Builder disposeInactivePoolsInBackground(Duration disposeInterval, Duration poolInactivity) {
+			this.inactivePoolDisposeInterval = Objects.requireNonNull(disposeInterval, "disposeInterval");
+			this.poolInactivity = Objects.requireNonNull(poolInactivity, "poolInactivity");
+			return get();
+		}
+
+		/**
+		 * When {@link ConnectionProvider#dispose()} or {@link ConnectionProvider#disposeLater()} is called,
+		 * trigger a {@code graceful shutdown} for the connection pools, with this grace period timeout.
+		 * From there on, all calls for acquiring a connection will fail fast with an exception.
+		 * However, for the provided {@link Duration}, pending acquires will get a chance to be served.
+		 * <p><strong>Note:</strong> The rejection of new acquires and the grace timer start immediately,
+		 * irrespective of subscription to the {@link Mono} returned by {@link ConnectionProvider#disposeLater()}.
+		 * Subsequent calls return the same {@link Mono}, effectively getting notifications from the first graceful
+		 * shutdown call and ignoring subsequently provided timeouts.
+		 *
+		 * @param timeout the maximum {@link Duration} for graceful shutdown before full shutdown is forced (resolution: ms)
+		 * @return {@literal this}
+		 * @since 1.0.12
+		 */
+		public final Builder disposeTimeout(Duration timeout) {
+			this.disposeTimeout = Objects.requireNonNull(timeout, "disposeTimeout");
+			return get();
 		}
 
 		/**
@@ -325,6 +398,18 @@ public interface ConnectionProvider extends Disposable {
 			if (DEFAULT_POOL_MAX_LIFE_TIME > -1) {
 				maxLifeTime(Duration.ofMillis(DEFAULT_POOL_MAX_LIFE_TIME));
 			}
+		}
+
+		ConnectionPoolSpec(ConnectionPoolSpec<SPEC> copy) {
+			this.evictionInterval = copy.evictionInterval;
+			this.maxConnections = copy.maxConnections;
+			this.pendingAcquireMaxCount = copy.pendingAcquireMaxCount;
+			this.pendingAcquireTimeout = copy.pendingAcquireTimeout;
+			this.maxIdleTime = copy.maxIdleTime;
+			this.maxLifeTime = copy.maxLifeTime;
+			this.metricsEnabled = copy.metricsEnabled;
+			this.leasingStrategy = copy.leasingStrategy;
+			this.registrar = copy.registrar;
 		}
 
 		/**

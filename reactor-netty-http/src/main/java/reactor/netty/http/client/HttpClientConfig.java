@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.client;
 
 import java.net.SocketAddress;
@@ -22,6 +21,7 @@ import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
@@ -31,6 +31,7 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -58,6 +59,7 @@ import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.SslHandler;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.concurrent.Future;
 import org.reactivestreams.Publisher;
@@ -106,7 +108,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 	@Override
 	public int channelHash() {
-		return Objects.hash(super.channelHash(), acceptGzip, decoder, _protocols, sslProvider);
+		return Objects.hash(super.channelHash(), acceptGzip, decoder, _protocols, sslProvider, uriTagValue);
 	}
 
 	@Override
@@ -523,7 +525,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			boolean acceptGzip,
 			HttpResponseDecoderSpec decoder,
 			Http2Settings http2Settings,
-			@Nullable Supplier<? extends ChannelMetricsRecorder> metricsRecorder,
+			@Nullable ChannelMetricsRecorder metricsRecorder,
 			ConnectionObserver observer,
 			ChannelOperations.OnSetup opsFactory,
 			@Nullable Function<String, String> uriTagValue) {
@@ -535,7 +537,8 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 						decoder.failOnMissingResponse,
 						decoder.validateHeaders(),
 						decoder.initialBufferSize(),
-						decoder.parseHttpAfterConnectRequest);
+						decoder.parseHttpAfterConnectRequest,
+						decoder.allowDuplicateContentLengths());
 
 		Http2FrameCodecBuilder http2FrameCodecBuilder =
 				Http2FrameCodecBuilder.forClient()
@@ -563,11 +566,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		}
 
 		if (metricsRecorder != null) {
-			ChannelMetricsRecorder channelMetricsRecorder = metricsRecorder.get();
-			if (channelMetricsRecorder instanceof HttpClientMetricsRecorder) {
-				p.addBefore(NettyPipeline.ReactiveBridge,
-						NettyPipeline.HttpMetricsHandler,
-						new HttpClientMetricsHandler((HttpClientMetricsRecorder) channelMetricsRecorder, uriTagValue));
+			if (metricsRecorder instanceof HttpClientMetricsRecorder) {
+				ChannelHandler handler = metricsRecorder instanceof ContextAwareHttpClientMetricsRecorder ?
+						new ContextAwareHttpClientMetricsHandler((ContextAwareHttpClientMetricsRecorder) metricsRecorder, uriTagValue) :
+						new HttpClientMetricsHandler((HttpClientMetricsRecorder) metricsRecorder, uriTagValue);
+				p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpMetricsHandler, handler);
 			}
 		}
 
@@ -576,7 +579,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	static void configureHttp11Pipeline(ChannelPipeline p,
 			boolean acceptGzip,
 			HttpResponseDecoderSpec decoder,
-			@Nullable Supplier<? extends ChannelMetricsRecorder> metricsRecorder,
+			@Nullable ChannelMetricsRecorder metricsRecorder,
 			@Nullable Function<String, String> uriTagValue) {
 		p.addBefore(NettyPipeline.ReactiveBridge,
 				NettyPipeline.HttpCodec,
@@ -587,18 +590,19 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 						decoder.failOnMissingResponse,
 						decoder.validateHeaders(),
 						decoder.initialBufferSize(),
-						decoder.parseHttpAfterConnectRequest));
+						decoder.parseHttpAfterConnectRequest,
+						decoder.allowDuplicateContentLengths()));
 
 		if (acceptGzip) {
 			p.addAfter(NettyPipeline.HttpCodec, NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
 		}
 
 		if (metricsRecorder != null) {
-			ChannelMetricsRecorder channelMetricsRecorder = metricsRecorder.get();
-			if (channelMetricsRecorder instanceof HttpClientMetricsRecorder) {
-				p.addBefore(NettyPipeline.ReactiveBridge,
-						NettyPipeline.HttpMetricsHandler,
-						new HttpClientMetricsHandler((HttpClientMetricsRecorder) channelMetricsRecorder, uriTagValue));
+			if (metricsRecorder instanceof HttpClientMetricsRecorder) {
+				ChannelHandler handler = metricsRecorder instanceof ContextAwareHttpClientMetricsRecorder ?
+						new ContextAwareHttpClientMetricsHandler((ContextAwareHttpClientMetricsRecorder) metricsRecorder, uriTagValue) :
+						new HttpClientMetricsHandler((HttpClientMetricsRecorder) metricsRecorder, uriTagValue);
+				p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpMetricsHandler, handler);
 			}
 		}
 	}
@@ -655,9 +659,20 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		@Override
 		public void handlerAdded(ChannelHandlerContext ctx) {
 			ChannelPipeline pipeline = ctx.pipeline();
+			ReadTimeoutHandler responseTimeoutHandler =
+					(ReadTimeoutHandler) pipeline.get(NettyPipeline.ResponseTimeoutHandler);
+			Http2MultiplexHandler http2MultiplexHandler;
+			if (responseTimeoutHandler != null) {
+				pipeline.remove(NettyPipeline.ResponseTimeoutHandler);
+				http2MultiplexHandler = new Http2MultiplexHandler(new H2Codec(opsFactory, acceptGzip),
+						new H2Codec(opsFactory, acceptGzip, responseTimeoutHandler.getReaderIdleTimeInMillis()));
+			}
+			else {
+				http2MultiplexHandler =
+						new Http2MultiplexHandler(new H2Codec(opsFactory, acceptGzip), new H2Codec(opsFactory, acceptGzip));
+			}
 			pipeline.addAfter(ctx.name(), NettyPipeline.HttpCodec, http2FrameCodec)
-			        .addAfter(NettyPipeline.HttpCodec, NettyPipeline.H2MultiplexHandler,
-			                new Http2MultiplexHandler(new H2Codec(opsFactory, acceptGzip), new H2Codec(opsFactory, acceptGzip)));
+			        .addAfter(NettyPipeline.HttpCodec, NettyPipeline.H2MultiplexHandler, http2MultiplexHandler);
 			if (pipeline.get(NettyPipeline.HttpDecompressor) != null) {
 				pipeline.remove(NettyPipeline.HttpDecompressor);
 			}
@@ -670,19 +685,33 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		final boolean acceptGzip;
 		final ConnectionObserver observer;
 		final ChannelOperations.OnSetup opsFactory;
+		final long responseTimeoutMillis;
 
 		H2Codec(boolean acceptGzip) {
-			this(null, null, acceptGzip);
+			this(null, null, acceptGzip, -1);
 		}
 
 		H2Codec(@Nullable ChannelOperations.OnSetup opsFactory, boolean acceptGzip) {
-			this(null, opsFactory, acceptGzip);
+			this(null, opsFactory, acceptGzip, -1);
+		}
+
+		H2Codec(@Nullable ChannelOperations.OnSetup opsFactory, boolean acceptGzip, long responseTimeoutMillis) {
+			this(null, opsFactory, acceptGzip, responseTimeoutMillis);
 		}
 
 		H2Codec(@Nullable ConnectionObserver observer, @Nullable ChannelOperations.OnSetup opsFactory, boolean acceptGzip) {
+			this(observer, opsFactory, acceptGzip, -1);
+		}
+
+		H2Codec(
+				@Nullable ConnectionObserver observer,
+				@Nullable ChannelOperations.OnSetup opsFactory,
+				boolean acceptGzip,
+				long responseTimeoutMillis) {
 			this.acceptGzip = acceptGzip;
 			this.observer = observer;
 			this.opsFactory = opsFactory;
+			this.responseTimeoutMillis = responseTimeoutMillis;
 		}
 
 		@Override
@@ -713,6 +742,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 			ChannelOperations.addReactiveBridge(ch, opsFactory, obs);
 
+			if (responseTimeoutMillis > -1) {
+				Connection.from(ch).addHandler(NettyPipeline.ResponseTimeoutHandler,
+						new ReadTimeoutHandler(responseTimeoutMillis, TimeUnit.MILLISECONDS));
+			}
+
 			if (log.isDebugEnabled()) {
 				log.debug(format(ch, "Initialized HTTP/2 stream pipeline {}"), ch.pipeline());
 			}
@@ -723,7 +757,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		final boolean                                    acceptGzip;
 		final HttpResponseDecoderSpec                    decoder;
 		final Http2Settings                              http2Settings;
-		final Supplier<? extends ChannelMetricsRecorder> metricsRecorder;
+		final ChannelMetricsRecorder                     metricsRecorder;
 		final ConnectionObserver                         observer;
 		final Function<String, String>                   uriTagValue;
 
@@ -767,7 +801,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		final boolean                                    acceptGzip;
 		final HttpResponseDecoderSpec                    decoder;
 		final Http2Settings                              http2Settings;
-		final Supplier<? extends ChannelMetricsRecorder> metricsRecorder;
+		final ChannelMetricsRecorder                     metricsRecorder;
 		final ChannelOperations.OnSetup                  opsFactory;
 		final int                                        protocols;
 		final SslProvider                                sslProvider;
@@ -777,7 +811,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			this.acceptGzip = config.acceptGzip;
 			this.decoder = config.decoder;
 			this.http2Settings = config.http2Settings();
-			this.metricsRecorder = config.metricsRecorder();
+			this.metricsRecorder = config.metricsRecorderInternal();
 			this.opsFactory = config.channelOperationsProvider();
 			this.protocols = config._protocols;
 			this.sslProvider = config.sslProvider;

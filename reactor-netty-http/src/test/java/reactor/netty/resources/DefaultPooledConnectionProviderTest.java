@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -25,17 +25,26 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
+import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Signal;
 import reactor.netty.BaseHttpTest;
+import reactor.netty.ByteBufMono;
 import reactor.netty.ConnectionObserver;
+import reactor.netty.http.Http11SslContextSpec;
+import reactor.netty.http.Http2SslContextSpec;
+import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.internal.shaded.reactor.pool.InstrumentedPool;
+import reactor.netty.internal.shaded.reactor.pool.PoolShutdownException;
 import reactor.test.StepVerifier;
 
 import javax.net.ssl.SSLException;
@@ -44,6 +53,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.security.cert.CertificateException;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -63,7 +73,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 
 	@Test
 	void testIssue903() {
-		SslContextBuilder serverCtx = SslContextBuilder.forServer(ssc.key(), ssc.cert());
+		Http11SslContextSpec serverCtx = Http11SslContextSpec.forServer(ssc.key(), ssc.cert());
 		disposableServer =
 				createServer()
 				          .secure(s -> s.sslContext(serverCtx))
@@ -274,6 +284,121 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 		StepVerifier.create(response)
 		            .expectErrorMatches(t -> t.getClass().isAssignableFrom(expectedExc) && t.getMessage().startsWith(expectedMsg))
 		            .verify(Duration.ofSeconds(30));
+	}
+
+	@Test
+	void testConnectionReturnedToParentPoolWhenNoActiveStreams() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+
+		disposableServer =
+				createServer()
+				        .protocol(HttpProtocol.H2)
+				        .secure(spec -> spec.sslContext(serverCtx))
+				        .route(routes -> routes.post("/", (req, res) -> res.send(req.receive().retain())))
+				        .bindNow();
+
+		int requestsNum = 10;
+		CountDownLatch latch = new CountDownLatch(requestsNum);
+		DefaultPooledConnectionProvider provider =
+				(DefaultPooledConnectionProvider) ConnectionProvider.create("testConnectionReturnedToParentPoolWhenNoActiveStreams", 5);
+		HttpClient client =
+				createClient(provider, disposableServer.port())
+				        .protocol(HttpProtocol.H2)
+				        .secure(spec -> spec.sslContext(clientCtx))
+				        .doOnResponse((res, conn) -> conn.onDispose(latch::countDown));
+
+		try {
+			Flux.range(0, requestsNum)
+			    .flatMap(i ->
+			        client.post()
+			              .uri("/")
+			              .send(ByteBufMono.fromString(Mono.just("testConnectionReturnedToParentPoolWhenNoActiveStreams")))
+			              .responseContent()
+			              .aggregate()
+			              .asString())
+			    .blockLast(Duration.ofSeconds(5));
+
+			assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+			assertThat(provider.channelPools).hasSize(1);
+
+			Thread.sleep(1000);
+
+			@SuppressWarnings({"unchecked", "rawtypes"})
+			InstrumentedPool<DefaultPooledConnectionProvider.PooledConnection> channelPool =
+					provider.channelPools.values().toArray(new InstrumentedPool[0])[0];
+			InstrumentedPool.PoolMetrics metrics = channelPool.metrics();
+			assertThat(metrics.acquiredSize()).isEqualTo(0);
+			assertThat(metrics.allocatedSize()).isEqualTo(metrics.idleSize());
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	@ParameterizedTest(name = "{displayName}({argumentsWithNames})")
+	@ValueSource(booleans = {false, true})
+	void testPoolGracefulShutdown(boolean enableGracefulShutdown) {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(Mono.just("testPoolGracefulShutdown")
+				                                                 .delayElement(Duration.ofMillis(50))))
+				        .bindNow();
+
+		ConnectionProvider.Builder providerBuilder =
+				ConnectionProvider.builder("testPoolGracefulShutdown")
+				                  .maxConnections(1);
+		if (enableGracefulShutdown) {
+			providerBuilder.disposeTimeout(Duration.ofMillis(200));
+		}
+		ConnectionProvider provider = providerBuilder.build();
+
+		HttpClient client =
+				createClient(provider, disposableServer.port())
+				        .doOnDisconnected(conn -> {
+				            if (!provider.isDisposed()) {
+				                provider.dispose();
+				            }
+				        });
+
+		List<Signal<String>> result =
+				Flux.range(0, 2)
+				    .flatMap(i ->
+				        client.get()
+				              .uri("/")
+				              .responseContent()
+				              .aggregate()
+				              .asString())
+				    .materialize()
+				    .collectList()
+				    .block(Duration.ofSeconds(5));
+
+		assertThat(result).isNotNull();
+
+		int onNext = 0;
+		int onError = 0;
+		for (Signal<String> signal : result) {
+			if (signal.isOnNext()) {
+				onNext++;
+				assertThat(signal.get()).isEqualTo("testPoolGracefulShutdown");
+			}
+			else if (signal.getThrowable() instanceof PoolShutdownException) {
+				onError++;
+			}
+		}
+
+		if (enableGracefulShutdown) {
+			assertThat(onNext).isEqualTo(2);
+			assertThat(onError).isEqualTo(0);
+		}
+		else {
+			assertThat(onNext).isEqualTo(1);
+			assertThat(onError).isEqualTo(1);
+		}
 	}
 
 	static final class TestPromise extends DefaultChannelPromise {

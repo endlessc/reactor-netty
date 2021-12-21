@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static reactor.netty.http.server.logging.LoggingTests.URI;
@@ -68,21 +69,27 @@ class AccessLogArgProviderTests {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void onRequest() {
+		assertThat(accessLogArgProvider.accessDateTime()).isNull();
 		assertThat(accessLogArgProvider.zonedDateTime()).isNull();
 		assertThat(accessLogArgProvider.startTime).isZero();
 		accessLogArgProvider.onRequest();
+		assertThat(accessLogArgProvider.accessDateTime()).isNotNull();
 		assertThat(accessLogArgProvider.zonedDateTime()).isNotNull();
 		assertThat(accessLogArgProvider.startTime).isNotNull();
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void clear() {
 		assertAccessLogArgProviderInitState();
 		accessLogArgProvider.onRequest();
 		accessLogArgProvider
 				.chunked(true)
 				.increaseContentLength(100);
+		accessLogArgProvider.cookies(Collections.emptyMap());
+		assertThat(accessLogArgProvider.accessDateTime()).isNotNull();
 		assertThat(accessLogArgProvider.zonedDateTime()).isNotNull();
 		assertThat(accessLogArgProvider.method()).isEqualTo(HttpMethod.POST.name());
 		assertThat(accessLogArgProvider.uri()).isEqualTo(URI);
@@ -90,11 +97,14 @@ class AccessLogArgProviderTests {
 		assertThat(accessLogArgProvider.chunked).isTrue();
 		assertThat(accessLogArgProvider.contentLength).isEqualTo(100);
 		assertThat(accessLogArgProvider.startTime).isNotNull();
+		assertThat(accessLogArgProvider.cookies).isNotNull();
 		accessLogArgProvider.clear();
 		assertAccessLogArgProviderInitState();
 	}
 
+	@SuppressWarnings("deprecation")
 	private void assertAccessLogArgProviderInitState() {
+		assertThat(accessLogArgProvider.accessDateTime()).isNull();
 		assertThat(accessLogArgProvider.zonedDateTime()).isNull();
 		assertThat(accessLogArgProvider.method()).isNull();
 		assertThat(accessLogArgProvider.uri()).isNull();
@@ -102,6 +112,7 @@ class AccessLogArgProviderTests {
 		assertThat(accessLogArgProvider.chunked).isFalse();
 		assertThat(accessLogArgProvider.contentLength).isEqualTo(-1);
 		assertThat(accessLogArgProvider.startTime).isZero();
+		assertThat(accessLogArgProvider.cookies).isNull();
 	}
 
 	static class TestAccessLogArgProvider extends AbstractAccessLogArgProvider<TestAccessLogArgProvider> {

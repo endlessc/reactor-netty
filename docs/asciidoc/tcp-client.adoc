@@ -2,6 +2,7 @@
 :examplesdir: ./../../reactor-netty-examples/src/main/java/reactor/netty/examples/documentation/tcp/client
 :javadoc: https://projectreactor.io/docs/netty/release/api
 :nettyjavadoc: https://netty.io/4.1/api
+:wirelogger: reactor.netty.tcp.TcpClient
 
 [[tcp-client]]
 = TCP Client
@@ -86,6 +87,23 @@ include::{examplesdir}/send/Application.java[lines=18..35]
 <1> Sends `hello` string to the endpoint.
 ====
 
+When you need more control over the writing process, as an alternative for I/O handler you may use
+{javadoc}/reactor/netty/Connection.html#outbound--[`Connection#outbound`]. As opposed to I/O handler
+where the connection is closed when the provided `Publisher` finishes (in case of finite `Publisher`),
+when using {javadoc}/reactor/netty/Connection.html#outbound--[`Connection#outbound`], you have to invoke explicitly
+`Connection#dispose` in order to close the connection.
+
+====
+[source,java,indent=0]
+.{examplesdir}/send/connection/Application.java
+----
+include::{examplesdir}/send/connection/Application.java[lines=18..44]
+----
+<1> Sends `hello 1` string to the endpoint.
+<2> Sends `hello 2` string to the endpoint.
+<3> Closes the connection once the message is sent to the endpoint.
+====
+
 == Consuming Data
 
 To receive data from a given endpoint, you must attach an I/O handler.
@@ -99,6 +117,21 @@ to be able to read data. The following example shows how to do so:
 include::{examplesdir}/read/Application.java[lines=18..34]
 ----
 <1> Receives data from a given endpoint
+====
+
+When you need more control over the reading process, as an alternative for I/O handler you may use
+{javadoc}/reactor/netty/Connection.html#inbound--[`Connection#inbound`]. As opposed to I/O handler
+where the connection is closed when the provided `Publisher` finishes (in case of finite `Publisher`),
+when using {javadoc}/reactor/netty/Connection.html#inbound--[`Connection#inbound`], you have to invoke explicitly
+`Connection#dispose` in order to close the connection.
+
+====
+[source,java,indent=0]
+.{examplesdir}/read/connection/Application.java
+----
+include::{examplesdir}/read/connection/Application.java[lines=18..38]
+----
+<1> Receives data from a given endpoint.
 ====
 
 == Lifecycle Callbacks
@@ -168,38 +201,7 @@ You can find more about `Netty` channel options at the following links:
 * https://docs.oracle.com/javase/8/docs/technotes/guides/net/socketOpt.html[Socket Options]
 
 [[client-tcp-level-configurations-event-wire-logger]]
-=== Wire Logger
-
-Reactor Netty provides wire logging for when the traffic between the peers has to be inspected.
-By default, wire logging is disabled.
-To enable it, you must set the logger `reactor.netty.tcp.TcpClient` level to `DEBUG`
-and apply the following configuration:
-
-====
-[source,java,indent=0]
-.{examplesdir}/wiretap/Application.java
-----
-include::{examplesdir}/wiretap/Application.java[lines=18..34]
-----
-<1> Enables the wire logging
-====
-
-By default, the wire logging uses {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#HEX_DUMP[AdvancedByteBufFormat#HEX_DUMP]
-when printing the content.
-When you need to change this to {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#SIMPLE[AdvancedByteBufFormat#SIMPLE]
-or {javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#TEXTUAL[AdvancedByteBufFormat#TEXTUAL],
-you can configure the `TcpClient` as follows:
-
-====
-[source,java,indent=0]
-.{examplesdir}/wiretap/custom/Application.java
-----
-include::{examplesdir}/wiretap/custom/Application.java[lines=18..34]
-----
-<1> Enables the wire logging,
-{javadoc}/reactor/netty/transport/logging/AdvancedByteBufFormat.html#TEXTUAL[AdvancedByteBufFormat#TEXTUAL] is used for
-printing the content.
-====
+include::wire-logger.adoc[]
 
 [[client-tcp-level-configurations-event-loop-group]]
 === Event Loop Group
@@ -215,7 +217,7 @@ The following listing shows the default configuration for the Event Loop Group:
 [source,java,indent=0]
 .{sourcedir}/reactor/netty/ReactorNetty.java
 ----
-include::{sourcedir}/reactor/netty/ReactorNetty.java[lines=84..113]
+include::{sourcedir}/reactor/netty/ReactorNetty.java[lines=85..114]
 ----
 ====
 
@@ -229,64 +231,7 @@ include::{examplesdir}/eventloop/Application.java[lines=18..37]
 ----
 ====
 
-== Connection Pool
-
-By default, the `TCP` client uses a "`fixed`" connection pool with `500` as the maximum number of channels
-and `1000` as the maximum number of the registered requests for acquire to keep in the pending queue
-(for the rest of the configurations check the system properties below).
-This means that the implementation creates a new channel if someone tries to acquire a channel but none is in the pool.
-When the maximum number of the channels in the pool is reached, new tries to acquire a channel are delayed
-until a channel is returned to the pool again.
-
-====
-[source,java,indent=0]
-.{sourcedir}/reactor/netty/ReactorNetty.java
-----
-include::{sourcedir}/reactor/netty/ReactorNetty.java[lines=116..158]
-----
-====
-
-
-If you need to disable the connection pool, you can apply the following configuration:
-
-====
-[source,java,indent=0]
-.{examplesdir}/pool/Application.java
-----
-include::{examplesdir}/pool/Application.java[lines=18..33]
-----
-====
-
-If you need to specify an idle time for the channels in the connection pool, you can apply the following configuration:
-
-====
-[source,java,indent=0]
-.{examplesdir}/pool/config/Application.java
-----
-include::{examplesdir}/pool/config/Application.java[lines=18..42]
-----
-====
-
-NOTE: When you expect a high load, be cautious with a connection pool with a very high value for maximum connections. You might experience
-`reactor.netty.http.client.PrematureCloseException` exception with a root cause "Connect Timeout" due
-to too many concurrent connections opened/acquired.
-
-=== Metrics
-The pooled `ConnectionProvider` supports built-in integration with https://micrometer.io/[`Micrometer`].
-It exposes all metrics with a prefix of `reactor.netty.connection.provider`.
-
-include::conn-provider-metrics.adoc[]
-
-The following example enables that integration:
-
-====
-[source,java,indent=0]
-.{examplesdir}/pool/metrics/Application.java
-----
-include::{examplesdir}/pool/metrics/Application.java[lines=18..40]
-----
-<1> Enables the built-in integration with Micrometer
-====
+include::conn-provider.adoc[]
 
 == SSL and TLS
 
@@ -321,19 +266,7 @@ include::{examplesdir}/sni/Application.java[lines=18..41]
 ----
 ====
 
-== Proxy Support
-
-The TCP client supports the proxy functionality provided by Netty and provides a way
-to specify "`non proxy hosts`" through the {javadoc}/reactor/netty/tcp/ProxyProvider.html[`ProxyProvider`] builder.
-The following example uses `ProxyProvider`:
-
-====
-[source,java,indent=0]
-.{examplesdir}/proxy/Application.java
-----
-include::{examplesdir}/proxy/Application.java[lines=18..38]
-----
-====
+include::proxy.adoc[]
 
 == Metrics
 The TCP client supports built-in integration with https://micrometer.io/[`Micrometer`].
@@ -357,6 +290,7 @@ These additional metrics are also available:
 include::conn-provider-metrics.adoc[]
 
 include::alloc-metrics.adoc[]
+include::eventloop-metrics.adoc[]
 
 The following example enables that integration:
 
@@ -426,16 +360,22 @@ The following listing shows the available configurations:
  the DNS server and uses this min time to live.
  Default: 0.
 | `cacheNegativeTimeToLive` | The time to live of the cache for the failed DNS queries (resolution: seconds). Default: 0.
+| `completeOncePreferredResolved` | When this setting is enabled, the resolver notifies as soon as all queries for the preferred address type are complete.
+When this setting is disabled, the resolver notifies when all possible address types are complete.
+This configuration is applicable for `DnsNameResolver#resolveAll(String)`. By default, this setting is enabled.
 | `disableOptionalRecord` | Disables the automatic inclusion of an optional record that tries to give a hint to the remote DNS server about
  how much data the resolver can read per response. By default, this setting is enabled.
 | `disableRecursionDesired` | Specifies whether this resolver has to send a DNS query with the recursion desired (RD) flag set.
  By default, this setting is enabled.
+| `hostsFileEntriesResolver` | Sets a custom {nettyjavadoc}/io/netty/resolver/HostsFileEntriesResolver.html[`HostsFileEntriesResolver`] to be used for hosts file entries.
+Default: {nettyjavadoc}/io/netty/resolver/DefaultHostsFileEntriesResolver.html[`DefaultHostsFileEntriesResolver`].
 | `maxPayloadSize` | Sets the capacity of the datagram packet buffer (in bytes). Default: 4096.
 | `maxQueriesPerResolve` | Sets the maximum allowed number of DNS queries to send when resolving a host name. Default: 16.
 | `ndots` | Sets the number of dots that must appear in a name before an initial absolute query is made.
  Default: -1 (to determine the value from the OS on Unix or use a value of 1 otherwise).
 | `queryTimeout` | Sets the timeout of each DNS query performed by this resolver (resolution: milliseconds). Default: 5000.
 | `resolvedAddressTypes` | The list of the protocol families of the resolved address.
+| `bindAddressSupplier` | The supplier of the local address to bind to.
 | `roundRobinSelection` | Enables an
  {nettyjavadoc}/io/netty/resolver/AddressResolverGroup.html[`AddressResolverGroup`] of
  {nettyjavadoc}/io/netty/resolver/dns/DnsNameResolver.html[`DnsNameResolver`] that supports random selection

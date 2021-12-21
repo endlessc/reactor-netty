@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -22,9 +22,16 @@ import reactor.netty.http.HttpDecoderSpec;
  * (or more precisely the {@link io.netty.handler.codec.http.HttpServerCodec.HttpServerRequestDecoder}) for HTTP/1.1
  * or {@link io.netty.handler.codec.http.HttpServerUpgradeHandler} for H2C.
  * <p>
- * Defaults are accessible as constants {@link #DEFAULT_MAX_INITIAL_LINE_LENGTH}, {@link #DEFAULT_MAX_HEADER_SIZE},
- * {@link #DEFAULT_MAX_CHUNK_SIZE}, {@link #DEFAULT_INITIAL_BUFFER_SIZE}, {@link #DEFAULT_VALIDATE_HEADERS} and
- * {@link #DEFAULT_H2C_MAX_CONTENT_LENGTH}.
+ * Defaults are accessible as constants
+ * <table>
+ *     <tr><td>{@link #DEFAULT_ALLOW_DUPLICATE_CONTENT_LENGTHS}</td><td>false</td></tr>
+ *     <tr><td>{@link #DEFAULT_H2C_MAX_CONTENT_LENGTH}</td><td>0</td></tr>
+ *     <tr><td>{@link #DEFAULT_INITIAL_BUFFER_SIZE}</td><td>128</td></tr>
+ *     <tr><td>{@link #DEFAULT_MAX_CHUNK_SIZE}</td><td>8192</td></tr>
+ *     <tr><td>{@link #DEFAULT_MAX_HEADER_SIZE}</td><td>8192</td></tr>
+ *     <tr><td>{@link #DEFAULT_MAX_INITIAL_LINE_LENGTH}</td><td>4096</td></tr>
+ *     <tr><td>{@link #DEFAULT_VALIDATE_HEADERS}</td><td>true</td></tr>
+ * </table>
  *
  * @author Simon Baslé
  * @author Violeta Georgieva
@@ -57,6 +64,7 @@ public final class HttpRequestDecoderSpec extends HttpDecoderSpec<HttpRequestDec
 		decoder.maxHeaderSize = maxHeaderSize;
 		decoder.maxInitialLineLength = maxInitialLineLength;
 		decoder.validateHeaders = validateHeaders;
+		decoder.allowDuplicateContentLengths = allowDuplicateContentLengths;
 		decoder.h2cMaxContentLength = h2cMaxContentLength;
 		return decoder;
 	}

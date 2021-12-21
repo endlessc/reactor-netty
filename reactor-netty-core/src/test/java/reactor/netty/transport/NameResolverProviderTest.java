@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,9 +26,12 @@ import org.junit.jupiter.api.condition.OS;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.TcpResources;
 
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
@@ -110,6 +113,14 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	void completeOncePreferredResolved() {
+		assertThat(builder.build().isCompleteOncePreferredResolved()).isTrue();
+
+		builder.completeOncePreferredResolved(false);
+		assertThat(builder.build().isCompleteOncePreferredResolved()).isFalse();
+	}
+
+	@Test
 	void disableOptionalRecord() {
 		assertThat(builder.build().isDisableOptionalRecord()).isFalse();
 
@@ -123,6 +134,20 @@ class NameResolverProviderTest {
 
 		builder.disableRecursionDesired(true);
 		assertThat(builder.build().isDisableRecursionDesired()).isTrue();
+	}
+
+	@Test
+	void hostsFileEntriesResolver() {
+		assertThat(builder.build().hostsFileEntriesResolver).isNull();
+
+		builder.hostsFileEntriesResolver((inetHost, resolvedAddressTypes) -> null);
+		assertThat(builder.build().hostsFileEntriesResolver).isNotNull();
+	}
+
+	@Test
+	void hostsFileEntriesResolverBadValues() {
+		assertThatExceptionOfType(NullPointerException.class)
+				.isThrownBy(() -> builder.hostsFileEntriesResolver(null));
 	}
 
 	@Test
@@ -197,6 +222,20 @@ class NameResolverProviderTest {
 	void resolvedAddressTypesBadValues() {
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.resolvedAddressTypes(null));
+	}
+
+	@Test
+	void bindAddressSupplier() {
+		assertThat(builder.build().bindAddressSupplier()).isNull();
+		Supplier<SocketAddress> addressSupplier = () -> new InetSocketAddress("localhost", 9527);
+		builder.bindAddressSupplier(addressSupplier);
+		assertThat(builder.build().bindAddressSupplier()).isEqualTo(addressSupplier);
+	}
+
+	@Test
+	void bindAddressSupplierBadValues() {
+		assertThatExceptionOfType(NullPointerException.class)
+				.isThrownBy(() -> builder.bindAddressSupplier(null));
 	}
 
 	@Test

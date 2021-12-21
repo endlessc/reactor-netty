@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,6 +16,7 @@
 package reactor.netty.transport.logging;
 
 import java.nio.charset.Charset;
+import java.util.Objects;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
@@ -51,6 +52,7 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 
 	private final AdvancedByteBufFormat byteBufFormat;
 	private final Charset charset;
+	private final String name;
 
 	/**
 	 * Creates a new instance with the specified logger name, level and byte buffer format.
@@ -61,8 +63,9 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 	 */
 	ReactorNettyLoggingHandler(String name, LogLevel level, AdvancedByteBufFormat byteBufFormat) {
 		super(name, level, byteBufFormat == SIMPLE ? ByteBufFormat.SIMPLE : ByteBufFormat.HEX_DUMP);
-		this.charset = null;
 		this.byteBufFormat = byteBufFormat;
+		this.charset = null;
+		this.name = name;
 	}
 
 	/**
@@ -77,6 +80,7 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 		super(name, level);
 		this.byteBufFormat = TEXTUAL;
 		this.charset = requireNonNull(charset, "charset");
+		this.name = name;
 	}
 
 	/*
@@ -92,6 +96,26 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 			return ByteBufFormat.HEX_DUMP;
 		}
 		throw new UnsupportedOperationException("ReactorNettyLoggingHandler isn't using the classic ByteBufFormat.");
+	}
+
+	@Override
+	public boolean equals(Object o) {
+		if (this == o) {
+			return true;
+		}
+		if (!(o instanceof ReactorNettyLoggingHandler)) {
+			return false;
+		}
+		ReactorNettyLoggingHandler that = (ReactorNettyLoggingHandler) o;
+		return byteBufFormat == that.byteBufFormat &&
+				Objects.equals(charset, that.charset) &&
+				level() == that.level() &&
+				name.equals(that.name);
+	}
+
+	@Override
+	public int hashCode() {
+		return Objects.hash(byteBufFormat, charset, level(), name);
 	}
 
 	@Override
@@ -138,18 +162,38 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 	}
 
 	private String channelString(Channel channel) {
+		String channelStr;
+		StringBuilder result;
 		Connection connection = Connection.from(channel);
 		if (connection instanceof ChannelOperationsId) {
-			String channelStr = ((ChannelOperationsId) connection).asLongText();
-			return new StringBuilder(1 + channelStr.length() + 1)
-					.append('[')
-					.append(channelStr)
-					.append(']')
-					.toString();
+			channelStr = ((ChannelOperationsId) connection).asLongText();
+			if (channelStr.charAt(0) != TRACE_ID_PREFIX) {
+				result = new StringBuilder(1 + channelStr.length() + 1)
+						.append(CHANNEL_ID_PREFIX)
+						.append(channelStr)
+						.append(CHANNEL_ID_SUFFIX);
+			}
+			else {
+				result = new StringBuilder(channelStr);
+			}
 		}
 		else {
-			return channel.toString();
+			channelStr = channel.toString();
+			if (channelStr.charAt(0) == CHANNEL_ID_PREFIX) {
+				channelStr = channelStr.substring(ORIGINAL_CHANNEL_ID_PREFIX_LENGTH);
+				result = new StringBuilder(1 + channelStr.length())
+						.append(CHANNEL_ID_PREFIX)
+						.append(channelStr);
+			}
+			else {
+				int ind = channelStr.indexOf(ORIGINAL_CHANNEL_ID_PREFIX);
+				result = new StringBuilder(1 + (channelStr.length() - ORIGINAL_CHANNEL_ID_PREFIX_LENGTH))
+						.append(channelStr.substring(0, ind))
+						.append(CHANNEL_ID_PREFIX)
+						.append(channelStr.substring(ind + ORIGINAL_CHANNEL_ID_PREFIX_LENGTH));
+			}
 		}
+		return result.toString();
 	}
 
 	private String formatByteBuf(ChannelHandlerContext ctx, String eventName, ByteBuf msg) {
@@ -260,4 +304,10 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 				.append(msgStr)
 				.toString();
 	}
+
+	static final char CHANNEL_ID_PREFIX = '[';
+	static final char CHANNEL_ID_SUFFIX = ']';
+	static final String ORIGINAL_CHANNEL_ID_PREFIX = "[id: 0x";
+	static final int ORIGINAL_CHANNEL_ID_PREFIX_LENGTH = ORIGINAL_CHANNEL_ID_PREFIX.length();
+	static final char TRACE_ID_PREFIX = '(';
 }

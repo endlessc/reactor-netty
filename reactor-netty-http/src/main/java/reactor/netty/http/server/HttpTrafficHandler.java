@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http.server;
 
 import java.net.SocketAddress;
@@ -72,41 +71,51 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 
 	static final HttpVersion H2 = HttpVersion.valueOf("HTTP/2.0");
 
-	final ConnectionObserver                                      listener;
-	Boolean                                                       secure;
-	SocketAddress                                                 remoteAddress;
-	final BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
 	final BiPredicate<HttpServerRequest, HttpServerResponse>      compress;
-	final ServerCookieEncoder                                     cookieEncoder;
 	final ServerCookieDecoder                                     cookieDecoder;
+	final ServerCookieEncoder                                     cookieEncoder;
+	HttpServerFormDecoderProvider                                 formDecoderProvider;
+	final BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
 	final Duration                                                idleTimeout;
-	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>      mapHandle;
-
-	boolean persistentConnection = true;
-	// Track pending responses to support client pipelining: https://tools.ietf.org/html/rfc7230#section-6.3.2
-	int pendingResponses;
-
-	Queue<Object> pipelined;
+	final ConnectionObserver                                      listener;
+	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
+	                                                              mapHandle;
+	final int                                                     maxKeepAliveRequests;
 
 	ChannelHandlerContext ctx;
 
-	boolean overflow;
 	boolean nonInformationalResponse;
+	boolean overflow;
+
+	// Track pending responses to support client pipelining: https://tools.ietf.org/html/rfc7230#section-6.3.2
+	int pendingResponses;
+	boolean persistentConnection = true;
+
+	Queue<Object> pipelined;
+
+	SocketAddress remoteAddress;
+
+	Boolean secure;
 
 	HttpTrafficHandler(
-			ConnectionObserver listener,
-			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compress,
-			ServerCookieEncoder encoder, ServerCookieDecoder decoder,
+			ServerCookieDecoder decoder,
+			ServerCookieEncoder encoder,
+			HttpServerFormDecoderProvider formDecoderProvider,
+			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
+			@Nullable Duration idleTimeout,
+			ConnectionObserver listener,
 			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle,
-			@Nullable Duration idleTimeout) {
+			int maxKeepAliveRequests) {
 		this.listener = listener;
+		this.formDecoderProvider = formDecoderProvider;
 		this.forwardedHeaderHandler = forwardedHeaderHandler;
 		this.compress = compress;
 		this.cookieEncoder = encoder;
 		this.cookieDecoder = decoder;
 		this.idleTimeout = idleTimeout;
 		this.mapHandle = mapHandle;
+		this.maxKeepAliveRequests = maxKeepAliveRequests;
 	}
 
 	@Override
@@ -188,14 +197,16 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 				try {
 					ops = new HttpServerOperations(Connection.from(ctx.channel()),
 							listener,
-							compress, request,
+							request,
+							compress,
 							ConnectionInfo.from(ctx.channel(),
 							                    request,
 							                    secure,
 							                    remoteAddress,
 							                    forwardedHeaderHandler),
-							cookieEncoder,
 							cookieDecoder,
+							cookieEncoder,
+							formDecoderProvider,
 							mapHandle,
 							secure);
 				}
@@ -276,7 +287,8 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 			final HttpResponse response = (HttpResponse) msg;
 			nonInformationalResponse = !isInformational(response);
 			// Assume the response writer knows if they can persist or not and sets isKeepAlive on the response
-			if (!isKeepAlive(response) || !isSelfDefinedMessageLength(response)) {
+			boolean maxKeepAliveRequestsReached = maxKeepAliveRequests != -1 && HttpServerOperations.requestsCounter(ctx.channel()) == maxKeepAliveRequests;
+			if (maxKeepAliveRequestsReached || !isKeepAlive(response) || !isSelfDefinedMessageLength(response)) {
 				// No longer keep alive as the client can't tell when the message is done unless we close connection
 				pendingResponses = 0;
 				persistentConnection = false;
@@ -373,15 +385,16 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 
 				HttpServerOperations ops = new HttpServerOperations(Connection.from(ctx.channel()),
 						listener,
-						compress,
 						nextRequest,
+						compress,
 						ConnectionInfo.from(ctx.channel(),
 						                    nextRequest,
 						                    secure,
 						                    remoteAddress,
 						                    forwardedHeaderHandler),
-						cookieEncoder,
 						cookieDecoder,
+						cookieEncoder,
+						formDecoderProvider,
 						mapHandle,
 						secure);
 				ops.bind();

@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -15,13 +15,13 @@
  */
 package reactor.netty.examples.tcp.echo;
 
-import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.Connection;
 import reactor.netty.tcp.TcpClient;
+import reactor.netty.tcp.TcpSslContextSpec;
 
 /**
  * A TCP client that sends a package to the TCP server and
@@ -42,8 +42,10 @@ public final class EchoClient {
 				         .wiretap(WIRETAP);
 
 		if (SECURE) {
-			client = client.secure(
-					spec -> spec.sslContext(SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE)));
+			TcpSslContextSpec tcpSslContextSpec =
+					TcpSslContextSpec.forClient()
+					                 .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+			client = client.secure(spec -> spec.sslContext(tcpSslContextSpec));
 		}
 
 		Connection connection =

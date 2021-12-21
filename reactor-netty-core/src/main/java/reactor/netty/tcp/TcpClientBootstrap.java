@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,7 +16,6 @@
 package reactor.netty.tcp;
 
 import io.netty.bootstrap.Bootstrap;
-import io.netty.bootstrap.ChannelFactory;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
@@ -83,7 +82,8 @@ final class TcpClientBootstrap extends Bootstrap {
 	}
 
 	@Override
-	public Bootstrap channelFactory(ChannelFactory<? extends Channel> channelFactory) {
+	@SuppressWarnings("deprecation")
+	public Bootstrap channelFactory(io.netty.bootstrap.ChannelFactory<? extends Channel> channelFactory) {
 		throw new UnsupportedOperationException();
 	}
 

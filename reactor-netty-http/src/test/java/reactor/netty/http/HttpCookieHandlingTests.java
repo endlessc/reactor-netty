@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -16,9 +16,12 @@
 package reactor.netty.http;
 
 import java.time.Duration;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.cookie.ClientCookieDecoder;
 import io.netty.handler.codec.http.cookie.ClientCookieEncoder;
 import io.netty.handler.codec.http.cookie.Cookie;
@@ -28,6 +31,8 @@ import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import reactor.netty.BaseHttpTest;
+import reactor.netty.http.server.HttpServerInfos;
+import reactor.netty.http.server.HttpServerRequest;
 import reactor.test.StepVerifier;
 
 /**
@@ -117,5 +122,44 @@ class HttpCookieHandlingTests extends BaseHttpTest {
 		            })
 		            .expectComplete()
 		            .verify(Duration.ofSeconds(30));
+	}
+
+	@Test
+	void testServerCookiesDecodingMultipleCookiesSameName_Cookies() {
+		doTestServerCookiesDecodingMultipleCookiesSameName(HttpServerInfos::cookies, " value1");
+	}
+
+	@Test
+	void testServerCookiesDecodingMultipleCookiesSameName_AllCookies() {
+		doTestServerCookiesDecodingMultipleCookiesSameName(HttpServerInfos::allCookies, " value1 value2");
+	}
+
+	@SuppressWarnings("CollectionUndefinedEquality")
+	private void doTestServerCookiesDecodingMultipleCookiesSameName(
+			Function<HttpServerRequest, Map<CharSequence, ? extends Collection<Cookie>>> cookies,
+			String expectedResponse) {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				                res.sendString(Mono.just(cookies.apply(req)
+				                                                // Suppressed "CollectionUndefinedEquality",
+				                                                // the CharSequence is String
+				                                                .get("test")
+				                                                .stream()
+				                                                .map(Cookie::value)
+				                                                .reduce("", (a, b) -> a + " " + b))))
+				        .bindNow();
+
+		createClient(disposableServer.port())
+		        .headers(h -> h.add(HttpHeaderNames.COOKIE, "test=value1;test=value2"))
+		        .get()
+		        .uri("/")
+		        .responseContent()
+		        .aggregate()
+		        .asString()
+		        .as(StepVerifier::create)
+		        .expectNext(expectedResponse)
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(5));
 	}
 }

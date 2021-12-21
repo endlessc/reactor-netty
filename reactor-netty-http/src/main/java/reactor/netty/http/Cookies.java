@@ -1,11 +1,11 @@
 /*
- * Copyright (c) 2011-Present VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *       https://www.apache.org/licenses/LICENSE-2.0
+ *   https://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package reactor.netty.http;
 
 import java.util.Collections;
@@ -34,13 +33,14 @@ import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 
 /**
  * Store cookies for the http channel.
+ *
  * @since 0.6
  */
-public final class Cookies {
+public class Cookies {
 
 	/**
+	 * Return a new cookies holder from client response headers.
 	 *
-	 * Return a new cookies holder from client response headers
 	 * @param headers client response headers
 	 * @return a new cookies holder from client response headers
 	 */
@@ -49,10 +49,15 @@ public final class Cookies {
 	}
 
 	/**
-	 * Return a new cookies holder from server request headers
+	 * Return a new cookies holder from server request headers.
+	 *
 	 * @param headers server request headers
 	 * @return a new cookies holder from server request headers
+	 * @deprecated as of 1.0.8.
+	 * Prefer {@link reactor.netty.http.server.ServerCookies#newServerRequestHolder(HttpHeaders, ServerCookieDecoder)}.
+	 * This method will be removed in version 1.2.0.
 	 */
+	@Deprecated
 	public static Cookies newServerRequestHolder(HttpHeaders headers, ServerCookieDecoder decoder) {
 		return new Cookies(headers, HttpHeaderNames.COOKIE, false, decoder);
 	}
@@ -60,23 +65,21 @@ public final class Cookies {
 
 	final static int NOT_READ = 0;
 	final static int READING  = 1;
-
 	final static int READ     = 2;
-	final HttpHeaders  nettyHeaders;
-	final CharSequence cookiesHeaderName;
 
-	final boolean      isClientChannel;
-
+	final HttpHeaders   nettyHeaders;
+	final CharSequence  cookiesHeaderName;
+	final boolean       isClientChannel;
 	final CookieDecoder decoder;
 
-	Map<CharSequence, Set<Cookie>> cachedCookies;
-	volatile     int                                state;
+	protected Map<CharSequence, Set<Cookie>> cachedCookies;
 
+	volatile     int                                state;
 	static final AtomicIntegerFieldUpdater<Cookies> STATE =
 			AtomicIntegerFieldUpdater.newUpdater(Cookies.class, "state");
 
-	private Cookies(HttpHeaders nettyHeaders, CharSequence cookiesHeaderName, boolean isClientChannel,
-					CookieDecoder decoder) {
+	protected Cookies(HttpHeaders nettyHeaders, CharSequence cookiesHeaderName, boolean isClientChannel,
+			CookieDecoder decoder) {
 		this.nettyHeaders = Objects.requireNonNull(nettyHeaders, "nettyHeaders");
 		this.cookiesHeaderName = cookiesHeaderName;
 		this.isClientChannel = isClientChannel;
@@ -85,19 +88,20 @@ public final class Cookies {
 	}
 
 	/**
-	 * Wait for the cookies to become available, cache them and subsequently return the
-	 * cached map of cookies.
+	 * Wait for the cookies to become available, cache them and subsequently return the cached map of cookies.
+	 *
+	 * @return the cached map of cookies
 	 */
 	public Map<CharSequence, Set<Cookie>> getCachedCookies() {
-		if (!STATE.compareAndSet(this, NOT_READ, READING)) {
+		if (!markReadingCookies()) {
 			for (;;) {
-				if (state == READ) {
+				if (hasReadCookies()) {
 					return cachedCookies;
 				}
 			}
 		}
 
-		List<String> allCookieHeaders = nettyHeaders.getAll(cookiesHeaderName);
+		List<String> allCookieHeaders = allCookieHeaders();
 		Map<String, Set<Cookie>> cookies = new HashMap<>();
 		for (String aCookieHeader : allCookieHeaders) {
 			Set<Cookie> decode;
@@ -106,27 +110,35 @@ public final class Cookies {
 				if (c == null) {
 					continue;
 				}
-				Set<Cookie> existingCookiesOfName = cookies.get(c.name());
-				if (null == existingCookiesOfName) {
-					existingCookiesOfName = new HashSet<>();
-					cookies.put(c.name(), existingCookiesOfName);
-				}
+				Set<Cookie> existingCookiesOfName = cookies.computeIfAbsent(c.name(), k -> new HashSet<>());
 				existingCookiesOfName.add(c);
 			}
 			else {
 				decode = ((ServerCookieDecoder) decoder).decode(aCookieHeader);
 				for (Cookie cookie : decode) {
-					Set<Cookie> existingCookiesOfName = cookies.get(cookie.name());
-					if (null == existingCookiesOfName) {
-						existingCookiesOfName = new HashSet<>();
-						cookies.put(cookie.name(), existingCookiesOfName);
-					}
+					Set<Cookie> existingCookiesOfName = cookies.computeIfAbsent(cookie.name(), k -> new HashSet<>());
 					existingCookiesOfName.add(cookie);
 				}
 			}
 		}
 		cachedCookies = Collections.unmodifiableMap(cookies);
-		state = READ;
+		markReadCookies();
 		return cachedCookies;
+	}
+
+	protected List<String> allCookieHeaders() {
+		return nettyHeaders.getAll(cookiesHeaderName);
+	}
+
+	protected final boolean hasReadCookies() {
+		return state == READ;
+	}
+
+	protected final boolean markReadCookies() {
+		return STATE.compareAndSet(this, READING, READ);
+	}
+
+	protected final boolean markReadingCookies() {
+		return STATE.compareAndSet(this, NOT_READ, READING);
 	}
 }

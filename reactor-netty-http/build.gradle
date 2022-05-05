@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,7 +47,9 @@ sourceSets {
 configurations {
 	noMicrometerTestImplementation {
 		extendsFrom implementation
-		exclude group: 'io.micrometer'
+		// TODO temporary because 'context-propagation-api' has group 'io.micrometer'
+		exclude group: 'io.micrometer', module: 'micrometer-core'
+		exclude group: 'io.micrometer', module: 'micrometer-tracing-api'
 	}
 	noMicrometerTestRuntimeOnly.extendsFrom(runtimeOnly)
 }
@@ -108,6 +110,9 @@ dependencies {
 
 	//Metrics
 	compileOnly "io.micrometer:micrometer-core:$micrometerVersion"
+	compileOnly "io.micrometer:micrometer-tracing-api:$micrometerTracingVersion"
+
+	api "io.micrometer:context-propagation-api:${contextPropagationVersion}"
 
 	// Logging
 	compileOnly "org.slf4j:slf4j-api:$slf4jVersion"
@@ -132,6 +137,8 @@ dependencies {
 	testImplementation "org.junit.jupiter:junit-jupiter-params:$junitVersion"
 	testImplementation "io.projectreactor.tools:blockhound-junit-platform:$blockHoundVersion"
 	testImplementation "io.micrometer:micrometer-core:$micrometerVersion"
+	testImplementation "io.micrometer:micrometer-test:$micrometerVersion"
+	testImplementation "io.micrometer:micrometer-tracing-integration-test:$micrometerTracingVersion"
 
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher:$junitPlatformLauncherVersion"
 	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
@@ -188,8 +195,8 @@ task downloadBaseline(type: Download) {
 }
 
 task japicmp(type: JapicmpTask) {
-	oldClasspath = files("${buildDir}/baselineLibs/reactor-netty-http-${compatibleVersion}.jar")
-	newClasspath = files(jar.archiveFile, project(':reactor-netty-core').jar)
+	oldClasspath.from(files("${buildDir}/baselineLibs/reactor-netty-http-${compatibleVersion}.jar"))
+	newClasspath.from(files(jar.archiveFile, project(':reactor-netty-core').jar))
 	onlyBinaryIncompatibleModified = true
 	failOnModification = true
 	failOnSourceIncompatibility = true

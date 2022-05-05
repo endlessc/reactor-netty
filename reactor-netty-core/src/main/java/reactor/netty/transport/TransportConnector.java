@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package reactor.netty.transport;
 
+import io.micrometer.contextpropagation.ContextContainer;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFactory;
 import io.netty.channel.ChannelFuture;
@@ -23,7 +24,6 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
-import io.netty.channel.EventLoopGroup;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
@@ -71,6 +71,8 @@ public final class TransportConnector {
 	 * @param config the transport configuration
 	 * @param channelInitializer the {@link ChannelInitializer} that will be used for initializing the channel pipeline
 	 * @param bindAddress the local address
+	 * @param isDomainSocket true if {@link io.netty.channel.unix.DomainSocketChannel} or
+	 * {@link io.netty.channel.unix.ServerDomainSocketChannel} is needed, false otherwise
 	 * @return a {@link Mono} of {@link Channel}
 	 */
 	@SuppressWarnings("FutureReturnValueIgnored")
@@ -80,7 +82,7 @@ public final class TransportConnector {
 		Objects.requireNonNull(bindAddress, "bindAddress");
 		Objects.requireNonNull(channelInitializer, "channelInitializer");
 
-		return doInitAndRegister(config, channelInitializer, isDomainSocket)
+		return doInitAndRegister(config, channelInitializer, isDomainSocket, config.eventLoopGroup().next(), ContextContainer.NOOP)
 				.flatMap(channel -> {
 					MonoChannelPromise promise = new MonoChannelPromise(channel);
 					// "FutureReturnValueIgnored" this is deliberate
@@ -100,19 +102,69 @@ public final class TransportConnector {
 	 */
 	public static Mono<Channel> connect(TransportConfig config, SocketAddress remoteAddress,
 			AddressResolverGroup<?> resolverGroup, ChannelInitializer<Channel> channelInitializer) {
+		return connect(config, remoteAddress, resolverGroup, channelInitializer, config.eventLoopGroup().next(),
+				ContextContainer.NOOP);
+	}
+
+	/**
+	 * Connect a {@link Channel} to the remote peer.
+	 *
+	 * @param config the transport configuration
+	 * @param remoteAddress the {@link SocketAddress} to connect to
+	 * @param resolverGroup the resolver which will resolve the address of the unresolved named address
+	 * @param channelInitializer the {@link ChannelInitializer} that will be used for initializing the channel pipeline
+	 * @param container {@link ContextContainer} is a holder of values that are being propagated through various contexts
+	 * @return a {@link Mono} of {@link Channel}
+	 */
+	public static Mono<Channel> connect(TransportConfig config, SocketAddress remoteAddress,
+			AddressResolverGroup<?> resolverGroup, ChannelInitializer<Channel> channelInitializer, ContextContainer container) {
+		return connect(config, remoteAddress, resolverGroup, channelInitializer, config.eventLoopGroup().next(), container);
+	}
+
+	/**
+	 * Connect a {@link Channel} to the remote peer.
+	 *
+	 * @param config the transport configuration
+	 * @param remoteAddress the {@link SocketAddress} to connect to
+	 * @param resolverGroup the resolver which will resolve the address of the unresolved named address
+	 * @param channelInitializer the {@link ChannelInitializer} that will be used for initializing the channel pipeline
+	 * @param eventLoop the {@link EventLoop} to use for handling the channel.
+	 * @return a {@link Mono} of {@link Channel}
+	 */
+	public static Mono<Channel> connect(TransportConfig config, SocketAddress remoteAddress,
+			AddressResolverGroup<?> resolverGroup, ChannelInitializer<Channel> channelInitializer, EventLoop eventLoop) {
+		return connect(config, remoteAddress, resolverGroup, channelInitializer, eventLoop, ContextContainer.NOOP);
+	}
+
+	/**
+	 * Connect a {@link Channel} to the remote peer.
+	 *
+	 * @param config the transport configuration
+	 * @param remoteAddress the {@link SocketAddress} to connect to
+	 * @param resolverGroup the resolver which will resolve the address of the unresolved named address
+	 * @param channelInitializer the {@link ChannelInitializer} that will be used for initializing the channel pipeline
+	 * @param eventLoop the {@link EventLoop} to use for handling the channel.
+	 * @param container {@link ContextContainer} is a holder of values that are being propagated through various contexts
+	 * @return a {@link Mono} of {@link Channel}
+	 */
+	public static Mono<Channel> connect(TransportConfig config, SocketAddress remoteAddress,
+			AddressResolverGroup<?> resolverGroup, ChannelInitializer<Channel> channelInitializer, EventLoop eventLoop,
+			ContextContainer container) {
 		Objects.requireNonNull(config, "config");
 		Objects.requireNonNull(remoteAddress, "remoteAddress");
 		Objects.requireNonNull(resolverGroup, "resolverGroup");
 		Objects.requireNonNull(channelInitializer, "channelInitializer");
+		Objects.requireNonNull(eventLoop, "eventLoop");
+		Objects.requireNonNull(container, "container");
 
 		boolean isDomainAddress = remoteAddress instanceof DomainSocketAddress;
-		return doInitAndRegister(config, channelInitializer, isDomainAddress)
-				.flatMap(channel -> doResolveAndConnect(channel, config, remoteAddress, resolverGroup)
+		return doInitAndRegister(config, channelInitializer, isDomainAddress, eventLoop, container)
+				.flatMap(channel -> doResolveAndConnect(channel, config, remoteAddress, resolverGroup, container)
 						.onErrorResume(RetryConnectException.class,
 								t -> {
 									AtomicInteger index = new AtomicInteger(1);
 									return Mono.defer(() ->
-											doInitAndRegister(config, channelInitializer, isDomainAddress)
+											doInitAndRegister(config, channelInitializer, isDomainAddress, eventLoop, container)
 													.flatMap(ch -> {
 														MonoChannelPromise mono = new MonoChannelPromise(ch);
 														doConnect(t.addresses, config.bindAddress(), mono, index.get());
@@ -214,14 +266,15 @@ public final class TransportConnector {
 	static Mono<Channel> doInitAndRegister(
 			TransportConfig config,
 			ChannelInitializer<Channel> channelInitializer,
-			boolean isDomainSocket) {
-		EventLoopGroup elg = config.eventLoopGroup();
-
-		ChannelFactory<? extends Channel> channelFactory = config.connectionFactory(elg, isDomainSocket);
+			boolean isDomainSocket,
+			EventLoop eventLoop,
+			ContextContainer container) {
+		ChannelFactory<? extends Channel> channelFactory = config.connectionFactory(config.eventLoopGroup(), isDomainSocket);
 
 		Channel channel = null;
 		try {
 			channel = channelFactory.newChannel();
+			container.save(channel);
 			if (channelInitializer instanceof ServerTransport.AcceptorInitializer) {
 				((ServerTransport.AcceptorInitializer) channelInitializer).acceptor.enableAutoReadTask(channel);
 			}
@@ -237,7 +290,8 @@ public final class TransportConnector {
 		}
 
 		MonoChannelPromise monoChannelPromise = new MonoChannelPromise(channel);
-		channel.unsafe().register(elg.next(), monoChannelPromise);
+
+		channel.unsafe().register(eventLoop, monoChannelPromise);
 		Throwable cause = monoChannelPromise.cause();
 		if (cause != null) {
 			if (channel.isRegistered()) {
@@ -252,9 +306,9 @@ public final class TransportConnector {
 		return monoChannelPromise;
 	}
 
-	@SuppressWarnings({"unchecked", "FutureReturnValueIgnored"})
+	@SuppressWarnings({"unchecked", "FutureReturnValueIgnored", "try"})
 	static Mono<Channel> doResolveAndConnect(Channel channel, TransportConfig config,
-			SocketAddress remoteAddress, AddressResolverGroup<?> resolverGroup) {
+			SocketAddress remoteAddress, AddressResolverGroup<?> resolverGroup, ContextContainer container) {
 		try {
 			AddressResolver<SocketAddress> resolver;
 			try {
@@ -280,7 +334,10 @@ public final class TransportConnector {
 				}
 			}
 
-			Future<List<SocketAddress>> resolveFuture = resolver.resolveAll(remoteAddress);
+			Future<List<SocketAddress>> resolveFuture;
+			try (ContextContainer.Scope scope = container.restoreThreadLocalValues()) {
+				resolveFuture = resolver.resolveAll(remoteAddress);
+			}
 
 			if (config instanceof ClientTransportConfig) {
 				final ClientTransportConfig<?> clientTransportConfig = (ClientTransportConfig<?>) config;

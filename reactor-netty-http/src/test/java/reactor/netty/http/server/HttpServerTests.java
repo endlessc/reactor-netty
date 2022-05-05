@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Random;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -92,6 +93,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
@@ -115,10 +117,12 @@ import reactor.netty.http.client.HttpClientRequest;
 import reactor.netty.http.client.PrematureCloseException;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
+import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.tcp.TcpServer;
 import reactor.netty.transport.TransportConfig;
 import reactor.test.StepVerifier;
+import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuple3;
@@ -315,6 +319,7 @@ class HttpServerTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void flushOnComplete() {
 
 		Flux<String> flux = Flux.range(0, 100)
@@ -1445,8 +1450,18 @@ class HttpServerTests extends BaseHttpTest {
 
 	@Test
 	void testDecodingFailureLastHttpContent() throws Exception {
+		AtomicReference<Throwable> error = new AtomicReference<>();
 		disposableServer =
 				createServer()
+				          .doOnConnection(conn -> conn.channel().pipeline().addAfter(NettyPipeline.HttpTrafficHandler, null,
+				                  new ChannelInboundHandlerAdapter() {
+
+				                      @Override
+				                      public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+				                          error.set(cause);
+				                          ctx.fireExceptionCaught(cause);
+				                      }
+				          }))
 				          .route(r -> r.put("/1", (req, res) -> req.receive()
 				                                                   .then(res.sendString(Mono.just("test"))
 				                                                            .then()))
@@ -1455,8 +1470,13 @@ class HttpServerTests extends BaseHttpTest {
 
 		doTestDecodingFailureLastHttpContent("PUT /1 HTTP/1.1\r\nHost: a.example.com\r\n" +
 				"Transfer-Encoding: chunked\r\n\r\nsomething\r\n\r\n", "400 Bad Request", "connection: close");
+
+		assertThat(error.get()).isNull();
+
 		doTestDecodingFailureLastHttpContent("PUT /2 HTTP/1.1\r\nHost: a.example.com\r\n" +
 				"Transfer-Encoding: chunked\r\n\r\nsomething\r\n\r\n", "200 OK");
+
+		assertThat(error.get()).isNull();
 	}
 
 	private void doTestDecodingFailureLastHttpContent(String message, String... expectations) throws Exception {
@@ -1941,6 +1961,53 @@ class HttpServerTests extends BaseHttpTest {
 				                             ctx.fireUserEventTriggered(evt);
 				                         }
 				                     }))
+				          .handle((req, res) -> res.sendString(Mono.just("testSniSupport")))
+				          .bindNow();
+
+		createClient(disposableServer::address)
+		          .secure(spec -> spec.sslContext(clientSslContextBuilder)
+		                              .serverNames(new SNIHostName("test.com")))
+		          .get()
+		          .uri("/")
+		          .responseContent()
+		          .aggregate()
+		          .block(Duration.ofSeconds(30));
+
+		assertThat(hostname.get()).isNotNull();
+		assertThat(hostname.get()).isEqualTo("test.com");
+	}
+
+	@Test
+	void testSniSupportAsyncMappings() throws Exception {
+		SelfSignedCertificate defaultCert = new SelfSignedCertificate("default");
+		Http11SslContextSpec defaultSslContextBuilder =
+				Http11SslContextSpec.forServer(defaultCert.certificate(), defaultCert.privateKey());
+
+		SelfSignedCertificate testCert = new SelfSignedCertificate("test.com");
+		Http11SslContextSpec testSslContextBuilder =
+				Http11SslContextSpec.forServer(testCert.certificate(), testCert.privateKey());
+		SslProvider testSslProvider = SslProvider.builder().sslContext(testSslContextBuilder).build();
+
+		Http11SslContextSpec clientSslContextBuilder =
+				Http11SslContextSpec.forClient()
+				                    .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+
+		AtomicReference<String> hostname = new AtomicReference<>();
+		disposableServer =
+				createServer()
+				          .secure(spec -> spec.sslContext(defaultSslContextBuilder)
+				                              .setSniAsyncMappings((input, promise) -> promise.setSuccess(testSslProvider)))
+				          .doOnChannelInit((obs, channel, remoteAddress) ->
+				              channel.pipeline()
+				                     .addAfter(NettyPipeline.SslHandler, "test", new ChannelInboundHandlerAdapter() {
+				                         @Override
+				                         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+				                             if (evt instanceof SniCompletionEvent) {
+				                                 hostname.set(((SniCompletionEvent) evt).hostname());
+				                             }
+				                                 ctx.fireUserEventTriggered(evt);
+				                             }
+				                         }))
 				          .handle((req, res) -> res.sendString(Mono.just("testSniSupport")))
 				          .bindNow();
 
@@ -2589,8 +2656,8 @@ class HttpServerTests extends BaseHttpTest {
 				        .handle((req, res) -> req.receive()
 				                                 .doOnNext(b -> msgLatch.countDown())
 				                                 .doOnError(t -> {
-				                                     errLatch.countDown();
 				                                     error.set(t);
+					                                 errLatch.countDown();
 				                                 })
 				                                 .then(res.send()))
 				        .bindNow();
@@ -2716,5 +2783,131 @@ class HttpServerTests extends BaseHttpTest {
 		assertThatExceptionOfType(IllegalArgumentException.class)
 				.isThrownBy(() -> createServer().maxKeepAliveRequests(maxKeepAliveRequests))
 				.withMessage("maxKeepAliveRequests must be positive or -1");
+	}
+
+	@Test
+	void testIsFormUrlencodedWithCharset() {
+		doTestIsFormUrlencoded("application/x-www-form-urlencoded;charset=UTF-8", true);
+		doTestIsFormUrlencoded("application/x-www-form-urlencoded ;charset=UTF-8", true);
+	}
+
+	@Test
+	void testIsFormUrlencodedWithoutCharset() {
+		doTestIsFormUrlencoded("application/x-www-form-urlencoded", true);
+	}
+
+	@Test
+	void testIsNotFormUrlencoded() {
+		doTestIsFormUrlencoded("", false);
+		doTestIsFormUrlencoded("application/json", false);
+		doTestIsFormUrlencoded("application/x-www-form-urlencoded-bad", false);
+	}
+
+	@SuppressWarnings("FutureReturnValueIgnored")
+	private void doTestIsFormUrlencoded(String headerValue, boolean expectation) {
+		EmbeddedChannel channel = new EmbeddedChannel();
+		HttpRequest request = new DefaultHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/");
+		request.headers().set(HttpHeaderNames.CONTENT_TYPE, headerValue);
+		HttpServerOperations ops = new HttpServerOperations(
+				Connection.from(channel),
+				ConnectionObserver.emptyListener(),
+				request,
+				null,
+				null,
+				ServerCookieDecoder.STRICT,
+				ServerCookieEncoder.STRICT,
+				DEFAULT_FORM_DECODER_SPEC,
+				null,
+				false);
+		assertThat(ops.isFormUrlencoded()).isEqualTo(expectation);
+		// "FutureReturnValueIgnored" is suppressed deliberately
+		channel.close();
+	}
+
+	/**
+	 * This test verifies if server h2 streams are closed properly when the server does not consume client post data chunks
+	 */
+	@ParameterizedTest
+	@MethodSource("h2cCompatibleCombinations")
+	void testIssue1978H2CNoDelay(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		doTestIssue1978(serverProtocols, clientProtocols, null, null, 0, 0);
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2cCompatibleCombinations")
+	void testIssue1978H2CWithDelay(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		doTestIssue1978(serverProtocols, clientProtocols, null, null, 50, 20);
+	}
+
+	/**
+	 * This test verifies if server h2 streams are closed properly when the server does not consume client post data chunks
+	 */
+	@ParameterizedTest
+	@MethodSource("h2CompatibleCombinations")
+	void testIssue1978H2NoDelay(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		doTestIssue1978(serverProtocols, clientProtocols, serverCtx, clientCtx, 0, 0);
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2CompatibleCombinations")
+	void testIssue1978H2WithDelay(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		doTestIssue1978(serverProtocols, clientProtocols, serverCtx, clientCtx, 50, 20);
+	}
+
+	private void doTestIssue1978(
+			HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols,
+			@Nullable Http2SslContextSpec serverCtx, @Nullable Http2SslContextSpec clientCtx,
+			long serverDelay, long clientDelay) throws Exception {
+		int count = 5;
+		CountDownLatch latch = new CountDownLatch(count);
+
+		Mono<String> mono = Mono.just("testIssue1978");
+		Mono<String> serverResponse = serverDelay == 0 ? mono : mono.delayElement(Duration.ofMillis(serverDelay));
+
+		HttpServer mainServer =
+				HttpServer.create()
+				          .protocol(serverProtocols)
+				          .httpRequestDecoder(spec -> spec.h2cMaxContentLength(8 * 1024));
+		HttpServer server = serverCtx != null ?
+				mainServer.secure(sslContextSpec -> sslContextSpec.sslContext(serverCtx)) : mainServer;
+
+		disposableServer =
+				server.handle((req, res) -> {
+				          req.withConnection(conn -> conn.channel().closeFuture().addListener(f -> latch.countDown()));
+				          return res.sendString(serverResponse);
+				      })
+				      .bindNow();
+
+		byte[] content = new byte[1024];
+		Random rndm = new Random();
+		rndm.nextBytes(content);
+		String strContent = new String(content, Charset.defaultCharset());
+
+		Flux<String> flux = Flux.just(strContent, strContent, strContent, strContent);
+		Flux<String> clientRequest = clientDelay == 0 ? flux : flux.delayElements(Duration.ofMillis(clientDelay));
+
+		HttpClient mainClient = HttpClient.create().port(disposableServer.port()).protocol(clientProtocols);
+		HttpClient client = clientCtx != null ?
+				mainClient.secure(sslContextSpec -> sslContextSpec.sslContext(clientCtx)) : mainClient;
+
+		Flux.range(0, count)
+		    .flatMap(i ->
+		        client.post()
+		              .uri("/")
+		              .send(ByteBufFlux.fromString(clientRequest))
+		              .responseContent()
+		              .aggregate()
+		              .asString())
+		    .blockLast(Duration.ofSeconds(10));
+
+		assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
 	}
 }

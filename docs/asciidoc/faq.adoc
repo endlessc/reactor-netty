@@ -102,6 +102,13 @@ logger (`_reactor.netty.channel.LeakDetection`) that helps to identify where the
 or whether Reactor Netty already forwarded the ownership of the buffers to the application/framework.
 By default, this logger is disabled. To enable it, increase the log level to `DEBUG`.
 
+Another way to detect memory leaks is to monitor `reactor.netty.bytebuf.allocator.active.heap.memory` and `reactor.netty.bytebuf.allocator.active.direct.memory` meters:
+
+- The `reactor.netty.bytebuf.allocator.active.heap.memory` provides the actual bytes consumed by in-use buffers allocated from heap buffer pools
+- The `reactor.netty.bytebuf.allocator.active.direct.memory` provides the actual bytes consumed by in-use buffers allocated from direct buffer pools
+
+If the above meters are constantly growing, then it's likely that there is a buffer memory leak.
+
 NOTE: Consider reducing the used memory when debugging memory leak issues (e.g `-XX:MaxDirectMemorySize`, `-Xms`, `-Xmx`).
 The less memory the application has, the sooner the memory leak will happen.
 
@@ -116,7 +123,14 @@ If, on the client side, you observe `Connection prematurely closed BEFORE respon
 * Obtain a https://en.wikipedia.org/wiki/Tcpdump[TCP dump] and check which peer sends a FIN/RST signal.
 * Check your network connection.
 * Check your Firewall and VPN.
-* Check for any proxies and load balancers. Do they have some kind of idle timeout configuration (the connection is closed when there is no incoming data for a certain period of time)?
+* Check for any proxies and load balancers.
+** Do they have some kind of idle timeout configuration (the connection is closed when there is no incoming data for a certain period of time)?
+** Do they silently drop the idle connections without sending any signal?
+In order to verify whether this might be the issue, you can enable the TCP keep-alive as described in the section <<Connection Timeout>>.
+Issues related to TCP keep-alive configuration on various load balancers were reported in the past.
+*** https://github.com/reactor/reactor-netty/issues/764#issuecomment-1011373248
+*** https://github.com/reactor/reactor-netty/issues/1510
+*** https://github.com/reactor/reactor-netty/issues/1843
 * Check the target server. Are there configurations related to any of the following?
 ** idle timeout (the connection is closed when there is no incoming data for a certain period of time)
 ** limit for buffering data in memory

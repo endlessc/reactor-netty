@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -108,6 +108,7 @@ public interface NettyPipeline {
 	String OnChannelReadIdle     = LEFT + "onChannelReadIdle";
 	String OnChannelWriteIdle    = LEFT + "onChannelWriteIdle";
 	String ProxyHandler          = LEFT + "proxyHandler";
+	String UnvoidHandler         = LEFT + "unvoidHandler";
 	String ProxyLoggingHandler   = LEFT + "proxyLoggingHandler";
 	String ProxyProtocolDecoder  = LEFT + "proxyProtocolDecoder";
 	String ProxyProtocolReader   = LEFT + "proxyProtocolReader";
@@ -115,6 +116,7 @@ public interface NettyPipeline {
 	String SslHandler            = LEFT + "sslHandler";
 	String SslLoggingHandler     = LEFT + "sslLoggingHandler";
 	String SslReader             = LEFT + "sslReader";
+	String TlsMetricsHandler     = LEFT + "tlsMetricsHandler";
 	String WsCompressionHandler  = LEFT + "wsCompressionHandler";
 	String WsFrameAggregator     = LEFT + "wsFrameAggregator";
 

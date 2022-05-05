@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,12 +44,34 @@ public abstract class AbstractChannelMetricsHandler extends ChannelDuplexHandler
 	}
 
 	@Override
+	public void channelActive(ChannelHandlerContext ctx) {
+		if (onServer) {
+			recorder().recordServerConnectionOpened(ctx.channel().localAddress());
+		}
+		ctx.fireChannelActive();
+	}
+
+	@Override
+	public void channelInactive(ChannelHandlerContext ctx) {
+		if (onServer) {
+			recorder().recordServerConnectionClosed(ctx.channel().localAddress());
+		}
+		ctx.fireChannelInactive();
+	}
+
+	@Override
 	public void channelRegistered(ChannelHandlerContext ctx) {
 		if (!onServer) {
 			ctx.pipeline()
 			   .addAfter(NettyPipeline.ChannelMetricsHandler,
 			             NettyPipeline.ConnectMetricsHandler,
 			             connectMetricsHandler());
+		}
+		if (ctx.pipeline().get(NettyPipeline.SslHandler) != null) {
+			ctx.pipeline()
+				.addBefore(NettyPipeline.SslHandler,
+						 NettyPipeline.TlsMetricsHandler,
+						 tlsMetricsHandler());
 		}
 
 		ctx.fireChannelRegistered();
@@ -103,6 +125,7 @@ public abstract class AbstractChannelMetricsHandler extends ChannelDuplexHandler
 	}
 
 	public abstract ChannelHandler connectMetricsHandler();
+	public abstract ChannelHandler tlsMetricsHandler();
 
 	public abstract ChannelMetricsRecorder recorder();
 

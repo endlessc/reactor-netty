@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -60,9 +60,10 @@ import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelId;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -105,6 +106,7 @@ import reactor.netty.SocketUtils;
 import reactor.netty.http.Http11SslContextSpec;
 import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
+import reactor.netty.http.HttpResources;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.resources.ConnectionPoolMetrics;
 import reactor.netty.resources.ConnectionProvider;
@@ -2895,7 +2897,7 @@ class HttpClientTest extends BaseHttpTest {
 				        .handle((req, res) -> res.sendString(Mono.just("testIssue1547")))
 				        .bindNow();
 
-		NioEventLoopGroup loop = new NioEventLoopGroup(1);
+		EventLoopGroup loop = new NioEventLoopGroup(1);
 		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
 		AtomicReference<List<AddressResolverGroup<?>>> resolversInternal = new AtomicReference<>(new ArrayList<>());
 		try {
@@ -2924,7 +2926,7 @@ class HttpClientTest extends BaseHttpTest {
 
 			assertThat(resolversInternal.get()).isNotNull();
 			assertThat(resolversInternal.get().get(0)).isSameAs(resolversInternal.get().get(1));
-			assertThat(resolversInternal.get().get(0).getClass().getSimpleName()).isEqualTo("AddressResolverGroupMetrics");
+			assertThat(resolversInternal.get().get(0).getClass().getSimpleName()).isEqualTo("MicrometerAddressResolverGroupMetrics");
 		}
 		finally {
 			// Closing the executor cleans the AddressResolverGroup internal structures and closes the resolver
@@ -2973,13 +2975,13 @@ class HttpClientTest extends BaseHttpTest {
 	void testCustomHandlerAddedOnChannelInitAlwaysAvailable() {
 		doTestCustomHandlerAddedOnCallbackAlwaysAvailable(
 				client -> client.doOnChannelInit((observer, channel, address) ->
-						Connection.from(channel).addHandlerLast("custom", new ChannelDuplexHandler())));
+						Connection.from(channel).addHandlerLast("custom", new ChannelHandlerAdapter(){})));
 	}
 
 	@Test
 	void testCustomHandlerAddedOnChannelConnectedAlwaysAvailable() {
 		doTestCustomHandlerAddedOnCallbackAlwaysAvailable(
-				client -> client.doOnConnected(conn -> conn.addHandlerLast("custom", new ChannelDuplexHandler())));
+				client -> client.doOnConnected(conn -> conn.addHandlerLast("custom", new ChannelHandlerAdapter(){})));
 	}
 
 	private void doTestCustomHandlerAddedOnCallbackAlwaysAvailable(Function<HttpClient, HttpClient> customizer) {
@@ -3026,12 +3028,10 @@ class HttpClientTest extends BaseHttpTest {
 		AtomicBoolean onDisconnected = new AtomicBoolean();
 		HttpClient client =
 				createHttpClientForContextWithAddress()
-				        .doOnRequest((req, conn) -> {
-				            onRequest.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null);
-				        })
-				        .doOnResponse((req, conn) -> {
-				            onResponse.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null);
-				        })
+				        .doOnRequest((req, conn) ->
+				            onRequest.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null))
+				        .doOnResponse((req, conn) ->
+				            onResponse.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null))
 				        .doOnDisconnected(conn ->
 				            onDisconnected.set(conn.channel().pipeline().get(NettyPipeline.ResponseTimeoutHandler) != null))
 						.responseTimeout(Duration.ofMillis(100));
@@ -3128,6 +3128,69 @@ class HttpClientTest extends BaseHttpTest {
 		finally {
 			loop.disposeLater()
 			    .block();
+		}
+	}
+
+	@Test
+	void testIssue1943Http11() {
+		doTestIssue1943(HttpProtocol.HTTP11);
+	}
+
+	@Test
+	void testIssue1943H2C() {
+		doTestIssue1943(HttpProtocol.H2C);
+	}
+
+	private void doTestIssue1943(HttpProtocol protocol) {
+		LoopResources serverLoop = LoopResources.create("testIssue1943");
+		disposableServer =
+				createServer()
+				        .protocol(protocol)
+				        .runOn(serverLoop)
+				        .handle((req, res) -> res.sendString(Mono.just("testIssue1943")))
+				        .bindNow();
+
+		HttpClient client = createClient(disposableServer.port()).protocol(protocol);
+		HttpClientConfig config = client.configuration();
+
+		LoopResources loopResources1 = config.loopResources();
+		ConnectionProvider provider1 = ((HttpConnectionProvider) config.connectionProvider()).http1ConnectionProvider();
+		AddressResolverGroup<?> resolverGroup1 = config.defaultAddressResolverGroup();
+
+		try {
+		client.get()
+		      .uri("/")
+		      .responseContent()
+		      .aggregate()
+		      .asString()
+		      .as(StepVerifier::create)
+		      .expectNext("testIssue1943")
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+
+		HttpResources.reset();
+
+		LoopResources loopResources2 = config.loopResources();
+		ConnectionProvider provider2 = ((HttpConnectionProvider) config.connectionProvider()).http1ConnectionProvider();
+		AddressResolverGroup<?> resolverGroup2 = config.defaultAddressResolverGroup();
+
+		assertThat(loopResources1).isNotSameAs(loopResources2);
+		assertThat(provider1).isNotSameAs(provider2);
+		assertThat(resolverGroup1).isNotSameAs(resolverGroup2);
+
+		client.get()
+		      .uri("/")
+		      .responseContent()
+		      .aggregate()
+		      .asString()
+		      .as(StepVerifier::create)
+		      .expectNext("testIssue1943")
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+		}
+		finally {
+			serverLoop.disposeLater()
+			          .block(Duration.ofSeconds(5));
 		}
 	}
 }

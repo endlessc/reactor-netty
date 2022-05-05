@@ -1,7 +1,7 @@
 import me.champeau.gradle.japicmp.JapicmpTask
 
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -77,8 +77,8 @@ task downloadBaseline(type: Download) {
 }
 
 task japicmp(type: JapicmpTask) {
-	oldClasspath = files("${buildDir}/baselineLibs/reactor-netty-http-brave-${compatibleVersion}.jar")
-	newClasspath = files(jar.archiveFile, project(':reactor-netty-core').jar)
+	oldClasspath.from(files("${buildDir}/baselineLibs/reactor-netty-http-brave-${compatibleVersion}.jar"))
+	newClasspath.from(files(jar.archiveFile, project(':reactor-netty-core').jar))
 	onlyBinaryIncompatibleModified = true
 	failOnModification = true
 	failOnSourceIncompatibility = true
@@ -87,5 +87,8 @@ task japicmp(type: JapicmpTask) {
 	includeSynthetic = true
 	onlyIf { "$compatibleVersion" != "SKIP" }
 }
+
+tasks.japicmp.dependsOn(downloadBaseline)
+tasks.check.dependsOn(japicmp)
 
 description = "Brave instrumentation for Reactor Netty HTTP"

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,18 +52,17 @@ import reactor.netty.NettyOutbound;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.http.Http2SettingsSpec;
 import reactor.netty.http.HttpProtocol;
-import reactor.netty.http.HttpResources;
 import reactor.netty.http.websocket.WebsocketInbound;
 import reactor.netty.http.websocket.WebsocketOutbound;
+import reactor.netty.internal.util.Metrics;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.transport.ClientTransport;
-import reactor.util.Metrics;
 import reactor.util.annotation.Nullable;
 
 /**
- * An HttpClient allows to build in a safe immutable way an http client that is
+ * An HttpClient allows building in a safe immutable way an http client that is
  * materialized and connecting when {@link HttpClient#connect()} is ultimately called.
  * {@code Transfer-Encoding: chunked} will be applied for those HTTP methods for which
  * a request body is expected. {@code Content-Length} provided via request headers
@@ -221,7 +220,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		 * {@link #followRedirect(boolean, Consumer)}/{@link #followRedirect(BiPredicate, Consumer)}.
 		 *
 		 * @param formCallback called when form generator is created
-		 * @param progress called after form is being sent and passed with a {@link Flux} of latest in-flight or uploaded bytes
+		 * @param progress called after form is being sent and passed with a {@link Flux} of the latest in-flight or uploaded bytes
 		 *
 		 * @return a new {@link ResponseReceiver}
 		 */
@@ -390,7 +389,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * @return a {@link HttpClient}
 	 */
 	public static HttpClient create() {
-		return new HttpClientConnect(new HttpConnectionProvider(HttpResources.get(), Http2Resources::get));
+		return new HttpClientConnect(new HttpConnectionProvider());
 	}
 
 	/**
@@ -1106,7 +1105,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Intercept the connection lifecycle and allows to delay, transform or inject a
+	 * Intercept the connection lifecycle and allows delaying, transform or inject a
 	 * context.
 	 *
 	 * @param connector A bi function mapping the default connection and configured

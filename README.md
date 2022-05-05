@@ -22,10 +22,10 @@ With `Gradle` from [repo.spring.io](https://repo.spring.io) or `Maven Central` r
     }
 
     dependencies {
-      //compile "io.projectreactor.netty:reactor-netty-core:1.0.15-SNAPSHOT"
-      compile "io.projectreactor.netty:reactor-netty-core:1.0.14"
-      //compile "io.projectreactor.netty:reactor-netty-http:1.0.15-SNAPSHOT"
-      compile "io.projectreactor.netty:reactor-netty-http:1.0.14"
+      //compile "io.projectreactor.netty:reactor-netty-core:1.0.19-SNAPSHOT"
+      compile "io.projectreactor.netty:reactor-netty-core:1.1.0-M2"
+      //compile "io.projectreactor.netty:reactor-netty-http:1.0.19-SNAPSHOT"
+      compile "io.projectreactor.netty:reactor-netty-http:1.1.0-M2"
     }
 ```
 
@@ -89,6 +89,9 @@ If you want to raise an issue, please follow the recommendations below:
   the version of `Reactor Netty` that you are using, as well as your `Operating System` and
   `JVM` version.
 * If you want to raise a security vulnerability, please review our [Security Policy](https://github.com/reactor/reactor-netty/security/policy) for more details.
+
+## Contributing
+See our [Contributing Guide](https://github.com/reactor/.github/blob/main/CONTRIBUTING.md) for information about contributing to Reactor Netty.
 
 ## Building from Source
 You don't need to build from source to use `Reactor Netty` (binaries in

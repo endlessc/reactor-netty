@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ import reactor.core.publisher.Operators;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
+import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.PooledConnectionProvider;
@@ -64,7 +65,7 @@ import static reactor.netty.http.client.HttpClientState.STREAM_CONFIGURED;
 import static reactor.netty.http.client.HttpClientState.UPGRADE_REJECTED;
 
 /**
- * A HTTP/2 implementation for pooled {@link ConnectionProvider}.
+ * An HTTP/2 implementation for pooled {@link ConnectionProvider}.
  *
  * @author Violeta Georgieva
  * @since 1.0.0
@@ -98,10 +99,17 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			ConnectionObserver connectionObserver,
 			long pendingAcquireTimeout,
 			InstrumentedPool<Connection> pool,
+			Context propagationContext,
 			MonoSink<Connection> sink) {
-		boolean acceptGzip = config instanceof HttpClientConfig && ((HttpClientConfig) config).acceptGzip;
+		boolean acceptGzip = false;
+		ChannelMetricsRecorder metricsRecorder = config.metricsRecorder() != null ? config.metricsRecorder().get() : null;
+		Function<String, String> uriTagValue = null;
+		if (config instanceof HttpClientConfig) {
+			acceptGzip = ((HttpClientConfig) config).acceptGzip;
+			uriTagValue = ((HttpClientConfig) config).uriTagValue;
+		}
 		return new DisposableAcquire(connectionObserver, config.channelOperationsProvider(),
-				acceptGzip, pendingAcquireTimeout, pool, sink);
+				acceptGzip, metricsRecorder, pendingAcquireTimeout, pool, propagationContext, sink, uriTagValue);
 	}
 
 	@Override
@@ -119,7 +127,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				.registerMetrics(name(), id, remoteAddress, metrics);
 	}
 
-	static void invalidate(@Nullable ConnectionObserver owner, Channel channel) {
+	static void invalidate(@Nullable ConnectionObserver owner) {
 		if (owner instanceof DisposableAcquire) {
 			DisposableAcquire da = (DisposableAcquire) owner;
 			da.pooledRef
@@ -135,18 +143,18 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				localEndpoint.maxActiveStreams());
 	}
 
-	static void registerClose(Channel channel) {
-		ConnectionObserver owner = channel.parent().attr(OWNER).get();
+	static void registerClose(Channel channel, ConnectionObserver owner) {
 		channel.closeFuture()
 		       .addListener(f -> {
-		           Channel parent = channel.parent();
-		           Http2FrameCodec frameCodec = parent.pipeline().get(Http2FrameCodec.class);
-		           Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint = frameCodec.connection().local();
 		           if (log.isDebugEnabled()) {
-		               logStreamsState(channel, localEndpoint, "Stream closed");
+		               Http2FrameCodec frameCodec = channel.parent().pipeline().get(Http2FrameCodec.class);
+		               if (frameCodec != null) {
+		                   Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint = frameCodec.connection().local();
+		                   logStreamsState(channel, localEndpoint, "Stream closed");
+		               }
 		           }
 
-		           invalidate(owner, parent);
+		           invalidate(owner);
 		       });
 	}
 
@@ -192,13 +200,17 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 	static final class DisposableAcquire
 			implements CoreSubscriber<PooledRef<Connection>>, ConnectionObserver, Disposable, GenericFutureListener<Future<Http2StreamChannel>> {
 		final Disposable.Composite cancellations;
+		final Context currentContext;
 		final ConnectionObserver obs;
 		final ChannelOperations.OnSetup opsFactory;
 		final boolean acceptGzip;
+		final ChannelMetricsRecorder metricsRecorder;
 		final long pendingAcquireTimeout;
 		final InstrumentedPool<Connection> pool;
+		final Context propagationContext;
 		final boolean retried;
 		final MonoSink<Connection> sink;
+		final Function<String, String> uriTagValue;
 
 		PooledRef<Connection> pooledRef;
 		Subscription subscription;
@@ -207,33 +219,44 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				ConnectionObserver obs,
 				ChannelOperations.OnSetup opsFactory,
 				boolean acceptGzip,
+				@Nullable ChannelMetricsRecorder metricsRecorder,
 				long pendingAcquireTimeout,
 				InstrumentedPool<Connection> pool,
-				MonoSink<Connection> sink) {
+				Context propagationContext,
+				MonoSink<Connection> sink,
+				@Nullable Function<String, String> uriTagValue) {
 			this.cancellations = Disposables.composite();
+			this.currentContext = Context.of(sink.contextView());
 			this.obs = obs;
 			this.opsFactory = opsFactory;
 			this.acceptGzip = acceptGzip;
+			this.metricsRecorder = metricsRecorder;
 			this.pendingAcquireTimeout = pendingAcquireTimeout;
 			this.pool = pool;
+			this.propagationContext = propagationContext;
 			this.retried = false;
 			this.sink = sink;
+			this.uriTagValue = uriTagValue;
 		}
 
 		DisposableAcquire(DisposableAcquire parent) {
 			this.cancellations = parent.cancellations;
+			this.currentContext = parent.currentContext;
 			this.obs = parent.obs;
 			this.opsFactory = parent.opsFactory;
 			this.acceptGzip = parent.acceptGzip;
+			this.metricsRecorder = parent.metricsRecorder;
 			this.pendingAcquireTimeout = parent.pendingAcquireTimeout;
 			this.pool = parent.pool;
+			this.propagationContext = parent.propagationContext;
 			this.retried = true;
 			this.sink = parent.sink;
+			this.uriTagValue = parent.uriTagValue;
 		}
 
 		@Override
 		public Context currentContext() {
-			return sink.currentContext();
+			return currentContext;
 		}
 
 		@Override
@@ -281,14 +304,14 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				return;
 			}
 
-			HttpClientConfig.openStream(channel, obs, opsFactory, acceptGzip)
+			HttpClientConfig.openStream(channel, this, obs, opsFactory, acceptGzip, metricsRecorder, uriTagValue)
 			                .addListener(this);
 		}
 
 		@Override
 		public void onStateChange(Connection connection, State newState) {
 			if (newState == UPGRADE_REJECTED) {
-				invalidate(connection.channel().attr(OWNER).get(), connection.channel());
+				invalidate(connection.channel().attr(OWNER).get());
 			}
 
 			obs.onStateChange(connection, newState);
@@ -318,13 +341,15 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			if (future.isSuccess()) {
 				Http2StreamChannel ch = future.getNow();
 
-				if (!frameCodec.connection().local().canOpenStream()) {
+				if (!channel.isActive() || frameCodec == null || !frameCodec.connection().local().canOpenStream()) {
+					invalidate(this);
 					if (!retried) {
 						if (log.isDebugEnabled()) {
 							log.debug(format(ch, "Immediately aborted pooled channel, max active streams is reached, " +
 								"re-acquiring a new channel"));
 						}
 						pool.acquire(Duration.ofMillis(pendingAcquireTimeout))
+						    .contextWrite(ctx -> ctx.put(CONTEXT_CALLER_EVENTLOOP, channel.eventLoop()))
 						    .subscribe(new DisposableAcquire(this));
 					}
 					else {
@@ -345,6 +370,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				}
 			}
 			else {
+				invalidate(this);
 				sink.error(future.cause());
 			}
 		}
@@ -369,19 +395,19 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			if (handler != null) {
 				String protocol = handler.applicationProtocol() != null ? handler.applicationProtocol() : ApplicationProtocolNames.HTTP_1_1;
 				if (ApplicationProtocolNames.HTTP_1_1.equals(protocol)) {
-					// No information for the negotiated application-level protocol
+					// No information for the negotiated application-level protocol,
 					// or it is HTTP/1.1, continue as an HTTP/1.1 request
 					// and remove the connection from this pool.
 					ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
 					if (ops != null) {
 						sink.success(ops);
-						invalidate(this, channel);
+						invalidate(this);
 						return true;
 					}
 				}
 				else if (!ApplicationProtocolNames.HTTP_2.equals(handler.applicationProtocol())) {
 					channel.attr(OWNER).set(null);
-					invalidate(this, channel);
+					invalidate(this);
 					sink.error(new IOException("Unknown protocol [" + protocol + "]."));
 					return true;
 				}
@@ -393,7 +419,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
 				if (ops != null) {
 					sink.success(ops);
-					invalidate(this, channel);
+					invalidate(this);
 					return true;
 				}
 			}

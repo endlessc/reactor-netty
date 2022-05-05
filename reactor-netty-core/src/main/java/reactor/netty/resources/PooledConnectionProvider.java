@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,10 @@
  */
 package reactor.netty.resources;
 
+import io.micrometer.contextpropagation.ContextContainer;
 import io.netty.channel.Channel;
+import io.netty.channel.EventLoop;
+import io.netty.channel.EventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
 import org.reactivestreams.Publisher;
 import reactor.core.CoreSubscriber;
@@ -26,7 +29,9 @@ import reactor.core.scheduler.Schedulers;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.ReactorNetty;
+import reactor.netty.internal.util.Metrics;
 import reactor.netty.transport.TransportConfig;
+import reactor.netty.internal.util.MapUtils;
 import reactor.pool.AllocationStrategy;
 import reactor.pool.InstrumentedPool;
 import reactor.pool.Pool;
@@ -39,8 +44,8 @@ import reactor.pool.decorators.InstrumentedPoolDecorators;
 import reactor.pool.introspection.SamplingAllocationStrategy;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.Metrics;
 import reactor.util.annotation.Nullable;
+import reactor.util.context.Context;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -70,6 +75,11 @@ import static reactor.netty.resources.ConnectionProvider.ConnectionPoolSpec.PEND
  * @since 1.0.0
  */
 public abstract class PooledConnectionProvider<T extends Connection> implements ConnectionProvider {
+	/**
+	 * Context key used to propagate the caller event loop in the connection pool subscription.
+	 */
+	protected final static String CONTEXT_CALLER_EVENTLOOP = "callereventloop";
+
 	final PoolFactory<T> defaultPoolFactory;
 	final Map<SocketAddress, PoolFactory<T>> poolFactoryPerRemoteHost = new HashMap<>();
 
@@ -115,8 +125,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			SocketAddress remoteAddress = Objects.requireNonNull(remote.get(), "Remote Address supplier returned null");
 			PoolKey holder = new PoolKey(remoteAddress, config.channelHash());
 			PoolFactory<T> poolFactory = poolFactory(remoteAddress);
-			InstrumentedPool<T> pool = channelPools.get(holder);
-			pool = pool != null ? pool : channelPools.computeIfAbsent(holder, poolKey -> {
+			InstrumentedPool<T> pool = MapUtils.computeIfAbsent(channelPools, holder, poolKey -> {
 				if (log.isDebugEnabled()) {
 					log.debug("Creating a new [{}] client pool [{}] for [{}]", name, poolFactory, remoteAddress);
 				}
@@ -140,9 +149,31 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 				return newPool;
 			});
 
-			pool.acquire(Duration.ofMillis(poolFactory.pendingAcquireTimeout))
+			ContextContainer container = ContextContainer.create().captureThreadLocalValues();
+			container.captureContext(Context.of(sink.contextView()));
+			Context currentPropagationContext = container.save(Context.empty());
+
+			EventLoop eventLoop;
+			if (sink.contextView().hasKey(CONTEXT_CALLER_EVENTLOOP)) {
+				eventLoop = sink.contextView().get(CONTEXT_CALLER_EVENTLOOP);
+			}
+			else {
+				EventLoopGroup group = config.loopResources().onClient(config.isPreferNative());
+				if (group instanceof ColocatedEventLoopGroup) {
+					eventLoop = ((ColocatedEventLoopGroup) group).nextInternal();
+				}
+				else {
+					eventLoop = null;
+				}
+			}
+
+			Mono<PooledRef<T>> mono = pool.acquire(Duration.ofMillis(poolFactory.pendingAcquireTimeout));
+			if (eventLoop != null) {
+				mono = mono.contextWrite(ctx -> ctx.put(CONTEXT_CALLER_EVENTLOOP, eventLoop));
+			}
+			mono.contextWrite(ctx -> ctx.putAll(currentPropagationContext.readOnly()))
 			    .subscribe(createDisposableAcquire(config, connectionObserver,
-			            poolFactory.pendingAcquireTimeout, pool, sink));
+			            poolFactory.pendingAcquireTimeout, pool, currentPropagationContext, sink));
 		});
 	}
 
@@ -224,6 +255,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			ConnectionObserver connectionObserver,
 			long pendingAcquireTimeout,
 			InstrumentedPool<T> pool,
+			Context propagationContext,
 			MonoSink<Connection> sink);
 
 	protected abstract InstrumentedPool<T> createPool(

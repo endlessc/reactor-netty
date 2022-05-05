@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -77,7 +77,7 @@ public final class ReactorNetty {
 
 	/**
 	 * Specifies whether the channel ID will be prepended to the log message when possible.
-	 * By default it will be prepended.
+	 * By default, it will be prepended.
 	 */
 	static final boolean LOG_CHANNEL_INFO =
 			Boolean.parseBoolean(System.getProperty("reactor.netty.logChannelInfo", "true"));
@@ -127,10 +127,14 @@ public final class ReactorNetty {
 	public static final String POOL_ACQUIRE_TIMEOUT = "reactor.netty.pool.acquireTimeout";
 	/**
 	 * Default max idle time, fallback - max idle time is not specified.
+	 * <p><strong>Note:</strong> This configuration is not applicable for {@link reactor.netty.tcp.TcpClient}.
+	 * A TCP connection is always closed and never returned to the pool.
 	 */
 	public static final String POOL_MAX_IDLE_TIME = "reactor.netty.pool.maxIdleTime";
 	/**
 	 * Default max life time, fallback - max life time is not specified.
+	 * <p><strong>Note:</strong> This configuration is not applicable for {@link reactor.netty.tcp.TcpClient}.
+	 * A TCP connection is always closed and never returned to the pool.
 	 */
 	public static final String POOL_MAX_LIFE_TIME = "reactor.netty.pool.maxLifeTime";
 	/**
@@ -139,6 +143,8 @@ public final class ReactorNetty {
 	 *     <li>fifo - The connection selection is first in, first out</li>
 	 *     <li>lifo - The connection selection is last in, first out</li>
 	 * </ul>
+	 * <p><strong>Note:</strong> This configuration is not applicable for {@link reactor.netty.tcp.TcpClient}.
+	 * A TCP connection is always closed and never returned to the pool.
 	 */
 	public static final String POOL_LEASING_STRATEGY = "reactor.netty.pool.leasingStrategy";
 	/**
@@ -177,7 +183,7 @@ public final class ReactorNetty {
 
 	/**
 	 * Specifies whether the Http Server access log will be enabled.
-	 * By default it is disabled.
+	 * By default, it is disabled.
 	 */
 	public static final String ACCESS_LOG_ENABLED = "reactor.netty.http.server.accessLogEnabled";
 

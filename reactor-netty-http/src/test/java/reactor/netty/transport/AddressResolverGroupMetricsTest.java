@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,10 @@ package reactor.netty.transport;
 
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.core.tck.MeterRegistryAssert;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -85,6 +87,9 @@ class AddressResolverGroupMetricsTest extends BaseHttpTest {
 
 
 	private double getTimerValue(String address) {
+		MeterRegistryAssert.assertThat(registry).hasTimerWithNameAndTags("reactor.netty.http.client.address.resolver",
+				Tags.of(REMOTE_ADDRESS, address, STATUS, SUCCESS));
+
 		Timer timer = registry.find("reactor.netty.http.client.address.resolver")
 		                      .tags(REMOTE_ADDRESS, address, STATUS, SUCCESS).timer();
 		double result = -1;

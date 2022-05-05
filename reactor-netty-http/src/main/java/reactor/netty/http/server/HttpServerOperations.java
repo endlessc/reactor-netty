@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -109,12 +109,14 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle;
 	final HttpRequest nettyRequest;
 	final HttpResponse nettyResponse;
-	final String path;
 	final HttpHeaders responseHeaders;
 	final String scheme;
 
 	Function<? super String, Map<String, String>> paramsResolver;
+	String path;
 	Consumer<? super HttpHeaders> trailerHeadersConsumer;
+
+	volatile Context currentContext;
 
 	HttpServerOperations(HttpServerOperations replaced) {
 		super(replaced);
@@ -123,6 +125,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		this.cookieDecoder = replaced.cookieDecoder;
 		this.cookieEncoder = replaced.cookieEncoder;
 		this.cookieHolder = replaced.cookieHolder;
+		this.currentContext = replaced.currentContext;
 		this.formDecoderProvider = replaced.formDecoderProvider;
 		this.mapHandle = replaced.mapHandle;
 		this.nettyRequest = replaced.nettyRequest;
@@ -161,6 +164,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
 		this.cookieHolder = ServerCookies.newServerRequestHolder(nettyRequest.headers(), decoder);
+		this.currentContext = Context.empty();
 		this.formDecoderProvider = formDecoderProvider;
 		this.mapHandle = mapHandle;
 		this.nettyRequest = nettyRequest;
@@ -271,6 +275,11 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
+	public Context currentContext() {
+		return currentContext;
+	}
+
+	@Override
 	public HttpServerResponse header(CharSequence name, CharSequence value) {
 		if (!hasSentHeaders()) {
 			this.responseHeaders.set(name, value);
@@ -294,8 +303,9 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	public boolean isFormUrlencoded() {
-		String contentType = requestHeaders().get(HttpHeaderNames.CONTENT_TYPE);
-		return HttpHeaderValues.APPLICATION_X_WWW_FORM_URLENCODED.contentEqualsIgnoreCase(contentType);
+		CharSequence mimeType = HttpUtil.getMimeType(nettyRequest);
+		return mimeType != null &&
+				HttpHeaderValues.APPLICATION_X_WWW_FORM_URLENCODED.contentEqualsIgnoreCase(mimeType.toString().trim());
 	}
 
 	@Override
@@ -720,14 +730,13 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		return ((AtomicLong) ops.connection()).get();
 	}
 
+	@SuppressWarnings("FutureReturnValueIgnored")
 	static void sendDecodingFailures(
 			ChannelHandlerContext ctx,
 			ConnectionObserver listener,
 			boolean secure,
 			Throwable t,
 			Object msg) {
-
-		Connection conn = Connection.from(ctx.channel());
 
 		Throwable cause = t.getCause() != null ? t.getCause() : t;
 
@@ -737,20 +746,29 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 		ReferenceCountUtil.release(msg);
 
-		HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_0,
+		HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
 				cause instanceof TooLongFrameException ? HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE :
 				                                         HttpResponseStatus.BAD_REQUEST);
 		response.headers()
 		        .setInt(HttpHeaderNames.CONTENT_LENGTH, 0)
 		        .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-		ctx.writeAndFlush(response)
-		   .addListener(ChannelFutureListener.CLOSE);
 
-		HttpRequest request = null;
-		if (msg instanceof HttpRequest) {
-			request = (HttpRequest) msg;
+		Connection ops = ChannelOperations.get(ctx.channel());
+		if (ops == null) {
+			Connection conn = Connection.from(ctx.channel());
+			if (msg instanceof HttpRequest) {
+				ops = new FailedHttpServerRequest(conn, listener, (HttpRequest) msg, response, secure);
+				ops.bind();
+			}
+			else {
+				ops = conn;
+			}
 		}
-		listener.onStateChange(new FailedHttpServerRequest(conn, listener, request, response, secure), REQUEST_DECODING_FAILED);
+
+		//"FutureReturnValueIgnored" this is deliberate
+		ctx.channel().writeAndFlush(response);
+
+		listener.onStateChange(ops, REQUEST_DECODING_FAILED);
 	}
 
 	/**
@@ -903,12 +921,22 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		FailedHttpServerRequest(
 				Connection c,
 				ConnectionObserver listener,
-				@Nullable HttpRequest nettyRequest,
+				HttpRequest nettyRequest,
 				HttpResponse nettyResponse,
 				boolean secure) {
 			super(c, listener, nettyRequest, null, null, ServerCookieDecoder.STRICT, ServerCookieEncoder.STRICT,
 					DEFAULT_FORM_DECODER_SPEC, null, false, secure);
 			this.customResponse = nettyResponse;
+			String tempPath = "";
+			try {
+				tempPath = resolvePath(nettyRequest.uri());
+			}
+			catch (RuntimeException e) {
+				tempPath = "/bad-request";
+			}
+			finally {
+				this.path = tempPath;
+			}
 		}
 
 		@Override

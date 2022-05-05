@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -104,6 +104,9 @@ dependencies {
 
 	//Metrics
 	compileOnly "io.micrometer:micrometer-core:$micrometerVersion"
+	compileOnly "io.micrometer:micrometer-tracing-api:$micrometerTracingVersion"
+
+	api "io.micrometer:context-propagation-api:${contextPropagationVersion}"
 
 	// Logging
 	compileOnly "org.slf4j:slf4j-api:$slf4jVersion"
@@ -129,6 +132,7 @@ dependencies {
 	testImplementation "ch.qos.logback:logback-classic:$logbackVersion"
 	testImplementation "io.projectreactor.tools:blockhound-junit-platform:$blockHoundVersion"
 	testImplementation "io.micrometer:micrometer-core:$micrometerVersion"
+	testImplementation "io.micrometer:micrometer-test:$micrometerVersion"
 
 	testRuntimeOnly "org.junit.platform:junit-platform-launcher:$junitPlatformLauncherVersion"
 	testRuntimeOnly "org.junit.jupiter:junit-jupiter-engine:$junitVersion"
@@ -185,20 +189,14 @@ task downloadBaseline(type: Download) {
 }
 
 task japicmp(type: JapicmpTask) {
-	oldClasspath = files("${buildDir}/baselineLibs/reactor-netty-core-${compatibleVersion}-original.jar")
-	newClasspath = files(jar.archiveFile)
+	oldClasspath.from(files("${buildDir}/baselineLibs/reactor-netty-core-${compatibleVersion}-original.jar"))
+	newClasspath.from(files(jar.archiveFile))
 	onlyBinaryIncompatibleModified = true
 	failOnModification = true
 	failOnSourceIncompatibility = true
 	txtOutputFile = file("${project.buildDir}/reports/japi.txt")
 	ignoreMissingClasses = true
 	includeSynthetic = true
-	methodExcludes = [
-			// New methods with default implementation
-			// reactor.netty.resources
-			"reactor.netty.resources.ConnectionProvider#mutate()",
-			"reactor.netty.resources.ConnectionProvider#name()"
-	]
 	onlyIf { "$compatibleVersion" != "SKIP" }
 }
 

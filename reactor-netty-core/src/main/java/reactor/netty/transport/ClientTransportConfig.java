@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,8 +35,10 @@ import io.netty.resolver.dns.DnsAddressResolverGroup;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
+import reactor.netty.channel.MicrometerChannelMetricsRecorder;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
+import reactor.netty.internal.util.MapUtils;
 import reactor.util.annotation.Nullable;
 
 /**
@@ -222,7 +224,12 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	protected AddressResolverGroup<?> resolverInternal() {
 		AddressResolverGroup<?> resolverGroup = resolver != null ? resolver : defaultAddressResolverGroup();
 		if (metricsRecorder != null) {
-			return AddressResolverGroupMetrics.getOrCreate(resolverGroup, metricsRecorder);
+			if (metricsRecorder instanceof MicrometerChannelMetricsRecorder) {
+				return MicrometerAddressResolverGroupMetrics.getOrCreate(resolverGroup, (MicrometerChannelMetricsRecorder) metricsRecorder);
+			}
+			else {
+				return AddressResolverGroupMetrics.getOrCreate(resolverGroup, metricsRecorder);
+			}
 		}
 		else {
 			return resolverGroup;
@@ -235,9 +242,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 			NameResolverProvider nameResolverProvider,
 			LoopResources loopResources,
 			boolean preferNative) {
-		int hash = Objects.hash(nameResolverProvider, loopResources, preferNative);
-		DnsAddressResolverGroup resolverGroup = RESOLVERS_CACHE.get(hash);
-		return resolverGroup != null ? resolverGroup : RESOLVERS_CACHE.computeIfAbsent(hash,
+		return MapUtils.computeIfAbsent(RESOLVERS_CACHE, Objects.hash(nameResolverProvider, loopResources, preferNative),
 				key -> nameResolverProvider.newNameResolverGroup(loopResources, preferNative));
 	}
 

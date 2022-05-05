@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,6 +47,7 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.LineBasedFrameDecoder;
@@ -256,7 +257,7 @@ public class TcpClientTests {
 
 	@Test
 	void tcpClientHandlesLineFeedDataFixedPool() throws InterruptedException {
-		Consumer<? super Connection> channelInit = c -> c.addHandler("codec", new LineBasedFrameDecoder(8 * 1024));
+		Consumer<? super Connection> channelInit = c -> c.addHandlerLast("codec", new LineBasedFrameDecoder(8 * 1024));
 
 		ConnectionProvider p = ConnectionProvider.newConnection();
 
@@ -269,7 +270,7 @@ public class TcpClientTests {
 
 	@Test
 	void tcpClientHandlesLineFeedDataElasticPool() throws InterruptedException {
-		Consumer<? super Connection> channelInit = c -> c.addHandler("codec", new LineBasedFrameDecoder(8 * 1024));
+		Consumer<? super Connection> channelInit = c -> c.addHandlerLast("codec", new LineBasedFrameDecoder(8 * 1024));
 
 		tcpClientHandlesLineFeedData(
 				TcpClient.create(ConnectionProvider.create("tcpClientHandlesLineFeedDataElasticPool", Integer.MAX_VALUE))
@@ -345,7 +346,7 @@ public class TcpClientTests {
 		                                                  return Mono.delay(Duration.ofSeconds(1));
 		                                              default:
 		                                                  latch.countDown();
-		                                                  return Mono.<Long>empty();
+		                                                  return Mono.empty();
 		                                          }
 		                                    })))
 		      .subscribe(System.out::println);
@@ -1232,7 +1233,7 @@ public class TcpClientTests {
 	@Test
 	void testDefaultResolverWithCustomEventLoop() throws Exception {
 		LoopResources loop1 = LoopResources.create("test", 1, true);
-		NioEventLoopGroup loop2 = new NioEventLoopGroup(1);
+		EventLoopGroup loop2 = new NioEventLoopGroup(1);
 		TcpClient client = TcpClient.create();
 		TcpClient newClient = null;
 		try {

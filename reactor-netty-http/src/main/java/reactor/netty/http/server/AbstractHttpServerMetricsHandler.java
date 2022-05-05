@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http2.Http2StreamChannel;
 import reactor.netty.channel.ChannelOperations;
 import reactor.util.annotation.Nullable;
 
@@ -52,6 +53,33 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 		this.uriTagValue = uriTagValue;
 	}
 
+	protected AbstractHttpServerMetricsHandler(AbstractHttpServerMetricsHandler copy) {
+		this.dataReceived = copy.dataReceived;
+		this.dataReceivedTime = copy.dataReceivedTime;
+		this.dataSent = copy.dataSent;
+		this.dataSentTime = copy.dataSentTime;
+		this.uriTagValue = copy.uriTagValue;
+	}
+
+	@Override
+	public void channelActive(ChannelHandlerContext ctx) {
+		// For custom user recorders, we don't propagate the channelActive event, because this will be done
+		// by the ChannelMetricsHandler itself. ChannelMetricsHandler is only present when the recorder is
+		// not our MicrometerHttpServerMetricsRecorder. See HttpServerConfig class.
+		if (!(ctx.channel() instanceof Http2StreamChannel) && recorder() instanceof MicrometerHttpServerMetricsRecorder) {
+			recorder().recordServerConnectionOpened(ctx.channel().localAddress());
+		}
+		ctx.fireChannelActive();
+	}
+
+	@Override
+	public void channelInactive(ChannelHandlerContext ctx) {
+		if (!(ctx.channel() instanceof Http2StreamChannel) && recorder() instanceof MicrometerHttpServerMetricsRecorder) {
+			recorder().recordServerConnectionClosed(ctx.channel().localAddress());
+		}
+		ctx.fireChannelInactive();
+	}
+
 	@Override
 	@SuppressWarnings("FutureReturnValueIgnored")
 	public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
@@ -62,7 +90,12 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 				return;
 			}
 
-			dataSentTime = System.nanoTime();
+			ChannelOperations<?, ?> channelOps = ChannelOperations.get(ctx.channel());
+			if (channelOps instanceof HttpServerOperations) {
+				HttpServerOperations ops = (HttpServerOperations) channelOps;
+				startWrite(ops, uriTagValue == null ? ops.path : uriTagValue.apply(ops.path),
+						ops.method().name(), ops.status().codeAsText().toString());
+			}
 		}
 
 		if (msg instanceof ByteBufHolder) {
@@ -79,6 +112,12 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 					HttpServerOperations ops = (HttpServerOperations) channelOps;
 					recordWrite(ops, uriTagValue == null ? ops.path : uriTagValue.apply(ops.path),
 							ops.method().name(), ops.status().codeAsText().toString());
+					if (!ops.isHttp2() && ops.hostAddress() != null) {
+						// This metric is not applicable for HTTP/2
+						// ops.hostAddress() == null when request decoding failed, in this case
+						// we do not report active connection, so we do not report inactive connection
+						recordInactiveConnection(ops);
+					}
 				}
 
 				dataSent = 0;
@@ -92,7 +131,15 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 	@Override
 	public void channelRead(ChannelHandlerContext ctx, Object msg) {
 		if (msg instanceof HttpRequest) {
-			dataReceivedTime = System.nanoTime();
+			ChannelOperations<?, ?> channelOps = ChannelOperations.get(ctx.channel());
+			if (channelOps instanceof HttpServerOperations) {
+				HttpServerOperations ops = (HttpServerOperations) channelOps;
+				if (!ops.isHttp2()) {
+					// This metric is not applicable for HTTP/2
+					recordActiveConnection(ops);
+				}
+				startRead(ops, uriTagValue == null ? ops.path : uriTagValue.apply(ops.path), ops.method().name());
+			}
 		}
 
 		if (msg instanceof ByteBufHolder) {
@@ -154,5 +201,21 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 
 		// Always take the remote address from the operations in order to consider proxy information
 		recorder().recordDataSent(ops.remoteAddress(), path, dataSent);
+	}
+
+	protected void recordActiveConnection(HttpServerOperations ops) {
+		recorder().recordServerConnectionActive(ops.hostAddress());
+	}
+
+	protected void recordInactiveConnection(HttpServerOperations ops) {
+		recorder().recordServerConnectionInactive(ops.hostAddress());
+	}
+
+	protected void startRead(HttpServerOperations ops, String path, String method) {
+		dataReceivedTime = System.nanoTime();
+	}
+
+	protected void startWrite(HttpServerOperations ops, String path, String method, String status) {
+		dataSentTime = System.nanoTime();
 	}
 }

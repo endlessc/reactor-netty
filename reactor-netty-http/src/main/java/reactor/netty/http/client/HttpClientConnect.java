@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.ssl.SslClosedEngineException;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AsciiString;
 import io.netty.util.AttributeKey;
@@ -284,9 +285,11 @@ class HttpClientConnect extends HttpClient {
 		static final class ClientTransportSubscriber implements CoreSubscriber<Connection> {
 
 			final MonoSink<Connection> sink;
+			final Context currentContext;
 
 			ClientTransportSubscriber(MonoSink<Connection> sink) {
 				this.sink = sink;
+				this.currentContext = Context.of(sink.contextView());
 			}
 
 			@Override
@@ -310,7 +313,7 @@ class HttpClientConnect extends HttpClient {
 
 			@Override
 			public Context currentContext() {
-				return sink.currentContext();
+				return currentContext;
 			}
 		}
 	}
@@ -318,16 +321,18 @@ class HttpClientConnect extends HttpClient {
 	static final class HttpObserver implements ConnectionObserver {
 
 		final MonoSink<Connection> sink;
+		final Context currentContext;
 		final HttpClientHandler handler;
 
 		HttpObserver(MonoSink<Connection> sink, HttpClientHandler handler) {
 			this.sink = sink;
+			this.currentContext = Context.of(sink.contextView());
 			this.handler = handler;
 		}
 
 		@Override
 		public Context currentContext() {
-			return sink.currentContext();
+			return currentContext;
 		}
 
 		@Override
@@ -349,7 +354,7 @@ class HttpClientConnect extends HttpClient {
 					// In some rare cases the connection might be acquired immediately, before the channel close
 					// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
 					// errors.
-					// Mark the connection as non-persistent here so that it never be returned to the pool and leave
+					// Mark the connection as non-persistent here so that it is never returned to the pool and leave
 					// the channel close event to invalidate it.
 					ops.markPersistent(false);
 					// Disable retry if the headers or/and the body were sent
@@ -367,7 +372,7 @@ class HttpClientConnect extends HttpClient {
 						// In some rare cases the connection might be acquired immediately, before the channel close
 						// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
 						// errors.
-						// Mark the connection as non-persistent here so that it never be returned to the pool and leave
+						// Mark the connection as non-persistent here so that it is never returned to the pool and leave
 						// the channel close event to invalidate it.
 						ops.markPersistent(false);
 						ops.retrying = true;
@@ -376,6 +381,16 @@ class HttpClientConnect extends HttpClient {
 						log.debug(format(connection.channel(),
 								"The connection observed an error, the request will be retried"), error);
 					}
+				}
+			}
+			else if (error instanceof SslClosedEngineException) {
+				if (log.isWarnEnabled()) {
+					log.warn(format(connection.channel(), "The connection observed an error"), error);
+				}
+				HttpClientOperations ops = connection.as(HttpClientOperations.class);
+				if (ops != null) {
+					// javax.net.ssl.SSLEngine has been closed, do not return the connection to the pool
+					ops.markPersistent(false);
 				}
 			}
 			else if (log.isWarnEnabled()) {
@@ -396,16 +411,18 @@ class HttpClientConnect extends HttpClient {
 	static final class HttpIOHandlerObserver implements ConnectionObserver {
 
 		final MonoSink<Connection> sink;
+		final Context currentContext;
 		final HttpClientHandler handler;
 
 		HttpIOHandlerObserver(MonoSink<Connection> sink, HttpClientHandler handler) {
 			this.sink = sink;
+			this.currentContext = Context.of(sink.contextView());
 			this.handler = handler;
 		}
 
 		@Override
 		public Context currentContext() {
-			return sink.currentContext();
+			return currentContext;
 		}
 
 		@Override

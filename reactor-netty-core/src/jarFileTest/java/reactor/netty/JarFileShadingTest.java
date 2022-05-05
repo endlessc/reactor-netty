@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.fail;
 
 /**
  * This test must be executed with Gradle because it requires a shadow JAR.
- * For example it can be run with {@code ./gradlew jarFileTest --tests *JarFileShadingTest}
+ * For example, it can be run with {@code ./gradlew jarFileTest --tests *JarFileShadingTest}
  */
 class JarFileShadingTest extends AbstractJarFileTest {
 
@@ -73,7 +73,8 @@ class JarFileShadingTest extends AbstractJarFileTest {
 				.replace("-original.jar", "")
 				.replace(".jar", "");
 
-		String osgiVersion = version.replace("-SNAPSHOT", ".BUILD-");
+		String osgiVersion = version.replace('-', '.')
+				.replace(".SNAPSHOT", ".BUILD-");
 
 		try (InputStream inputStream = jar.getInputStream(manifest);
 		     BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, UTF_8))) {

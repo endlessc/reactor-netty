@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 
+import io.micrometer.contextpropagation.ContextContainer;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.EventLoop;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
 import org.reactivestreams.Publisher;
@@ -78,9 +80,10 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 			ConnectionObserver connectionObserver,
 			long pendingAcquireTimeout,
 			InstrumentedPool<PooledConnection> pool,
+			Context propagationContext,
 			MonoSink<Connection> sink) {
 		return new DisposableAcquire(connectionObserver, config.channelOperationsProvider(),
-				pendingAcquireTimeout, pool, sink);
+				pendingAcquireTimeout, pool, propagationContext, sink);
 	}
 
 	@Override
@@ -99,10 +102,12 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 	static final class DisposableAcquire
 			implements ConnectionObserver, Runnable, CoreSubscriber<PooledRef<PooledConnection>>, Disposable {
 		final Disposable.Composite cancellations;
+		final Context currentContext;
 		final ConnectionObserver obs;
 		final ChannelOperations.OnSetup opsFactory;
 		final long pendingAcquireTimeout;
 		final InstrumentedPool<PooledConnection> pool;
+		final Context propagationContext;
 		final boolean retried;
 		final MonoSink<Connection> sink;
 
@@ -114,29 +119,34 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 				ChannelOperations.OnSetup opsFactory,
 				long pendingAcquireTimeout,
 				InstrumentedPool<PooledConnection> pool,
+				Context propagationContext,
 				MonoSink<Connection> sink) {
 			this.cancellations = Disposables.composite();
+			this.currentContext = Context.of(sink.contextView());
 			this.obs = obs;
 			this.opsFactory = opsFactory;
 			this.pendingAcquireTimeout = pendingAcquireTimeout;
 			this.pool = pool;
+			this.propagationContext = propagationContext;
 			this.retried = false;
 			this.sink = sink;
 		}
 
 		DisposableAcquire(DisposableAcquire parent) {
 			this.cancellations = parent.cancellations;
+			this.currentContext = parent.currentContext;
 			this.obs = parent.obs;
 			this.opsFactory = parent.opsFactory;
 			this.pendingAcquireTimeout = parent.pendingAcquireTimeout;
 			this.pool = parent.pool;
+			this.propagationContext = parent.propagationContext;
 			this.retried = true;
 			this.sink = parent.sink;
 		}
 
 		@Override
 		public Context currentContext() {
-			return sink.currentContext();
+			return currentContext;
 		}
 
 		@Override
@@ -162,6 +172,8 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 			pooledConnection.pooledRef = pooledRef;
 
 			Channel c = pooledConnection.channel;
+			ContextContainer container = ContextContainer.restore(propagationContext);
+			container.save(c);
 
 			if (c.eventLoop().inEventLoop()) {
 				run();
@@ -219,7 +231,8 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 						log.debug(format(c, "Immediately aborted pooled channel, re-acquiring new channel"));
 					}
 					pool.acquire(Duration.ofMillis(pendingAcquireTimeout))
-					    .subscribe(new DisposableAcquire(this));
+							.contextWrite(ctx -> ctx.put(CONTEXT_CALLER_EVENTLOOP, c.eventLoop()))
+							.subscribe(new DisposableAcquire(this));
 				}
 				else {
 					sink.error(new IOException("Error while acquiring from " + pool));
@@ -406,6 +419,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 
 				ConnectionObserver obs = channel.attr(OWNER)
 				                                .getAndSet(ConnectionObserver.emptyListener());
+				ContextContainer.reset(channel);
 
 				if (pooledRef == null) {
 					return;
@@ -419,7 +433,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 				                         logPoolState(pooledRef.poolable().channel, pool,
 				                                 "Failed cleaning the channel from pool", t);
 				                     }
-				                     // EmitResult is ignored as it is guaranteed that this call happens in an event loop
+				                     // EmitResult is ignored as it is guaranteed that this call happens in an event loop,
 				                     // and it is guarded by release(), so tryEmitEmpty() should happen just once
 				                     onTerminate.tryEmitEmpty();
 				                     obs.onStateChange(connection, State.RELEASED);
@@ -428,7 +442,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 				                     if (log.isDebugEnabled()) {
 				                         logPoolState(pooledRef.poolable().channel, pool, "Channel cleaned");
 				                     }
-				                     // EmitResult is ignored as it is guaranteed that this call happens in an event loop
+				                     // EmitResult is ignored as it is guaranteed that this call happens in an event loop,
 				                     // and it is guarded by release(), so tryEmitEmpty() should happen just once
 				                     onTerminate.tryEmitEmpty();
 				                     obs.onStateChange(connection, State.RELEASED);
@@ -494,8 +508,16 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 		Publisher<PooledConnection> connectChannel() {
 			return Mono.create(sink -> {
 				PooledConnectionInitializer initializer = new PooledConnectionInitializer(sink);
-				TransportConnector.connect(config, remoteAddress, resolver, initializer)
-				                  .subscribe(initializer);
+				EventLoop callerEventLoop = sink.contextView().hasKey(CONTEXT_CALLER_EVENTLOOP) ?
+						sink.contextView().get(CONTEXT_CALLER_EVENTLOOP) : null;
+				ContextContainer container = ContextContainer.restore(Context.of(sink.contextView()));
+				if (callerEventLoop != null) {
+					TransportConnector.connect(config, remoteAddress, resolver, initializer, callerEventLoop, container)
+							.subscribe(initializer);
+				}
+				else {
+					TransportConnector.connect(config, remoteAddress, resolver, initializer, container).subscribe(initializer);
+				}
 			});
 		}
 
@@ -518,7 +540,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 
 				this.pooledConnection = pooledConnection;
 
-				ch.attr(OWNER).compareAndSet(null, new PendingConnectionObserver(sink.currentContext()));
+				ch.attr(OWNER).compareAndSet(null, new PendingConnectionObserver(Context.of(sink.contextView())));
 				ch.pipeline().remove(this);
 				ch.pipeline()
 				  .addFirst(config.channelInitializer(pooledConnection, remoteAddress, false));

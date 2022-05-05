@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,10 +39,10 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.internal.util.Metrics;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.Metrics;
 import reactor.util.annotation.Nullable;
 
 import static java.util.Objects.requireNonNull;
@@ -378,10 +378,10 @@ public abstract class TransportConfig {
 				if (Metrics.isInstrumentationAvailable()) {
 					ByteBufAllocator alloc = channel.alloc();
 					if (alloc instanceof PooledByteBufAllocator) {
-						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("pooled", ((PooledByteBufAllocator) alloc).metric());
+						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("pooled", ((PooledByteBufAllocator) alloc).metric(), alloc);
 					}
 					else if (alloc instanceof UnpooledByteBufAllocator) {
-						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("unpooled", ((UnpooledByteBufAllocator) alloc).metric());
+						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("unpooled", ((UnpooledByteBufAllocator) alloc).metric(), alloc);
 					}
 
 					MicrometerEventLoopMeterRegistrar.INSTANCE.registerMetrics(channel.eventLoop());

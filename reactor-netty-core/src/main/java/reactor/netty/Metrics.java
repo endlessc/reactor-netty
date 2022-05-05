@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,10 @@
 package reactor.netty;
 
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.observation.TimerObservationHandler;
+import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
+import reactor.netty.observability.ReactorNettyTimerObservationHandler;
 import reactor.util.annotation.Nullable;
 
 import java.net.InetSocketAddress;
@@ -29,6 +33,13 @@ import java.net.SocketAddress;
  */
 public class Metrics {
 	public static final MeterRegistry REGISTRY = io.micrometer.core.instrument.Metrics.globalRegistry;
+	public static final ObservationRegistry OBSERVATION_REGISTRY = ObservationRegistry.create();
+	static {
+		OBSERVATION_REGISTRY.observationConfig().observationHandler(
+				new ObservationHandler.FirstMatchingCompositeObservationHandler(
+						new ReactorNettyTimerObservationHandler(REGISTRY),
+						new TimerObservationHandler(REGISTRY)));
+	}
 
 
 	// Names
@@ -128,6 +139,16 @@ public class Metrics {
 	 */
 	public static final String RESPONSE_TIME = ".response.time";
 
+	/**
+	 * The number of all connections, whether they are active or idle
+	 */
+	public static final String CONNECTIONS_TOTAL = ".connections.total";
+
+	/**
+	 * The number of connections that are currently in use
+	 */
+	public static final String CONNECTIONS_ACTIVE = ".connections.active";
+
 
 	// AddressResolverGroup Metrics
 	/**
@@ -180,14 +201,24 @@ public class Metrics {
 
 	// ByteBufAllocator Metrics
 	/**
-	 * The number of the bytes of the heap memory
+	 * The number of bytes reserved by heap buffer allocator
 	 */
 	public static final String USED_HEAP_MEMORY = ".used.heap.memory";
 
 	/**
-	 * The number of the bytes of the direct memory
+	 * The number of bytes reserved by direct buffer allocator
 	 */
 	public static final String USED_DIRECT_MEMORY = ".used.direct.memory";
+
+	/**
+	 * The actual bytes consumed by in-use buffers allocated from heap buffer pools
+	 */
+	public static final String ACTIVE_HEAP_MEMORY = ".active.heap.memory";
+
+	/**
+	 * The actual bytes consumed by in-use buffers allocated from direct buffer pools
+	 */
+	public static final String ACTIVE_DIRECT_MEMORY = ".active.direct.memory";
 
 	/**
 	 * The number of heap arenas
@@ -227,6 +258,8 @@ public class Metrics {
 
 
 	// Tags
+	public static final String LOCAL_ADDRESS = "local.address";
+
 	public static final String REMOTE_ADDRESS = "remote.address";
 
 	public static final String URI = "uri";

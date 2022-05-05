@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,11 +32,11 @@ import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableChannel;
 import reactor.netty.channel.ChannelMetricsRecorder;
+import reactor.netty.internal.util.Metrics;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.Metrics;
 import reactor.util.annotation.Nullable;
 
 /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,10 @@ import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.logging.LogLevel;
@@ -173,6 +176,18 @@ public final class ProxyProvider {
 		Objects.requireNonNull(channel, "channel");
 		ChannelPipeline pipeline = channel.pipeline();
 		pipeline.addFirst(NettyPipeline.ProxyHandler, newProxyHandler());
+		// For SOCKS proxy, the netty SOCKS handlers may register listeners in channel promises, so we need to register a
+		// special handler which ensures that any VoidPromise will be converted to "unvoided" promises (for support of listeners).
+		// Note: an example of a VoidPromise which does not support listeners is the MonoSendMany.SendManyInner promise.
+		if (this.type == Proxy.SOCKS4 || type == Proxy.SOCKS5) {
+			pipeline.addAfter(NettyPipeline.ProxyHandler, NettyPipeline.UnvoidHandler, new ChannelOutboundHandlerAdapter() {
+				@Override
+				@SuppressWarnings("FutureReturnValueIgnored")
+				public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+					ctx.write(msg, promise.unvoid());
+				}
+			});
+		}
 
 		if (pipeline.get(NettyPipeline.LoggingHandler) != null) {
 			pipeline.addBefore(NettyPipeline.ProxyHandler,
@@ -232,8 +247,12 @@ public final class ProxyProvider {
 
 	static final String HTTP_PROXY_HOST = "http.proxyHost";
 	static final String HTTP_PROXY_PORT = "http.proxyPort";
+	static final String HTTP_PROXY_USER = "http.proxyUser";
+	static final String HTTP_PROXY_PASSWORD = "http.proxyPassword";
 	static final String HTTPS_PROXY_HOST = "https.proxyHost";
 	static final String HTTPS_PROXY_PORT = "https.proxyPort";
+	static final String HTTPS_PROXY_USER = "https.proxyUser";
+	static final String HTTPS_PROXY_PASSWORD = "https.proxyPassword";
 	static final String HTTP_NON_PROXY_HOSTS = "http.nonProxyHosts";
 	static final String DEFAULT_NON_PROXY_HOSTS = "localhost|127.*|[::1]";
 
@@ -265,15 +284,21 @@ public final class ProxyProvider {
 	static ProxyProvider createHttpProxyFrom(Properties properties) {
 		String hostProperty;
 		String portProperty;
+		String userProperty;
+		String passwordProperty;
 		String defaultPort;
 		if (properties.containsKey(HTTPS_PROXY_HOST)) {
 			hostProperty = HTTPS_PROXY_HOST;
 			portProperty = HTTPS_PROXY_PORT;
+			userProperty = HTTPS_PROXY_USER;
+			passwordProperty = HTTPS_PROXY_PASSWORD;
 			defaultPort = "443";
 		}
 		else {
 			hostProperty = HTTP_PROXY_HOST;
 			portProperty = HTTP_PROXY_PORT;
+			userProperty = HTTP_PROXY_USER;
+			passwordProperty = HTTP_PROXY_PASSWORD;
 			defaultPort = "80";
 		}
 
@@ -283,12 +308,24 @@ public final class ProxyProvider {
 		String nonProxyHosts = properties.getProperty(HTTP_NON_PROXY_HOSTS, DEFAULT_NON_PROXY_HOSTS);
 		RegexShouldProxyPredicate transformedNonProxyHosts = RegexShouldProxyPredicate.fromWildcardedPattern(nonProxyHosts);
 
-		return ProxyProvider.builder()
+		ProxyProvider.Builder proxy = ProxyProvider.builder()
 				.type(ProxyProvider.Proxy.HTTP)
 				.host(hostname)
 				.port(port)
-				.nonProxyHostsPredicate(transformedNonProxyHosts)
-				.build();
+				.nonProxyHostsPredicate(transformedNonProxyHosts);
+
+		if (properties.containsKey(userProperty)) {
+			proxy = proxy.username(properties.getProperty(userProperty));
+
+			if (properties.containsKey(passwordProperty)) {
+				proxy = proxy.password(u -> properties.getProperty(passwordProperty));
+			}
+			else {
+				throw new NullPointerException("Proxy username is set via '" + userProperty + "', but '" + passwordProperty + "' is not set.");
+			}
+		}
+
+		return proxy.build();
 	}
 
 	static ProxyProvider createSocksProxyFrom(Properties properties) {
@@ -483,7 +520,7 @@ public final class ProxyProvider {
 		}
 
 		/**
-		 * The test returns true when the nonProxyHost {@link Predicate} is true and we should not go through the
+		 * The test returns true when the nonProxyHost {@link Predicate} is true, and we should not go through the
 		 * configured proxy.
 		 *
 		 * @param socketAddress the address we are choosing to connect via proxy or not
@@ -600,7 +637,7 @@ public final class ProxyProvider {
 
 		/**
 		 * The proxy connect timeout in millis. Default to 10000 ms.
-		 * If this value set as non positive value, there is no connect timeout.
+		 * If this value set as non-positive value, there is no connect timeout.
 		 *
 		 * @param connectTimeoutMillis The proxy connect timeout in millis.
 		 * @return {@code this}

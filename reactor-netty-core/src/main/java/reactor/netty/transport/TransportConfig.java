@@ -375,16 +375,22 @@ public abstract class TransportConfig {
 			if (config.metricsRecorder != null) {
 				ChannelOperations.addMetricsHandler(channel, config.metricsRecorder, remoteAddress, onServer);
 
-				if (Metrics.isInstrumentationAvailable()) {
-					ByteBufAllocator alloc = channel.alloc();
-					if (alloc instanceof PooledByteBufAllocator) {
-						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("pooled", ((PooledByteBufAllocator) alloc).metric(), alloc);
-					}
-					else if (alloc instanceof UnpooledByteBufAllocator) {
-						ByteBufAllocatorMetrics.INSTANCE.registerMetrics("unpooled", ((UnpooledByteBufAllocator) alloc).metric(), alloc);
-					}
+				if (Metrics.isMicrometerAvailable()) {
+					try {
+						ByteBufAllocator alloc = channel.alloc();
+						if (alloc instanceof PooledByteBufAllocator) {
+							ByteBufAllocatorMetrics.INSTANCE.registerMetrics("pooled", ((PooledByteBufAllocator) alloc).metric(), alloc);
+						}
+						else if (alloc instanceof UnpooledByteBufAllocator) {
+							ByteBufAllocatorMetrics.INSTANCE.registerMetrics("unpooled", ((UnpooledByteBufAllocator) alloc).metric(), alloc);
+						}
 
-					MicrometerEventLoopMeterRegistrar.INSTANCE.registerMetrics(channel.eventLoop());
+						MicrometerEventLoopMeterRegistrar.INSTANCE.registerMetrics(channel.eventLoop());
+					}
+					catch (RuntimeException e) {
+						log.warn("Exception caught while recording metrics.", e);
+						// Allow request-response exchange to continue, unaffected by metrics problem
+					}
 				}
 			}
 

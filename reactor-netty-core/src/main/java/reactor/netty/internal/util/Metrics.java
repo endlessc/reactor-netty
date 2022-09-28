@@ -15,8 +15,6 @@
  */
 package reactor.netty.internal.util;
 
-import static io.micrometer.core.instrument.Metrics.globalRegistry;
-
 /**
  * Utility class around instrumentation and metrics with Micrometer.
  * <p><strong>Note:</strong> This utility class is for internal use only. It can be removed at any time.
@@ -27,26 +25,45 @@ import static io.micrometer.core.instrument.Metrics.globalRegistry;
 public class Metrics {
 
 	static final boolean isMicrometerAvailable;
+	static final boolean isTracingAvailable;
 
 	static {
 		boolean micrometer;
 		try {
-			globalRegistry.getRegistries();
+			io.micrometer.core.instrument.Metrics.globalRegistry.getRegistries();
 			micrometer = true;
 		}
 		catch (Throwable t) {
 			micrometer = false;
 		}
 		isMicrometerAvailable = micrometer;
+
+		boolean tracing;
+		try {
+			Class.forName("io.micrometer.tracing.Tracer");
+			tracing = true;
+		}
+		catch (Throwable t) {
+			tracing = false;
+		}
+		isTracingAvailable = tracing;
 	}
 
 	/**
-	 * Check if the current runtime supports metrics / instrumentation, by
-	 * verifying if Micrometer is on the classpath.
+	 * Check if the current runtime supports metrics, by verifying if Micrometer Core is on the classpath.
 	 *
-	 * @return true if the Micrometer instrumentation facade is available
+	 * @return true if the Micrometer Core is available
 	 */
-	public static boolean isInstrumentationAvailable() {
+	public static boolean isMicrometerAvailable() {
 		return isMicrometerAvailable;
+	}
+
+	/**
+	 * Check if the current runtime supports tracing, by verifying if Micrometer Tracing is on the classpath.
+	 *
+	 * @return true if the Micrometer Tracing is available
+	 */
+	public static boolean isTracingAvailable() {
+		return isTracingAvailable;
 	}
 }

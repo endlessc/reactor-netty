@@ -22,7 +22,6 @@ import java.net.SocketAddress;
 import java.util.Objects;
 import java.util.function.Supplier;
 
-import io.micrometer.contextpropagation.ContextContainer;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.unix.DomainSocketAddress;
@@ -36,6 +35,7 @@ import reactor.core.publisher.Operators;
 import reactor.netty.ChannelBindException;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
+import reactor.netty.internal.util.Metrics;
 import reactor.netty.transport.AddressUtils;
 import reactor.netty.transport.TransportConfig;
 import reactor.netty.transport.TransportConnector;
@@ -71,9 +71,14 @@ final class NewConnectionProvider implements ConnectionProvider {
 			DisposableConnect disposableConnect = new DisposableConnect(sink, config.bindAddress());
 			if (remote != null && resolverGroup != null) {
 				ChannelInitializer<Channel> channelInitializer = config.channelInitializer(connectionObserver, remote, false);
-				ContextContainer container = ContextContainer.create().captureThreadLocalValues();
-				container.captureContext(Context.of(sink.contextView()));
-				TransportConnector.connect(config, remote, resolverGroup, channelInitializer, container)
+				Context currentContext = Context.of(sink.contextView());
+				if (config.metricsRecorder() != null && Metrics.isMicrometerAvailable()) {
+					Object currentObservation = reactor.netty.Metrics.currentObservation(currentContext);
+					if (currentObservation != null) {
+						currentContext = reactor.netty.Metrics.updateContext(currentContext, currentObservation);
+					}
+				}
+				TransportConnector.connect(config, remote, resolverGroup, channelInitializer, currentContext)
 				                  .subscribe(disposableConnect);
 			}
 			else {

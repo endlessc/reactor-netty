@@ -30,7 +30,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
-import io.micrometer.contextpropagation.ContextContainer;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerAdapter;
@@ -53,16 +52,14 @@ import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
 import io.netty.handler.codec.http2.Http2FrameLogger;
 import io.netty.handler.codec.http2.Http2MultiplexHandler;
 import io.netty.handler.codec.http2.Http2Settings;
-import io.netty.handler.codec.http2.Http2StreamChannel;
-import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
 import io.netty.handler.codec.http2.Http2StreamFrameToHttpObjectCodec;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.handler.ssl.ApplicationProtocolNames;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.resolver.AddressResolverGroup;
-import io.netty.util.concurrent.Future;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 import reactor.netty.ChannelPipelineConfigurer;
@@ -116,6 +113,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	@Override
 	public ChannelOperations.OnSetup channelOperationsProvider() {
 		return (ch, c, msg) -> new HttpClientOperations(ch, c, cookieEncoder, cookieDecoder);
+	}
+
+	@Override
+	public ConnectionProvider connectionProvider() {
+		return httpConnectionProvider().http1ConnectionProvider();
 	}
 
 	/**
@@ -324,7 +326,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	Function<String, String> uriTagValue;
 	WebsocketClientSpec websocketClientSpec;
 
-	HttpClientConfig(ConnectionProvider connectionProvider, Map<ChannelOption<?>, ?> options,
+	HttpClientConfig(HttpConnectionProvider connectionProvider, Map<ChannelOption<?>, ?> options,
 			Supplier<? extends SocketAddress> remoteAddress) {
 		super(connectionProvider, options, remoteAddress);
 		this.acceptGzip = false;
@@ -447,6 +449,10 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		}
 	}
 
+	HttpConnectionProvider httpConnectionProvider() {
+		return (HttpConnectionProvider) super.connectionProvider();
+	}
+
 	void protocols(HttpProtocol... protocols) {
 		this.protocols = protocols;
 		int _protocols = 0;
@@ -505,6 +511,77 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		return settings;
 	}
 
+	static void addStreamHandlers(
+			Channel ch,
+			ConnectionObserver obs,
+			ChannelOperations.OnSetup opsFactory,
+			boolean acceptGzip,
+			@Nullable ChannelMetricsRecorder metricsRecorder,
+			long responseTimeoutMillis,
+			@Nullable Function<String, String> uriTagValue) {
+
+		if (HttpClientOperations.log.isDebugEnabled()) {
+			HttpClientOperations.log.debug(format(ch, "New HTTP/2 stream"));
+		}
+
+		ChannelPipeline pipeline = ch.pipeline();
+		pipeline.addLast(NettyPipeline.H2ToHttp11Codec, HTTP2_STREAM_FRAME_TO_HTTP_OBJECT)
+				.addLast(NettyPipeline.HttpTrafficHandler, HTTP_2_STREAM_BRIDGE_CLIENT_HANDLER);
+
+		if (acceptGzip) {
+			pipeline.addLast(NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
+		}
+
+		ChannelOperations.addReactiveBridge(ch, opsFactory, obs);
+
+		if (metricsRecorder != null) {
+			if (metricsRecorder instanceof HttpClientMetricsRecorder) {
+				ChannelHandler handler;
+				Channel parent = ch.parent();
+				ChannelHandler existingHandler = parent.pipeline().get(NettyPipeline.HttpMetricsHandler);
+				if (existingHandler != null) {
+					// This use case can happen only in HTTP/2 clear text connection upgrade
+					parent.pipeline().remove(NettyPipeline.HttpMetricsHandler);
+					if (metricsRecorder instanceof MicrometerHttpClientMetricsRecorder) {
+						handler = new MicrometerHttpClientMetricsHandler((MicrometerHttpClientMetricsHandler) existingHandler);
+					}
+					else if (metricsRecorder instanceof ContextAwareHttpClientMetricsRecorder) {
+						handler = new ContextAwareHttpClientMetricsHandler((ContextAwareHttpClientMetricsHandler) existingHandler);
+					}
+					else {
+						handler = new HttpClientMetricsHandler((HttpClientMetricsHandler) existingHandler);
+					}
+				}
+				else {
+					if (metricsRecorder instanceof MicrometerHttpClientMetricsRecorder) {
+						handler = new MicrometerHttpClientMetricsHandler((MicrometerHttpClientMetricsRecorder) metricsRecorder, uriTagValue);
+					}
+					else if (metricsRecorder instanceof ContextAwareHttpClientMetricsRecorder) {
+						handler = new ContextAwareHttpClientMetricsHandler((ContextAwareHttpClientMetricsRecorder) metricsRecorder, uriTagValue);
+					}
+					else {
+						handler = new HttpClientMetricsHandler((HttpClientMetricsRecorder) metricsRecorder, uriTagValue);
+					}
+				}
+				pipeline.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpMetricsHandler, handler);
+			}
+		}
+
+		if (responseTimeoutMillis > -1) {
+			Connection.from(ch).addHandlerFirst(NettyPipeline.ResponseTimeoutHandler,
+					new ReadTimeoutHandler(responseTimeoutMillis, TimeUnit.MILLISECONDS));
+		}
+
+		if (log.isDebugEnabled()) {
+			log.debug(format(ch, "Initialized HTTP/2 stream pipeline {}"), ch.pipeline());
+		}
+
+		ChannelOperations<?, ?> ops = opsFactory.create(Connection.from(ch), obs, null);
+		if (ops != null) {
+			ops.bind();
+		}
+	}
+
 	static void configureHttp2Pipeline(ChannelPipeline p, boolean acceptGzip, HttpResponseDecoderSpec decoder,
 			Http2Settings http2Settings, ConnectionObserver observer) {
 		Http2FrameCodecBuilder http2FrameCodecBuilder =
@@ -517,11 +594,13 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 					"reactor.netty.http.client.h2"));
 		}
 
-		p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpCodec, http2FrameCodecBuilder.build())
+		p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.H2Flush, new FlushConsolidationHandler(1024, true))
+		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpCodec, http2FrameCodecBuilder.build())
 		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.H2MultiplexHandler, new Http2MultiplexHandler(new H2Codec(acceptGzip)))
 		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpTrafficHandler, new HttpTrafficHandler(observer));
 	}
 
+	@SuppressWarnings("deprecation")
 	static void configureHttp11OrH2CleartextPipeline(
 			ChannelPipeline p,
 			boolean acceptGzip,
@@ -585,6 +664,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 	}
 
+	@SuppressWarnings("deprecation")
 	static void configureHttp11Pipeline(ChannelPipeline p,
 			boolean acceptGzip,
 			HttpResponseDecoderSpec decoder,
@@ -623,21 +703,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		}
 	}
 
-	static Future<Http2StreamChannel> openStream(
-			Channel channel,
-			Http2ConnectionProvider.DisposableAcquire owner,
-			ConnectionObserver observer,
-			ChannelOperations.OnSetup opsFactory,
-			boolean acceptGzip,
-			@Nullable ChannelMetricsRecorder metricsRecorder,
-			@Nullable Function<String, String> uriTagValue) {
-		Http2StreamChannelBootstrap bootstrap = new Http2StreamChannelBootstrap(channel);
-		bootstrap.option(ChannelOption.AUTO_READ, false);
-		bootstrap.handler(new H2Codec(owner, observer, opsFactory, acceptGzip, metricsRecorder, uriTagValue));
-		return bootstrap.open();
-	}
-
-	static final Pattern FOLLOW_REDIRECT_CODES = Pattern.compile("30[1278]");
+	static final Pattern FOLLOW_REDIRECT_CODES = Pattern.compile("30[12378]");
 
 	static final BiPredicate<HttpClientRequest, HttpClientResponse> FOLLOW_REDIRECT_PREDICATE =
 			(req, res) -> FOLLOW_REDIRECT_CODES.matcher(res.status()
@@ -653,6 +719,12 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	static final int h11orH2 = h11 | h2;
 
 	static final int h11orH2C = h11 | h2c;
+
+	static final Http2StreamFrameToHttpObjectCodec HTTP2_STREAM_FRAME_TO_HTTP_OBJECT =
+			new Http2StreamFrameToHttpObjectCodec(false);
+
+	static final Http2StreamBridgeClientHandler HTTP_2_STREAM_BRIDGE_CLIENT_HANDLER =
+			new Http2StreamBridgeClientHandler();
 
 	static final Logger log = Loggers.getLogger(HttpClientConfig.class);
 
@@ -721,6 +793,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	}
 
 	static final class H2Codec extends ChannelInitializer<Channel> {
+
 		final boolean acceptGzip;
 		final ChannelMetricsRecorder metricsRecorder;
 		final ConnectionObserver observer;
@@ -774,68 +847,12 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		protected void initChannel(Channel ch) {
 			if (observer != null && opsFactory != null && owner != null) {
 				Http2ConnectionProvider.registerClose(ch, owner);
-				ContextContainer container = ContextContainer.restore(owner.propagationContext);
-				container.save(ch);
-
-				addStreamHandlers(ch, observer.then(new StreamConnectionObserver(owner.currentContext())), opsFactory);
+				addStreamHandlers(ch, observer.then(new StreamConnectionObserver(owner.currentContext())), opsFactory,
+						acceptGzip, metricsRecorder, responseTimeoutMillis, uriTagValue);
 			}
 			else {
 				// Handle server pushes (inbound streams)
 				// TODO this is not supported
-			}
-		}
-
-		void addStreamHandlers(Channel ch, ConnectionObserver obs, ChannelOperations.OnSetup opsFactory) {
-			ChannelPipeline pipeline = ch.pipeline();
-			pipeline.addLast(NettyPipeline.H2ToHttp11Codec, new Http2StreamFrameToHttpObjectCodec(false))
-			        .addLast(NettyPipeline.HttpTrafficHandler, new Http2StreamBridgeClientHandler(obs, opsFactory));
-
-			if (acceptGzip) {
-				pipeline.addLast(NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
-			}
-
-			ChannelOperations.addReactiveBridge(ch, opsFactory, obs);
-
-			if (metricsRecorder != null) {
-				if (metricsRecorder instanceof HttpClientMetricsRecorder) {
-					ChannelHandler handler;
-					Channel parent = ch.parent();
-					ChannelHandler existingHandler = parent.pipeline().get(NettyPipeline.HttpMetricsHandler);
-					if (existingHandler != null) {
-						// This use case can happen only in HTTP/2 clear text connection upgrade
-						parent.pipeline().remove(NettyPipeline.HttpMetricsHandler);
-						if (metricsRecorder instanceof MicrometerHttpClientMetricsRecorder) {
-							handler = new MicrometerHttpClientMetricsHandler((MicrometerHttpClientMetricsHandler) existingHandler);
-						}
-						else if (metricsRecorder instanceof ContextAwareHttpClientMetricsRecorder) {
-							handler = new ContextAwareHttpClientMetricsHandler((ContextAwareHttpClientMetricsHandler) existingHandler);
-						}
-						else {
-							handler = new HttpClientMetricsHandler((HttpClientMetricsHandler) existingHandler);
-						}
-					}
-					else {
-						if (metricsRecorder instanceof MicrometerHttpClientMetricsRecorder) {
-							handler = new MicrometerHttpClientMetricsHandler((MicrometerHttpClientMetricsRecorder) metricsRecorder, uriTagValue);
-						}
-						else if (metricsRecorder instanceof ContextAwareHttpClientMetricsRecorder) {
-							handler = new ContextAwareHttpClientMetricsHandler((ContextAwareHttpClientMetricsRecorder) metricsRecorder, uriTagValue);
-						}
-						else {
-							handler = new HttpClientMetricsHandler((HttpClientMetricsRecorder) metricsRecorder, uriTagValue);
-						}
-					}
-					pipeline.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpMetricsHandler, handler);
-				}
-			}
-
-			if (responseTimeoutMillis > -1) {
-				Connection.from(ch).addHandlerFirst(NettyPipeline.ResponseTimeoutHandler,
-						new ReadTimeoutHandler(responseTimeoutMillis, TimeUnit.MILLISECONDS));
-			}
-
-			if (log.isDebugEnabled()) {
-				log.debug(format(ch, "Initialized HTTP/2 stream pipeline {}"), ch.pipeline());
 			}
 		}
 	}
@@ -859,27 +876,31 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 		@Override
 		public void channelActive(ChannelHandlerContext ctx) {
-			SslHandler sslHandler = ctx.pipeline().get(SslHandler.class);
-			if (sslHandler == null) {
-				throw new IllegalStateException("Cannot determine negotiated application-level protocol.");
-			}
-			String protocol = sslHandler.applicationProtocol() != null ? sslHandler.applicationProtocol() : ApplicationProtocolNames.HTTP_1_1;
-			if (log.isDebugEnabled()) {
-				log.debug(format(ctx.channel(), "Negotiated application-level protocol [" + protocol + "]"));
-			}
-			if (ApplicationProtocolNames.HTTP_2.equals(protocol)) {
-				configureHttp2Pipeline(ctx.channel().pipeline(), acceptGzip, decoder, http2Settings, observer);
-			}
-			else if (ApplicationProtocolNames.HTTP_1_1.equals(protocol)) {
-				configureHttp11Pipeline(ctx.channel().pipeline(), acceptGzip, decoder, metricsRecorder, uriTagValue);
+			ChannelHandler handler = ctx.pipeline().get(NettyPipeline.SslHandler);
+			if (handler instanceof SslHandler) {
+				SslHandler sslHandler = (SslHandler) handler;
+
+				String protocol = sslHandler.applicationProtocol() != null ? sslHandler.applicationProtocol() : ApplicationProtocolNames.HTTP_1_1;
+				if (log.isDebugEnabled()) {
+					log.debug(format(ctx.channel(), "Negotiated application-level protocol [" + protocol + "]"));
+				}
+				if (ApplicationProtocolNames.HTTP_2.equals(protocol)) {
+					configureHttp2Pipeline(ctx.channel().pipeline(), acceptGzip, decoder, http2Settings, observer);
+				}
+				else if (ApplicationProtocolNames.HTTP_1_1.equals(protocol)) {
+					configureHttp11Pipeline(ctx.channel().pipeline(), acceptGzip, decoder, metricsRecorder, uriTagValue);
+				}
+				else {
+					throw new IllegalStateException("unknown protocol: " + protocol);
+				}
+
+				ctx.fireChannelActive();
+
+				ctx.channel().pipeline().remove(this);
 			}
 			else {
-				throw new IllegalStateException("unknown protocol: " + protocol);
+				throw new IllegalStateException("Cannot determine negotiated application-level protocol.");
 			}
-
-			ctx.fireChannelActive();
-
-			ctx.channel().pipeline().remove(this);
 		}
 	}
 
@@ -1005,7 +1026,8 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 				doOnRequestError.accept(connection.as(HttpClientOperations.class), error);
 				return;
 			}
-			if (doOnResponseError != null && (ops.responseState != null) && !(error instanceof RedirectClientException)) {
+			if (doOnResponseError != null && ops.responseState != null &&
+					!(error instanceof RedirectClientException)) {
 				doOnResponseError.accept(connection.as(HttpClientOperations.class), error);
 			}
 		}

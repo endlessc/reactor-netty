@@ -18,12 +18,15 @@ package reactor.netty.http;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.classic.spi.LoggingEvent;
-import ch.qos.logback.core.Appender;
+import ch.qos.logback.core.AppenderBase;
 import ch.qos.logback.core.read.ListAppender;
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http2.Http2Connection;
+import io.netty.handler.codec.http2.Http2FrameCodec;
+import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.ReadTimeoutHandler;
@@ -31,7 +34,6 @@ import io.netty.util.concurrent.DefaultPromise;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
@@ -54,8 +56,11 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -333,7 +338,6 @@ class HttpProtocolsTests extends BaseHttpTest {
 	}
 
 	@ParameterizedCompatibleCombinationsTest
-	@SuppressWarnings("unchecked")
 	void testAccessLog(HttpServer server, HttpClient client) throws Exception {
 		disposableServer =
 				server.handle((req, resp) -> {
@@ -346,13 +350,13 @@ class HttpProtocolsTests extends BaseHttpTest {
 				      .accessLog(true)
 				      .bindNow();
 
-		Appender<ILoggingEvent> mockedAppender = (Appender<ILoggingEvent>) Mockito.mock(Appender.class);
-		ArgumentCaptor<LoggingEvent> loggingEventArgumentCaptor = ArgumentCaptor.forClass(LoggingEvent.class);
-		Mockito.when(mockedAppender.getName()).thenReturn("MOCK");
+		AccessLogAppender accessLogAppender = new AccessLogAppender();
+		accessLogAppender.start();
 		Logger accessLogger = (Logger) LoggerFactory.getLogger("reactor.netty.http.server.AccessLog");
 		AtomicReference<String> protocol = new AtomicReference<>();
 		try {
-			accessLogger.addAppender(mockedAppender);
+			accessLogger.addAppender(accessLogAppender);
+
 			client.port(disposableServer.port())
 			      .get()
 			      .uri("/")
@@ -364,14 +368,15 @@ class HttpProtocolsTests extends BaseHttpTest {
 			      .expectNext("FOUND")
 			      .expectComplete()
 			      .verify(Duration.ofSeconds(5));
+
+			assertThat(accessLogAppender.latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+			assertThat(accessLogAppender.list).hasSize(1);
+			assertThat(accessLogAppender.list.get(0).getFormattedMessage()).contains("GET / HTTP/" + protocol.get() + "\" 200");
 		}
 		finally {
-			Thread.sleep(20);
-			Mockito.verify(mockedAppender, Mockito.times(1)).doAppend(loggingEventArgumentCaptor.capture());
-			assertThat(loggingEventArgumentCaptor.getAllValues()).hasSize(1);
-			LoggingEvent relevantLog = loggingEventArgumentCaptor.getAllValues().get(0);
-			assertThat(relevantLog.getFormattedMessage()).contains("GET / HTTP/" + protocol.get() + "\" 200");
-			accessLogger.detachAppender(mockedAppender);
+			accessLogger.detachAppender(accessLogAppender);
+			accessLogAppender.stop();
 		}
 	}
 
@@ -407,7 +412,7 @@ class HttpProtocolsTests extends BaseHttpTest {
 				              timeout.set(((ReadTimeoutHandler) handler).getReaderIdleTimeInMillis());
 				          }
 				      })
-				      .doOnDisconnected(conn -> onDisconnected.set(handlerAvailable.test(conn)));
+				      .doOnDisconnected(conn -> onDisconnected.set(conn.channel().isActive() && handlerAvailable.test(conn)));
 
 		Mono<String> response =
 				localClient.get()
@@ -592,5 +597,66 @@ class HttpProtocolsTests extends BaseHttpTest {
 		// ensure no WARN with error
 		assertThat(listAppender.list)
 				.noneMatch(event -> event.getLevel() == Level.WARN);
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testIdleTimeout(HttpServer server, HttpClient client) throws Exception {
+		CountDownLatch latch = new CountDownLatch(1);
+		disposableServer =
+				server.idleTimeout(Duration.ofMillis(500))
+				      .route(routes ->
+				          routes.post("/echo", (req, res) ->
+				              res.withConnection(conn -> {
+				                      Channel channel = conn.channel() instanceof Http2StreamChannel ?
+				                              conn.channel().parent() : conn.channel();
+				                      channel.closeFuture().addListener(f -> latch.countDown());
+				                 })
+				                 .send(req.receive().retain())))
+				      .bindNow();
+
+		CountDownLatch goAwayReceived = new CountDownLatch(1);
+		client.doOnResponse((res, conn) -> {
+		          if (!(conn.channel() instanceof Http2StreamChannel)) {
+		              goAwayReceived.countDown();
+		              return;
+		          }
+
+		          Http2FrameCodec http2FrameCodec = conn.channel().parent().pipeline().get(Http2FrameCodec.class);
+		          Http2Connection.Listener goAwayFrameListener = Mockito.mock(Http2Connection.Listener.class);
+		          Mockito.doAnswer(invocation -> {
+		                     goAwayReceived.countDown();
+		                     return null;
+		                 })
+		                 .when(goAwayFrameListener)
+		                 .onGoAwayReceived(Mockito.anyInt(), Mockito.anyLong(), Mockito.any());
+		          http2FrameCodec.connection().addListener(goAwayFrameListener);
+		      })
+		      .port(disposableServer.port())
+		      .post()
+		      .uri("/echo")
+		      .send(ByteBufFlux.fromString(Mono.just("Hello world!")))
+		      .responseContent()
+		      .aggregate()
+		      .asString()
+		      .as(StepVerifier::create)
+		      .expectNext("Hello world!")
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+
+		assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+
+		assertThat(goAwayReceived.await(10, TimeUnit.SECONDS)).isTrue();
+	}
+
+	static final class AccessLogAppender extends AppenderBase<ILoggingEvent> {
+
+		final CountDownLatch latch = new CountDownLatch(1);
+		final List<ILoggingEvent> list = new ArrayList<>();
+
+		@Override
+		protected void append(ILoggingEvent eventObject) {
+			list.add(eventObject);
+			latch.countDown();
+		}
 	}
 }

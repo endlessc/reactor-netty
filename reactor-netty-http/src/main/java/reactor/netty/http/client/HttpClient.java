@@ -905,7 +905,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
-	 * Specifies whether HTTP status 301|302|307|308 auto-redirect support is enabled.
+	 * Specifies whether HTTP status 301|302|303|307|308 auto-redirect support is enabled.
 	 *
 	 * <p><strong>Note:</strong> The sensitive headers {@link #followRedirect(boolean, Consumer) followRedirect}
 	 * are removed from the initialized request when redirecting to a different domain, they can be re-added
@@ -1149,10 +1149,10 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 */
 	public final HttpClient metrics(boolean enable, Function<String, String> uriTagValue) {
 		if (enable) {
-			if (!Metrics.isInstrumentationAvailable()) {
+			if (!Metrics.isMicrometerAvailable() && !Metrics.isTracingAvailable()) {
 				throw new UnsupportedOperationException(
-						"To enable metrics, you must add the dependency `io.micrometer:micrometer-core`" +
-								" to the class path first");
+						"To enable metrics, you must add the dependencies to `io.micrometer:micrometer-core`" +
+								" and `io.micrometer:micrometer-tracing` to the class path first");
 			}
 			HttpClient dup = duplicate();
 			dup.configuration().metricsRecorder(() -> configuration().defaultMetricsRecorder());

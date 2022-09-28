@@ -16,13 +16,13 @@
 package reactor.netty.http.client;
 
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.http2.Http2Connection;
 import io.netty.handler.codec.http2.Http2FrameCodec;
 import io.netty.handler.codec.http2.Http2LocalFlowController;
 import io.netty.handler.codec.http2.Http2StreamChannel;
+import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
 import io.netty.handler.ssl.ApplicationProtocolNames;
-import io.netty.handler.ssl.SslHandler;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
@@ -37,7 +37,6 @@ import reactor.core.publisher.MonoSink;
 import reactor.core.publisher.Operators;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
-import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.resources.ConnectionProvider;
@@ -76,6 +75,9 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 	Http2ConnectionProvider(ConnectionProvider parent) {
 		super(initConfiguration(parent));
 		this.parent = parent;
+		if (parent instanceof PooledConnectionProvider) {
+			((PooledConnectionProvider<?>) parent).onDispose(disposeLater());
+		}
 	}
 
 	static Builder initConfiguration(ConnectionProvider parent) {
@@ -99,8 +101,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			ConnectionObserver connectionObserver,
 			long pendingAcquireTimeout,
 			InstrumentedPool<Connection> pool,
-			Context propagationContext,
-			MonoSink<Connection> sink) {
+			MonoSink<Connection> sink,
+			Context currentContext) {
 		boolean acceptGzip = false;
 		ChannelMetricsRecorder metricsRecorder = config.metricsRecorder() != null ? config.metricsRecorder().get() : null;
 		Function<String, String> uriTagValue = null;
@@ -109,7 +111,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			uriTagValue = ((HttpClientConfig) config).uriTagValue;
 		}
 		return new DisposableAcquire(connectionObserver, config.channelOperationsProvider(),
-				acceptGzip, metricsRecorder, pendingAcquireTimeout, pool, propagationContext, sink, uriTagValue);
+				acceptGzip, metricsRecorder, pendingAcquireTimeout, pool, sink, currentContext, uriTagValue);
 	}
 
 	@Override
@@ -207,7 +209,6 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		final ChannelMetricsRecorder metricsRecorder;
 		final long pendingAcquireTimeout;
 		final InstrumentedPool<Connection> pool;
-		final Context propagationContext;
 		final boolean retried;
 		final MonoSink<Connection> sink;
 		final Function<String, String> uriTagValue;
@@ -222,18 +223,17 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				@Nullable ChannelMetricsRecorder metricsRecorder,
 				long pendingAcquireTimeout,
 				InstrumentedPool<Connection> pool,
-				Context propagationContext,
 				MonoSink<Connection> sink,
+				Context currentContext,
 				@Nullable Function<String, String> uriTagValue) {
 			this.cancellations = Disposables.composite();
-			this.currentContext = Context.of(sink.contextView());
+			this.currentContext = currentContext;
 			this.obs = obs;
 			this.opsFactory = opsFactory;
 			this.acceptGzip = acceptGzip;
 			this.metricsRecorder = metricsRecorder;
 			this.pendingAcquireTimeout = pendingAcquireTimeout;
 			this.pool = pool;
-			this.propagationContext = propagationContext;
 			this.retried = false;
 			this.sink = sink;
 			this.uriTagValue = uriTagValue;
@@ -248,7 +248,6 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			this.metricsRecorder = parent.metricsRecorder;
 			this.pendingAcquireTimeout = parent.pendingAcquireTimeout;
 			this.pool = parent.pool;
-			this.propagationContext = parent.propagationContext;
 			this.retried = true;
 			this.sink = parent.sink;
 			this.uriTagValue = parent.uriTagValue;
@@ -304,8 +303,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				return;
 			}
 
-			HttpClientConfig.openStream(channel, this, obs, opsFactory, acceptGzip, metricsRecorder, uriTagValue)
-			                .addListener(this);
+			http2StreamChannelBootstrap(channel).open().addListener(this);
 		}
 
 		@Override
@@ -337,11 +335,13 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		@Override
 		public void operationComplete(Future<Http2StreamChannel> future) {
 			Channel channel = pooledRef.poolable().channel();
-			Http2FrameCodec frameCodec = channel.pipeline().get(Http2FrameCodec.class);
+			ChannelHandlerContext frameCodec = ((Http2Pool.Http2PooledRef) pooledRef).slot.http2FrameCodecCtx();
 			if (future.isSuccess()) {
 				Http2StreamChannel ch = future.getNow();
 
-				if (!channel.isActive() || frameCodec == null || !frameCodec.connection().local().canOpenStream()) {
+				if (!channel.isActive() || frameCodec == null ||
+						((Http2FrameCodec) frameCodec.handler()).connection().goAwayReceived() ||
+						!((Http2FrameCodec) frameCodec.handler()).connection().local().canOpenStream()) {
 					invalidate(this);
 					if (!retried) {
 						if (log.isDebugEnabled()) {
@@ -357,14 +357,18 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 					}
 				}
 				else {
+					Http2ConnectionProvider.registerClose(ch, this);
+					HttpClientConfig.addStreamHandlers(ch, obs.then(new HttpClientConfig.StreamConnectionObserver(currentContext())),
+							opsFactory, acceptGzip, metricsRecorder, -1, uriTagValue);
+
 					ChannelOperations<?, ?> ops = ChannelOperations.get(ch);
 					if (ops != null) {
 						obs.onStateChange(ops, STREAM_CONFIGURED);
 						sink.success(ops);
 					}
 
-					Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint = frameCodec.connection().local();
 					if (log.isDebugEnabled()) {
+						Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint = ((Http2FrameCodec) frameCodec.handler()).connection().local();
 						logStreamsState(ch, localEndpoint, "Stream opened");
 					}
 				}
@@ -377,8 +381,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		boolean isH2cUpgrade() {
 			Channel channel = pooledRef.poolable().channel();
-			if (channel.pipeline().get(NettyPipeline.H2CUpgradeHandler) != null &&
-						channel.pipeline().get(NettyPipeline.H2MultiplexHandler) == null) {
+			if (((Http2Pool.Http2PooledRef) pooledRef).slot.h2cUpgradeHandlerCtx() != null &&
+					((Http2Pool.Http2PooledRef) pooledRef).slot.http2MultiplexHandlerCtx() == null) {
 				ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
 				if (ops != null) {
 					sink.success(ops);
@@ -390,11 +394,9 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		boolean notHttp2() {
 			Channel channel = pooledRef.poolable().channel();
-			ChannelPipeline pipeline = channel.pipeline();
-			SslHandler handler = pipeline.get(SslHandler.class);
-			if (handler != null) {
-				String protocol = handler.applicationProtocol() != null ? handler.applicationProtocol() : ApplicationProtocolNames.HTTP_1_1;
-				if (ApplicationProtocolNames.HTTP_1_1.equals(protocol)) {
+			String applicationProtocol = ((Http2Pool.Http2PooledRef) pooledRef).slot.applicationProtocol;
+			if (applicationProtocol != null) {
+				if (ApplicationProtocolNames.HTTP_1_1.equals(applicationProtocol)) {
 					// No information for the negotiated application-level protocol,
 					// or it is HTTP/1.1, continue as an HTTP/1.1 request
 					// and remove the connection from this pool.
@@ -405,15 +407,15 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 						return true;
 					}
 				}
-				else if (!ApplicationProtocolNames.HTTP_2.equals(handler.applicationProtocol())) {
+				else if (!ApplicationProtocolNames.HTTP_2.equals(applicationProtocol)) {
 					channel.attr(OWNER).set(null);
 					invalidate(this);
-					sink.error(new IOException("Unknown protocol [" + protocol + "]."));
+					sink.error(new IOException("Unknown protocol [" + applicationProtocol + "]."));
 					return true;
 				}
 			}
-			else if (pipeline.get(NettyPipeline.H2CUpgradeHandler) == null &&
-					pipeline.get(NettyPipeline.H2MultiplexHandler) == null) {
+			else if (((Http2Pool.Http2PooledRef) pooledRef).slot.h2cUpgradeHandlerCtx() == null &&
+					((Http2Pool.Http2PooledRef) pooledRef).slot.http2MultiplexHandlerCtx() == null) {
 				// It is not H2. There are no handlers for H2C upgrade/H2C prior-knowledge,
 				// continue as an HTTP/1.1 request and remove the connection from this pool.
 				ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
@@ -424,6 +426,27 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				}
 			}
 			return false;
+		}
+
+		static final AttributeKey<Http2StreamChannelBootstrap> HTTP2_STREAM_CHANNEL_BOOTSTRAP =
+				AttributeKey.valueOf("http2StreamChannelBootstrap");
+
+		static Http2StreamChannelBootstrap http2StreamChannelBootstrap(Channel channel) {
+			Http2StreamChannelBootstrap http2StreamChannelBootstrap;
+
+			for (;;) {
+				http2StreamChannelBootstrap = channel.attr(HTTP2_STREAM_CHANNEL_BOOTSTRAP).get();
+				if (http2StreamChannelBootstrap == null) {
+					http2StreamChannelBootstrap = new Http2StreamChannelBootstrap(channel);
+				}
+				else {
+					return http2StreamChannelBootstrap;
+				}
+				if (channel.attr(HTTP2_STREAM_CHANNEL_BOOTSTRAP)
+						.compareAndSet(null, http2StreamChannelBootstrap)) {
+					return http2StreamChannelBootstrap;
+				}
+			}
 		}
 	}
 
@@ -471,7 +494,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			this.remoteAddress = remoteAddress;
 			this.resolver = resolver;
 			this.pool = poolFactory.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
-					poolConFig -> new Http2Pool(poolConFig, poolFactory.maxLifeTime()));
+					poolConFig -> new Http2Pool(poolConFig, poolFactory.allocationStrategy(), poolFactory.maxIdleTime(), poolFactory.maxLifeTime()));
 		}
 
 		Publisher<Connection> connectChannel() {

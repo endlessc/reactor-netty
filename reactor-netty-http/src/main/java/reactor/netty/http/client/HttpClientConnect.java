@@ -37,6 +37,7 @@ import io.netty.channel.ChannelOption;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.ssl.SslClosedEngineException;
@@ -56,7 +57,6 @@ import reactor.netty.NettyOutbound;
 import reactor.netty.channel.AbortedException;
 import reactor.netty.http.HttpOperations;
 import reactor.netty.http.HttpProtocol;
-import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.tcp.TcpClientConfig;
 import reactor.netty.transport.AddressUtils;
 import reactor.netty.transport.ProxyProvider;
@@ -80,7 +80,7 @@ class HttpClientConnect extends HttpClient {
 
 	final HttpClientConfig config;
 
-	HttpClientConnect(ConnectionProvider provider) {
+	HttpClientConnect(HttpConnectionProvider provider) {
 		this.config = new HttpClientConfig(
 				provider,
 				Collections.singletonMap(ChannelOption.AUTO_READ, false),
@@ -264,7 +264,7 @@ class HttpClientConnect extends HttpClient {
 
 				AddressResolverGroup<?> resolver = _config.resolverInternal();
 
-				_config.connectionProvider()
+				_config.httpConnectionProvider()
 						.acquire(_config, observer, handler, resolver)
 						.subscribe(new ClientTransportSubscriber(sink));
 
@@ -446,7 +446,7 @@ class HttpClientConnect extends HttpClient {
 	static final class HttpClientHandler extends SocketAddress
 			implements Predicate<Throwable>, Supplier<SocketAddress> {
 
-		final HttpMethod              method;
+		volatile HttpMethod           method;
 		final HttpHeaders             defaultHeaders;
 		final BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>>
 		                              handler;
@@ -675,6 +675,9 @@ class HttpClientConnect extends HttpClient {
 		public boolean test(Throwable throwable) {
 			if (throwable instanceof RedirectClientException) {
 				RedirectClientException re = (RedirectClientException) throwable;
+				if (HttpResponseStatus.SEE_OTHER.equals(re.status)) {
+					method = HttpMethod.GET;
+				}
 				redirect(re.location);
 				return true;
 			}

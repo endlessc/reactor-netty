@@ -48,6 +48,26 @@ enum HttpServerMeters implements DocumentedMeter {
 	},
 
 	/**
+	 * The number of HTTP/2 streams currently active on the server
+	 */
+	STREAMS_ACTIVE {
+		@Override
+		public String getName() {
+			return "reactor.netty.http.server.streams.active";
+		}
+
+		@Override
+		public KeyName[] getKeyNames() {
+			return StreamsActiveTags.values();
+		}
+
+		@Override
+		public Meter.Type getType() {
+			return Meter.Type.GAUGE;
+		}
+	},
+
+	/**
 	 * Amount of the data received, in bytes.
 	 */
 	HTTP_SERVER_DATA_RECEIVED {
@@ -157,14 +177,14 @@ enum HttpServerMeters implements DocumentedMeter {
 		}
 	};
 
-	enum ConnectionsActiveTags implements KeyName {
+	enum StreamsActiveTags implements KeyName {
 
 		/**
 		 * Local address.
 		 */
 		LOCAL_ADDRESS {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "local.address";
 			}
 		},
@@ -174,7 +194,30 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		URI {
 			@Override
-			public String getKeyName() {
+			public String asString() {
+				return "uri";
+			}
+		}
+	}
+
+	enum ConnectionsActiveTags implements KeyName {
+
+		/**
+		 * Local address.
+		 */
+		LOCAL_ADDRESS {
+			@Override
+			public String asString() {
+				return "local.address";
+			}
+		},
+
+		/**
+		 * URI.
+		 */
+		URI {
+			@Override
+			public String asString() {
 				return "uri";
 			}
 		}
@@ -187,7 +230,7 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		METHOD {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "method";
 			}
 		},
@@ -197,7 +240,7 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		URI {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "uri";
 			}
 		}
@@ -210,7 +253,7 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		METHOD {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "method";
 			}
 		},
@@ -220,7 +263,7 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		STATUS {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "status";
 			}
 		},
@@ -230,7 +273,7 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		URI {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "uri";
 			}
 		}
@@ -243,7 +286,7 @@ enum HttpServerMeters implements DocumentedMeter {
 		 */
 		URI {
 			@Override
-			public String getKeyName() {
+			public String asString() {
 				return "uri";
 			}
 		}

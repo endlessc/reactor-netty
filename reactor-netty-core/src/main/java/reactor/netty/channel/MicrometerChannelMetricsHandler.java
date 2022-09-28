@@ -16,7 +16,6 @@
 package reactor.netty.channel;
 
 import io.micrometer.common.KeyValues;
-import io.micrometer.contextpropagation.ContextContainer;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
 import io.netty.channel.ChannelHandler;
@@ -25,13 +24,16 @@ import io.netty.channel.ChannelInboundHandler;
 import io.netty.channel.ChannelOutboundHandler;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.ssl.SslHandler;
+import io.netty.util.AttributeKey;
 import reactor.netty.observability.ReactorNettyHandlerContext;
 import reactor.util.annotation.Nullable;
+import reactor.util.context.ContextView;
 
 import java.net.SocketAddress;
 
 import static reactor.netty.Metrics.CONNECT_TIME;
 import static reactor.netty.Metrics.ERROR;
+import static reactor.netty.Metrics.OBSERVATION_KEY;
 import static reactor.netty.Metrics.OBSERVATION_REGISTRY;
 import static reactor.netty.Metrics.SUCCESS;
 import static reactor.netty.Metrics.TLS_HANDSHAKE_TIME;
@@ -51,6 +53,7 @@ import static reactor.netty.channel.ConnectObservations.ConnectTimeLowCardinalit
  * @since 1.1.0
  */
 public final class MicrometerChannelMetricsHandler extends AbstractChannelMetricsHandler {
+	static final AttributeKey<ContextView> CONTEXT_VIEW = AttributeKey.valueOf("$CONTEXT_VIEW");
 
 	final MicrometerChannelMetricsRecorder recorder;
 
@@ -119,11 +122,14 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 			//
 			// Move the implementation from the recorder here
 			this.remoteAddress = formatSocketAddress(remoteAddress);
-			ContextContainer container = ContextContainer.restore(ctx.channel());
-			Observation observation;
-			try (ContextContainer.Scope scope = container.restoreThreadLocalValues()) {
-				observation = Observation.start(recorder.name() + CONNECT_TIME, this, OBSERVATION_REGISTRY);
+			Observation observation = Observation.createNotStarted(recorder.name() + CONNECT_TIME, this, OBSERVATION_REGISTRY);
+			if (ctx.channel().hasAttr(CONTEXT_VIEW)) {
+				ContextView contextView = ctx.channel().attr(CONTEXT_VIEW).get();
+				if (contextView.hasKey(OBSERVATION_KEY)) {
+					observation.parentObservation(contextView.get(OBSERVATION_KEY));
+				}
 			}
+			observation.start();
 			ctx.connect(remoteAddress, localAddress, promise)
 			   .addListener(future -> {
 			       ctx.pipeline().remove(this);
@@ -166,13 +172,13 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 		@Override
 		public KeyValues getHighCardinalityKeyValues() {
-			return KeyValues.of(REACTOR_NETTY_PROTOCOL.getKeyName(), recorder.protocol(),
-					REACTOR_NETTY_STATUS.getKeyName(), status, REACTOR_NETTY_TYPE.getKeyName(), TYPE);
+			return KeyValues.of(REACTOR_NETTY_PROTOCOL.asString(), recorder.protocol(),
+					REACTOR_NETTY_STATUS.asString(), status, REACTOR_NETTY_TYPE.asString(), TYPE);
 		}
 
 		@Override
 		public KeyValues getLowCardinalityKeyValues() {
-			return KeyValues.of(REMOTE_ADDRESS.getKeyName(), remoteAddress, STATUS.getKeyName(), status);
+			return KeyValues.of(REMOTE_ADDRESS.asString(), remoteAddress, STATUS.asString(), status);
 		}
 
 		@Override
@@ -220,10 +226,14 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 		@SuppressWarnings("try")
 		public void channelActive(ChannelHandlerContext ctx) {
 			this.remoteAddress = formatSocketAddress(ctx.channel().remoteAddress());
-			ContextContainer container = ContextContainer.restore(ctx.channel());
-			try (ContextContainer.Scope scope = container.restoreThreadLocalValues()) {
-				observation = Observation.start(recorder.name() + TLS_HANDSHAKE_TIME, this, OBSERVATION_REGISTRY);
+			observation = Observation.createNotStarted(recorder.name() + TLS_HANDSHAKE_TIME, this, OBSERVATION_REGISTRY);
+			if (ctx.channel().hasAttr(CONTEXT_VIEW)) {
+				ContextView contextView = ctx.channel().attr(CONTEXT_VIEW).get();
+				if (contextView.hasKey(OBSERVATION_KEY)) {
+					observation.parentObservation(contextView.get(OBSERVATION_KEY));
+				}
 			}
+			observation.start();
 			ctx.pipeline().get(SslHandler.class)
 					.handshakeFuture()
 					.addListener(f -> {
@@ -278,13 +288,13 @@ public final class MicrometerChannelMetricsHandler extends AbstractChannelMetric
 
 		@Override
 		public KeyValues getHighCardinalityKeyValues() {
-			return KeyValues.of(REACTOR_NETTY_PROTOCOL.getKeyName(), recorder.protocol(),
-					REACTOR_NETTY_STATUS.getKeyName(), status, REACTOR_NETTY_TYPE.getKeyName(), type);
+			return KeyValues.of(REACTOR_NETTY_PROTOCOL.asString(), recorder.protocol(),
+					REACTOR_NETTY_STATUS.asString(), status, REACTOR_NETTY_TYPE.asString(), type);
 		}
 
 		@Override
 		public KeyValues getLowCardinalityKeyValues() {
-			return KeyValues.of(REMOTE_ADDRESS.getKeyName(), remoteAddress, STATUS.getKeyName(), status);
+			return KeyValues.of(REMOTE_ADDRESS.asString(), remoteAddress, STATUS.asString(), status);
 		}
 
 		@Override

@@ -41,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -89,6 +90,8 @@ import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.DefaultEventExecutor;
+import io.netty.util.concurrent.EventExecutor;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -136,10 +139,17 @@ class HttpClientTest extends BaseHttpTest {
 	static final Logger log = Loggers.getLogger(HttpClientTest.class);
 
 	static SelfSignedCertificate ssc;
+	static final EventExecutor executor = new DefaultEventExecutor();
 
 	@BeforeAll
 	static void createSelfSignedCertificate() throws CertificateException {
 		ssc = new SelfSignedCertificate();
+	}
+
+	@AfterAll
+	static void cleanup() throws ExecutionException, InterruptedException, TimeoutException {
+		executor.shutdownGracefully()
+				.get(30, TimeUnit.SECONDS);
 	}
 
 	@Test
@@ -1316,7 +1326,8 @@ class HttpClientTest extends BaseHttpTest {
 		                error.set(t);
 		                return t.getMessage() != null &&
 		                               (t.getMessage().contains("Connection reset by peer") ||
-				                                t.getMessage().contains("readAddress(..)") || // https://github.com/reactor/reactor-netty/issues/1673
+		                                        t.getMessage().contains("Connection reset") ||
+		                                        t.getMessage().contains("readAddress(..)") || // https://github.com/reactor/reactor-netty/issues/1673
 		                                        t.getMessage().contains("Connection prematurely closed BEFORE response"));
 		            })
 		            .verify(Duration.ofSeconds(30));
@@ -1455,7 +1466,7 @@ class HttpClientTest extends BaseHttpTest {
 		ConnectionProvider connectionProvider =
 				ConnectionProvider.create("testChannelGroupClosesAllConnections", Integer.MAX_VALUE);
 
-		ChannelGroup group = new DefaultChannelGroup(new DefaultEventExecutor());
+		ChannelGroup group = new DefaultChannelGroup(executor);
 
 		CountDownLatch latch1 = new CountDownLatch(3);
 		CountDownLatch latch2 = new CountDownLatch(3);
@@ -1609,6 +1620,7 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("deprecation")
 	void httpClientResponseConfigInjectAttributes() {
 		AtomicReference<Channel> channelRef = new AtomicReference<>();
 		AtomicBoolean validate = new AtomicBoolean();
@@ -3154,7 +3166,7 @@ class HttpClientTest extends BaseHttpTest {
 		HttpClientConfig config = client.configuration();
 
 		LoopResources loopResources1 = config.loopResources();
-		ConnectionProvider provider1 = ((HttpConnectionProvider) config.connectionProvider()).http1ConnectionProvider();
+		ConnectionProvider provider1 = config.connectionProvider();
 		AddressResolverGroup<?> resolverGroup1 = config.defaultAddressResolverGroup();
 
 		try {
@@ -3171,7 +3183,7 @@ class HttpClientTest extends BaseHttpTest {
 		HttpResources.reset();
 
 		LoopResources loopResources2 = config.loopResources();
-		ConnectionProvider provider2 = ((HttpConnectionProvider) config.connectionProvider()).http1ConnectionProvider();
+		ConnectionProvider provider2 = config.connectionProvider();
 		AddressResolverGroup<?> resolverGroup2 = config.defaultAddressResolverGroup();
 
 		assertThat(loopResources1).isNotSameAs(loopResources2);

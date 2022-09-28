@@ -25,6 +25,7 @@ import io.netty.util.concurrent.Future;
 import reactor.netty.channel.MicrometerChannelMetricsRecorder;
 import reactor.netty.internal.util.MapUtils;
 import reactor.netty.observability.ReactorNettyHandlerContext;
+import reactor.util.context.ContextView;
 
 import java.net.SocketAddress;
 import java.util.List;
@@ -35,6 +36,7 @@ import java.util.function.Supplier;
 
 import static reactor.netty.Metrics.ADDRESS_RESOLVER;
 import static reactor.netty.Metrics.ERROR;
+import static reactor.netty.Metrics.OBSERVATION_KEY;
 import static reactor.netty.Metrics.OBSERVATION_REGISTRY;
 import static reactor.netty.Metrics.SUCCESS;
 import static reactor.netty.Metrics.formatSocketAddress;
@@ -95,13 +97,13 @@ final class MicrometerAddressResolverGroupMetrics<T extends SocketAddress> exten
 
 		@Override
 		public KeyValues getHighCardinalityKeyValues() {
-			return KeyValues.of(REACTOR_NETTY_PROTOCOL.getKeyName(), recorder.protocol(),
-					REACTOR_NETTY_STATUS.getKeyName(), status, REACTOR_NETTY_TYPE.getKeyName(), TYPE);
+			return KeyValues.of(REACTOR_NETTY_PROTOCOL.asString(), recorder.protocol(),
+					REACTOR_NETTY_STATUS.asString(), status, REACTOR_NETTY_TYPE.asString(), TYPE);
 		}
 
 		@Override
 		public KeyValues getLowCardinalityKeyValues() {
-			return KeyValues.of(REMOTE_ADDRESS.getKeyName(), remoteAddress, STATUS.getKeyName(), status);
+			return KeyValues.of(REMOTE_ADDRESS.asString(), remoteAddress, STATUS.asString(), status);
 		}
 	}
 
@@ -114,8 +116,11 @@ final class MicrometerAddressResolverGroupMetrics<T extends SocketAddress> exten
 			this.name = recorder.name();
 		}
 
-		@Override
-		Future<List<T>> resolveAllInternal(SocketAddress address, Supplier<Future<List<T>>> resolver) {
+		Future<List<T>> resolveAll(SocketAddress address, ContextView contextView) {
+			return resolveAllInternal(address, () -> resolver.resolveAll(address), contextView);
+		}
+
+		Future<List<T>> resolveAllInternal(SocketAddress address, Supplier<Future<List<T>>> resolver, ContextView contextView) {
 			// Cannot invoke the recorder anymore:
 			// 1. The recorder is one instance only, it is invoked for all name resolutions that can happen
 			// 2. The recorder does not have knowledge about name resolution lifecycle
@@ -124,7 +129,11 @@ final class MicrometerAddressResolverGroupMetrics<T extends SocketAddress> exten
 			// Move the implementation from the recorder here
 			String remoteAddress = formatSocketAddress(address);
 			FutureHandlerContext handlerContext = new FutureHandlerContext((MicrometerChannelMetricsRecorder) recorder, remoteAddress);
-			Observation sample = Observation.start(name + ADDRESS_RESOLVER, handlerContext, OBSERVATION_REGISTRY);
+			Observation sample = Observation.createNotStarted(name + ADDRESS_RESOLVER, handlerContext, OBSERVATION_REGISTRY);
+			if (contextView.hasKey(OBSERVATION_KEY)) {
+				sample.parentObservation(contextView.get(OBSERVATION_KEY));
+			}
+			sample.start();
 			return resolver.get()
 			               .addListener(future -> {
 			                   handlerContext.status = future.isSuccess() ? SUCCESS : ERROR;

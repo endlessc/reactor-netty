@@ -1,6 +1,6 @@
 :sourcedir: ./../../reactor-netty-http/src/main/java
 :examplesdir: ./../../reactor-netty-examples/src/main/java/reactor/netty/examples/documentation/http/client
-:javadoc: https://projectreactor.io/docs/netty/release/api
+:javadoc: https://projectreactor.io/docs/netty/{project-version}/api
 :nettyjavadoc: https://netty.io/4.1/api
 :wirelogger: reactor.netty.http.client.HttpClient
 
@@ -131,7 +131,8 @@ You can configure the `HTTP` client to enable auto-redirect support.
 
 Reactor Netty provides two different strategies for auto-redirect support:
 
-* `followRedirect(boolean)`: Specifies whether HTTP auto-redirect support is enabled for statuses `301|302|307|308`.
+* `followRedirect(boolean)`: Specifies whether HTTP auto-redirect support is enabled for statuses `301|302|303|307|308`.
+When it is `303` status code, `GET` method is used for the redirect.
 * `followRedirect(BiPredicate<HttpClientRequest, HttpClientResponse>)`: Enables auto-redirect support if the supplied
 predicate matches.
 
@@ -194,7 +195,7 @@ By default, the `HTTP` client is configured with the following settings:
 [source,java,indent=0]
 .{sourcedir}/reactor/netty/http/HttpDecoderSpec.java
 ----
-include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=29..34]
+include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=29..38]
 ----
 ====
 ====
@@ -264,7 +265,7 @@ to extend the default `TCP` client configuration (add an option, bind address et
 [source,java,indent=0]
 .{examplesdir}/channeloptions/Application.java
 ----
-include::{examplesdir}/channeloptions/Application.java[lines=18..46]
+include::{examplesdir}/channeloptions/Application.java[lines=18..54]
 ----
 <1> Configures the connection establishment timeout to 10 seconds.
 <2> Enables TCP `keepalive`. This means that TCP starts sending `keepalive` probes when a connection is idle for some time.
@@ -625,7 +626,7 @@ To customize the default settings, you can configure `HttpClient` as follows:
 [source,java,indent=0]
 .{examplesdir}/channeloptions/Application.java
 ----
-include::{examplesdir}/channeloptions/Application.java[lines=18..52]
+include::{examplesdir}/channeloptions/Application.java[lines=18..54]
 ----
 <1> Configures the connection establishment timeout to 10 seconds.
 <2> Enables TCP `keepalive`. This means that TCP starts sending `keepalive` probes when a connection is idle for some time.
@@ -673,7 +674,7 @@ To customize the default settings, you can configure `HttpClient` as follows:
 [source,java,indent=0]
 .{examplesdir}/proxy/Application.java
 ----
-include::{examplesdir}/proxy/Application.java[lines=18..41]
+include::{examplesdir}/proxy/Application.java[lines=18..42]
 ----
 <1> Configures the connection establishment timeout to 20 seconds.
 ====

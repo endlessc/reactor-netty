@@ -414,7 +414,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 		if (accessLogEnabled) {
 			pipeline.addLast(NettyPipeline.AccessLogHandler, AccessLogHandlerFactory.H2.create(accessLog));
 		}
-		pipeline.addLast(NettyPipeline.H2ToHttp11Codec, new Http2StreamFrameToHttpObjectCodec(true))
+		pipeline.addLast(NettyPipeline.H2ToHttp11Codec, HTTP2_STREAM_FRAME_TO_HTTP_OBJECT)
 		        .addLast(NettyPipeline.HttpTrafficHandler,
 		                 new Http2StreamBridgeServerHandler(compressPredicate, decoder, encoder, formDecoderProvider,
 		                         forwardedHeaderHandler, listener, mapHandle));
@@ -512,6 +512,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 			HttpServerFormDecoderProvider formDecoderProvider,
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
 			Http2Settings http2Settings,
+			@Nullable Duration idleTimeout,
 			ConnectionObserver listener,
 			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle,
 			@Nullable ChannelMetricsRecorder metricsRecorder,
@@ -537,6 +538,8 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 		                  cookieEncoder, formDecoderProvider, forwardedHeaderHandler, listener, mapHandle,
 		                  metricsRecorder, minCompressionSize, opsFactory, uriTagValue)));
 
+		IdleTimeoutHandler.addIdleTimeoutHandler(p, idleTimeout);
+
 		if (metricsRecorder != null) {
 			if (metricsRecorder instanceof MicrometerHttpServerMetricsRecorder) {
 				// For sake of performance, we can replace the ChannelMetricsHandler because the MicrometerHttpServerMetricsRecorder
@@ -547,6 +550,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	static void configureHttp11OrH2CleartextPipeline(ChannelPipeline p,
 			boolean accessLogEnabled,
 			@Nullable Function<AccessLogArgProvider, AccessLog> accessLog,
@@ -620,6 +624,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	static void configureHttp11Pipeline(ChannelPipeline p,
 			boolean accessLogEnabled,
 			@Nullable Function<AccessLogArgProvider, AccessLog> accessLog,
@@ -689,6 +694,9 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 	static final int h11orH2 = h11 | h2;
 
 	static final int h11orH2C = h11 | h2c;
+
+	static final Http2StreamFrameToHttpObjectCodec HTTP2_STREAM_FRAME_TO_HTTP_OBJECT =
+			new Http2StreamFrameToHttpObjectCodec(true);
 
 	static final Logger log = Loggers.getLogger(HttpServerConfig.class);
 
@@ -998,7 +1006,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 
 			if (ApplicationProtocolNames.HTTP_2.equals(protocol)) {
 				configureH2Pipeline(p, accessLogEnabled, accessLog, compressPredicate, cookieDecoder, cookieEncoder,
-						formDecoderProvider, forwardedHeaderHandler, http2Settings, listener, mapHandle,
+						formDecoderProvider, forwardedHeaderHandler, http2Settings, idleTimeout, listener, mapHandle,
 						metricsRecorder, minCompressionSize, opsFactory, uriTagValue, decoder.validateHeaders());
 				return;
 			}
@@ -1067,7 +1075,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 
 			if (sslProvider != null) {
 				ChannelPipeline pipeline = channel.pipeline();
-				if (redirectHttpToHttps && ((protocols & h2) != h2)) {
+				if (redirectHttpToHttps && (protocols & h2) != h2) {
 					NonSslRedirectDetector nonSslRedirectDetector = new NonSslRedirectDetector(sslProvider,
 							remoteAddress,
 							SSL_DEBUG);
@@ -1113,6 +1121,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 							formDecoderProvider,
 							forwardedHeaderHandler,
 							http2Settings,
+							idleTimeout,
 							observer,
 							mapHandle,
 							metricsRecorder,
@@ -1174,6 +1183,7 @@ public final class HttpServerConfig extends ServerTransportConfig<HttpServerConf
 							formDecoderProvider,
 							forwardedHeaderHandler,
 							http2Settings,
+							idleTimeout,
 							observer,
 							mapHandle,
 							metricsRecorder,

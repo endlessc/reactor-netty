@@ -16,11 +16,14 @@
 package reactor.netty;
 
 import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.observation.TimerObservationHandler;
+import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
+import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 import reactor.netty.observability.ReactorNettyTimerObservationHandler;
 import reactor.util.annotation.Nullable;
+import reactor.util.context.Context;
+import reactor.util.context.ContextView;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -33,12 +36,13 @@ import java.net.SocketAddress;
  */
 public class Metrics {
 	public static final MeterRegistry REGISTRY = io.micrometer.core.instrument.Metrics.globalRegistry;
+	public static final String OBSERVATION_KEY = "micrometer.observation";
 	public static final ObservationRegistry OBSERVATION_REGISTRY = ObservationRegistry.create();
 	static {
 		OBSERVATION_REGISTRY.observationConfig().observationHandler(
 				new ObservationHandler.FirstMatchingCompositeObservationHandler(
 						new ReactorNettyTimerObservationHandler(REGISTRY),
-						new TimerObservationHandler(REGISTRY)));
+						new DefaultMeterObservationHandler(REGISTRY)));
 	}
 
 
@@ -256,6 +260,11 @@ public class Metrics {
 	 */
 	public static final String PENDING_TASKS = ".pending.tasks";
 
+	// HttpServer Metrics
+	/**
+	 * The number of active HTTP/2 streams
+	 */
+	public static final String STREAMS_ACTIVE = ".streams.active";
 
 	// Tags
 	public static final String LOCAL_ADDRESS = "local.address";
@@ -278,6 +287,13 @@ public class Metrics {
 
 	public static final String ERROR = "ERROR";
 
+	@Nullable
+	public static Observation currentObservation(ContextView contextView) {
+		if (contextView.hasKey(OBSERVATION_KEY)) {
+			return contextView.get(OBSERVATION_KEY);
+		}
+		return OBSERVATION_REGISTRY.getCurrentObservation();
+	}
 
 	@Nullable
 	public static String formatSocketAddress(@Nullable SocketAddress socketAddress) {
@@ -291,5 +307,9 @@ public class Metrics {
 			}
 		}
 		return null;
+	}
+
+	public static Context updateContext(Context context, Object observation) {
+		return context.hasKey(OBSERVATION_KEY) ? context : context.put(OBSERVATION_KEY, observation);
 	}
 }

@@ -15,7 +15,6 @@
  */
 package reactor.netty.resources;
 
-import io.micrometer.contextpropagation.ContextContainer;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
@@ -32,7 +31,6 @@ import reactor.netty.ReactorNetty;
 import reactor.netty.internal.util.Metrics;
 import reactor.netty.transport.TransportConfig;
 import reactor.netty.internal.util.MapUtils;
-import reactor.pool.AllocationStrategy;
 import reactor.pool.InstrumentedPool;
 import reactor.pool.Pool;
 import reactor.pool.PoolBuilder;
@@ -59,6 +57,7 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -91,6 +90,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 	final Duration poolInactivity;
 	final Duration disposeTimeout;
 	final Map<SocketAddress, Integer> maxConnections = new HashMap<>();
+	Mono<Void> onDispose;
 
 	protected PooledConnectionProvider(Builder builder) {
 		this(builder, null);
@@ -108,6 +108,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			poolFactoryPerRemoteHost.put(entry.getKey(), new PoolFactory<>(entry.getValue(), builder.disposeTimeout));
 			maxConnections.put(entry.getKey(), entry.getValue().maxConnections);
 		}
+		this.onDispose = Mono.empty();
 		scheduleInactivePoolsDisposal();
 	}
 
@@ -140,7 +141,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 						poolFactory.registrar.get().registerMetrics(name, id, remoteAddress,
 								new DelegatingConnectionPoolMetrics(newPool.metrics()));
 					}
-					else if (Metrics.isInstrumentationAvailable()) {
+					else if (Metrics.isMicrometerAvailable()) {
 						// work directly with the pool otherwise a weak reference is needed to ConnectionPoolMetrics
 						// we don't want to keep another map with weak references
 						registerDefaultMetrics(id, remoteAddress, newPool.metrics());
@@ -148,10 +149,6 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 				}
 				return newPool;
 			});
-
-			ContextContainer container = ContextContainer.create().captureThreadLocalValues();
-			container.captureContext(Context.of(sink.contextView()));
-			Context currentPropagationContext = container.save(Context.empty());
 
 			EventLoop eventLoop;
 			if (sink.contextView().hasKey(CONTEXT_CALLER_EVENTLOOP)) {
@@ -171,9 +168,17 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			if (eventLoop != null) {
 				mono = mono.contextWrite(ctx -> ctx.put(CONTEXT_CALLER_EVENTLOOP, eventLoop));
 			}
-			mono.contextWrite(ctx -> ctx.putAll(currentPropagationContext.readOnly()))
-			    .subscribe(createDisposableAcquire(config, connectionObserver,
-			            poolFactory.pendingAcquireTimeout, pool, currentPropagationContext, sink));
+			Context currentContext = Context.of(sink.contextView());
+			if ((poolFactory.metricsEnabled || config.metricsRecorder() != null)
+					&& Metrics.isMicrometerAvailable()) {
+				Object currentObservation = reactor.netty.Metrics.currentObservation(currentContext);
+				if (currentObservation != null) {
+					currentContext = reactor.netty.Metrics.updateContext(currentContext, currentObservation);
+					mono = mono.contextWrite(ctx -> reactor.netty.Metrics.updateContext(ctx, currentObservation));
+				}
+			}
+			mono.subscribe(createDisposableAcquire(config, connectionObserver,
+					poolFactory.pendingAcquireTimeout, pool, sink, currentContext));
 		});
 	}
 
@@ -197,10 +202,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			                    })
 			                    .collect(Collectors.toList());
 			if (pools.isEmpty()) {
-				return Mono.empty();
+				return onDispose;
 			}
 			channelPools.clear();
-			return Mono.when(pools);
+			return onDispose.and(Mono.when(pools));
 		});
 	}
 
@@ -250,13 +255,17 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		return name;
 	}
 
+	public void onDispose(Mono<Void> disposeMono) {
+		onDispose = onDispose.and(disposeMono);
+	}
+
 	protected abstract CoreSubscriber<PooledRef<T>> createDisposableAcquire(
 			TransportConfig config,
 			ConnectionObserver connectionObserver,
 			long pendingAcquireTimeout,
 			InstrumentedPool<T> pool,
-			Context propagationContext,
-			MonoSink<Connection> sink);
+			MonoSink<Connection> sink,
+			Context currentContext);
 
 	protected abstract InstrumentedPool<T> createPool(
 			TransportConfig config,
@@ -282,7 +291,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			if (isaOrigin.getPort() == isaTarget.getPort()) {
 				InetAddress iaTarget = isaTarget.getAddress();
 				return (iaTarget != null && iaTarget.isAnyLocalAddress()) ||
-							   Objects.equals(isaOrigin.getHostString(), isaTarget.getHostString());
+						Objects.equals(isaOrigin.getHostString(), isaTarget.getHostString());
 			}
 		}
 		return false;
@@ -372,6 +381,8 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		final Supplier<? extends MeterRegistrar> registrar;
 		final Clock clock;
 		final Duration disposeTimeout;
+		final BiFunction<Runnable, Duration, Disposable> pendingAcquireTimer;
+		final AllocationStrategy<?> allocationStrategy;
 
 		PoolFactory(ConnectionPoolSpec<?> conf, Duration disposeTimeout) {
 			this(conf, disposeTimeout, null);
@@ -391,11 +402,13 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			this.registrar = conf.registrar;
 			this.clock = clock;
 			this.disposeTimeout = disposeTimeout;
+			this.pendingAcquireTimer = conf.pendingAcquireTimer;
+			this.allocationStrategy = conf.allocationStrategy;
 		}
 
 		public InstrumentedPool<T> newPool(
 				Publisher<T> allocator,
-				@Nullable AllocationStrategy allocationStrategy,
+				@Nullable reactor.pool.AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
 				Function<T, Publisher<Void>> destroyHandler,
 				BiPredicate<T, PooledRefMetadata> evictionPredicate) {
 			if (disposeTimeout != null) {
@@ -407,7 +420,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 
 		public InstrumentedPool<T> newPool(
 				Publisher<T> allocator,
-				@Nullable AllocationStrategy allocationStrategy,
+				@Nullable reactor.pool.AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
 				Function<T, Publisher<Void>> destroyHandler,
 				BiPredicate<T, PooledRefMetadata> evictionPredicate,
 				Function<PoolConfig<T>, InstrumentedPool<T>> poolFactory) {
@@ -440,7 +453,16 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 						DEFAULT_POOL_RETURN_PERMITS_SAMPLING_RATE));
 			}
 			else {
-				poolBuilder = poolBuilder.sizeBetween(0, maxConnections);
+				if (allocationStrategy == null) {
+					poolBuilder = poolBuilder.sizeBetween(0, maxConnections);
+				}
+				else {
+					poolBuilder = poolBuilder.allocationStrategy(new DelegatingAllocationStrategy(allocationStrategy.copy()));
+				}
+			}
+
+			if (pendingAcquireTimer != null) {
+				poolBuilder = poolBuilder.pendingAcquireTimer(pendingAcquireTimer);
 			}
 
 			if (clock != null) {
@@ -455,6 +477,15 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			}
 
 			return poolBuilder;
+		}
+
+		@Nullable
+		public AllocationStrategy<?> allocationStrategy() {
+			return allocationStrategy;
+		}
+
+		public long maxIdleTime() {
+			return this.maxIdleTime;
 		}
 
 		public long maxLifeTime() {
@@ -473,6 +504,45 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					", pendingAcquireMaxCount=" + pendingAcquireMaxCount +
 					", pendingAcquireTimeout=" + pendingAcquireTimeout +
 					'}';
+		}
+
+		static final class DelegatingAllocationStrategy implements reactor.pool.AllocationStrategy {
+
+			final AllocationStrategy<?> delegate;
+
+			DelegatingAllocationStrategy(AllocationStrategy<?> delegate) {
+				this.delegate = delegate;
+			}
+
+			@Override
+			public int estimatePermitCount() {
+				return delegate.estimatePermitCount();
+			}
+
+			@Override
+			public int getPermits(int desired) {
+				return delegate.getPermits(desired);
+			}
+
+			@Override
+			public int permitGranted() {
+				return delegate.permitGranted();
+			}
+
+			@Override
+			public int permitMinimum() {
+				return delegate.permitMinimum();
+			}
+
+			@Override
+			public int permitMaximum() {
+				return delegate.permitMaximum();
+			}
+
+			@Override
+			public void returnPermits(int returned) {
+				delegate.returnPermits(returned);
+			}
 		}
 	}
 

@@ -27,7 +27,9 @@ import java.util.stream.Collectors;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
+import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.test.SampleTestRunner;
 import io.micrometer.tracing.test.reporter.BuildingBlocks;
@@ -35,7 +37,6 @@ import io.micrometer.tracing.test.simple.SpansAssert;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import reactor.core.publisher.Flux;
@@ -52,7 +53,6 @@ import reactor.netty.resources.ConnectionProvider;
 import static org.assertj.core.api.Assertions.assertThat;
 import static reactor.netty.Metrics.OBSERVATION_REGISTRY;
 
-@SuppressWarnings("rawtypes")
 class ObservabilitySmokeTest extends SampleTestRunner {
 	static byte[] content;
 	static DisposableServer disposableServer;
@@ -61,43 +61,45 @@ class ObservabilitySmokeTest extends SampleTestRunner {
 	static MeterRegistry registry;
 
 	ObservabilitySmokeTest() {
-		super(SampleTestRunner.SampleRunnerConfig.builder().build(), OBSERVATION_REGISTRY, registry);
+		super(SampleTestRunner.SampleRunnerConfig.builder().build());
 	}
 
 	@BeforeAll
 	static void setUp() throws CertificateException {
 		ssc = new SelfSignedCertificate();
-
-		registry = new SimpleMeterRegistry();
-		Metrics.addRegistry(registry);
-
 		content = new byte[1024 * 8];
 		Random rndm = new Random();
 		rndm.nextBytes(content);
 	}
 
-	@AfterAll
-	static void tearDown() {
-		Metrics.removeRegistry(registry);
-		registry.clear();
-		registry.close();
+	@Override
+	protected MeterRegistry createMeterRegistry() {
+		registry = new SimpleMeterRegistry();
+		Metrics.addRegistry(registry);
+		return registry;
+	}
+
+	@Override
+	protected ObservationRegistry createObservationRegistry() {
+		return OBSERVATION_REGISTRY;
 	}
 
 	@AfterEach
 	void cleanRegistry() {
+		Metrics.removeRegistry(registry);
 		if (disposableServer != null) {
 			disposableServer.disposeNow();
 		}
 	}
 
 	@Override
-	public BiConsumer<BuildingBlocks, Deque<ObservationHandler>> customizeObservationHandlers() {
+	public BiConsumer<BuildingBlocks, Deque<ObservationHandler<? extends Observation.Context>>> customizeObservationHandlers() {
 		return (bb, timerRecordingHandlers) -> {
-			ObservationHandler defaultHandler = timerRecordingHandlers.removeLast();
+			ObservationHandler<? extends Observation.Context> defaultHandler = timerRecordingHandlers.removeLast();
 			timerRecordingHandlers.addLast(new ReactorNettyTracingObservationHandler(bb.getTracer()));
 			timerRecordingHandlers.addLast(defaultHandler);
-			timerRecordingHandlers.addFirst(new ReactorNettyHttpClientTracingObservationHandler(bb.getTracer(), bb.getHttpClientHandler()));
-			timerRecordingHandlers.addFirst(new ReactorNettyHttpServerTracingObservationHandler(bb.getTracer(), bb.getHttpServerHandler()));
+			timerRecordingHandlers.addFirst(new ReactorNettyPropagatingSenderTracingObservationHandler(bb.getTracer(), bb.getPropagator()));
+			timerRecordingHandlers.addFirst(new ReactorNettyPropagatingReceiverTracingObservationHandler(bb.getTracer(), bb.getPropagator()));
 		};
 	}
 

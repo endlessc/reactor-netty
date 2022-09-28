@@ -738,7 +738,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 						        .entries()
 						        .toString());
 			}
-			redirecting = new RedirectClientException(response.headers());
+			redirecting = new RedirectClientException(response.headers(), response.status());
 			return false;
 		}
 		return true;
@@ -772,13 +772,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		if (!channel().isActive()) {
 			return Mono.error(AbortedException.beforeSend());
 		}
-		if (markSentHeaderAndBody()) {
-			HttpMessage request = newFullBodyMessage(Unpooled.EMPTY_BUFFER);
-			return FutureMono.deferFuture(() -> channel().writeAndFlush(request));
-		}
-		else {
-			return Mono.empty();
-		}
+		return FutureMono.deferFuture(() -> markSentHeaderAndBody() ?
+				channel().writeAndFlush(newFullBodyMessage(Unpooled.EMPTY_BUFFER)) :
+				channel().newSucceededFuture());
 	}
 
 	final void setNettyResponse(HttpResponse nettyResponse) {
@@ -903,27 +899,39 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				ChannelFuture f = parent.channel()
 				                        .writeAndFlush(r);
 
-				Flux<Long> tail = encoder.progressSink.asFlux().onBackpressureLatest();
-
-				if (encoder.cleanOnTerminate) {
-					tail = tail.doOnCancel(encoder)
-					           .doAfterTerminate(encoder);
-				}
-
 				if (encoder.isChunked()) {
+					Flux<Long> tail = encoder.progressSink.asFlux().onBackpressureLatest();
+
+					if (encoder.cleanOnTerminate) {
+						tail = tail.doOnCancel(encoder)
+						           .doAfterTerminate(encoder);
+					}
+
 					if (progressCallback != null) {
 						progressCallback.accept(tail);
+					}
+					else {
+						tail.subscribe();
 					}
 					//"FutureReturnValueIgnored" this is deliberate
 					parent.channel()
 					      .writeAndFlush(encoder);
 				}
 				else {
+					Mono<Void> mono = FutureMono.from(f);
+
+					if (encoder.cleanOnTerminate) {
+						mono = mono.doOnCancel(encoder)
+						           .doAfterTerminate(encoder);
+					}
+
 					if (progressCallback != null) {
-						progressCallback.accept(FutureMono.from(f)
-						                                  .cast(Long.class)
-						                                  .switchIfEmpty(Mono.just(encoder.length()))
-						                                  .flux());
+						progressCallback.accept(mono.cast(Long.class)
+						                            .switchIfEmpty(Mono.just(encoder.length()))
+						                            .flux());
+					}
+					else {
+						mono.subscribe();
 					}
 				}
 				s.onComplete();

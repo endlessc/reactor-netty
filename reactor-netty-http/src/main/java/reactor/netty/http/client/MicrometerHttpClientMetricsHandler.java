@@ -16,23 +16,22 @@
 package reactor.netty.http.client;
 
 import io.micrometer.common.KeyValues;
-import io.micrometer.contextpropagation.ContextContainer;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.observation.Observation;
-import io.micrometer.observation.transport.http.HttpClientRequest;
-import io.micrometer.observation.transport.http.HttpClientResponse;
-import io.micrometer.observation.transport.http.context.HttpClientContext;
+import io.micrometer.observation.transport.RequestReplySenderContext;
 import io.netty.channel.Channel;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import reactor.netty.observability.ReactorNettyHandlerContext;
 import reactor.util.annotation.Nullable;
+import reactor.util.context.ContextView;
 
 import java.net.SocketAddress;
 import java.time.Duration;
-import java.util.Collection;
+import java.util.Objects;
 import java.util.function.Function;
 
+import static reactor.netty.Metrics.OBSERVATION_KEY;
 import static reactor.netty.Metrics.OBSERVATION_REGISTRY;
 import static reactor.netty.Metrics.RESPONSE_TIME;
 import static reactor.netty.Metrics.formatSocketAddress;
@@ -103,96 +102,25 @@ final class MicrometerHttpClientMetricsHandler extends AbstractHttpClientMetrics
 	protected void startRead(HttpResponse msg) {
 		super.startRead(msg);
 
-		responseTimeHandlerContext.setResponse(new ObservationHttpClientResponse(msg));
+		responseTimeHandlerContext.setResponse(msg);
 	}
 
 	// writing the request
 	@Override
 	@SuppressWarnings("try")
-	protected void startWrite(HttpRequest msg, Channel channel) {
-		super.startWrite(msg, channel);
+	protected void startWrite(HttpRequest msg, Channel channel, @Nullable ContextView contextView) {
+		super.startWrite(msg, channel, contextView);
 
-		HttpClientRequest httpClientRequest = new ObservationHttpClientRequest(msg, method, path);
-		responseTimeHandlerContext = new ResponseTimeHandlerContext(recorder, httpClientRequest, channel.remoteAddress());
-		ContextContainer container = ContextContainer.restore(channel);
-		try (ContextContainer.Scope scope = container.restoreThreadLocalValues()) {
-			responseTimeObservation = Observation.start(recorder.name() + RESPONSE_TIME, responseTimeHandlerContext, OBSERVATION_REGISTRY);
+		responseTimeHandlerContext = new ResponseTimeHandlerContext(recorder, msg, path, channel.remoteAddress());
+		responseTimeObservation = Observation.createNotStarted(recorder.name() + RESPONSE_TIME, responseTimeHandlerContext, OBSERVATION_REGISTRY);
+		if (contextView != null && contextView.hasKey(OBSERVATION_KEY)) {
+			responseTimeObservation.parentObservation(contextView.get(OBSERVATION_KEY));
 		}
+		responseTimeObservation.start();
 	}
 
-	static final class ObservationHttpClientRequest implements HttpClientRequest {
-
-		final String method;
-		final HttpRequest nettyRequest;
-		final String path;
-
-		ObservationHttpClientRequest(HttpRequest nettyRequest, String method, String path) {
-			this.method = method;
-			this.nettyRequest = nettyRequest;
-			this.path = path;
-		}
-
-		@Override
-		public String header(String name) {
-			return nettyRequest.headers().get(name);
-		}
-
-		@Override
-		public void header(String name, String value) {
-			nettyRequest.headers().set(name, value);
-		}
-
-		@Override
-		public Collection<String> headerNames() {
-			return nettyRequest.headers().names();
-		}
-
-		@Override
-		public String method() {
-			return method;
-		}
-
-		@Override
-		public String path() {
-			return path;
-		}
-
-		@Override
-		public Object unwrap() {
-			return nettyRequest;
-		}
-
-		@Override
-		public String url() {
-			return nettyRequest.uri();
-		}
-	}
-
-	static final class ObservationHttpClientResponse implements HttpClientResponse {
-
-		final HttpResponse nettyResponse;
-
-		ObservationHttpClientResponse(HttpResponse nettyResponse) {
-			this.nettyResponse = nettyResponse;
-		}
-
-		@Override
-		public Collection<String> headerNames() {
-			return nettyResponse.headers().names();
-		}
-
-		@Override
-		public int statusCode() {
-			return nettyResponse.status().code();
-		}
-
-		@Override
-		public Object unwrap() {
-			return nettyResponse;
-		}
-	}
-
-	static final class ResponseTimeHandlerContext extends HttpClientContext implements ReactorNettyHandlerContext {
+	static final class ResponseTimeHandlerContext extends RequestReplySenderContext<HttpRequest, HttpResponse>
+			implements ReactorNettyHandlerContext {
 		static final String TYPE = "client";
 
 		final String method;
@@ -203,13 +131,15 @@ final class MicrometerHttpClientMetricsHandler extends AbstractHttpClientMetrics
 		// status might not be known beforehand
 		String status;
 
-		ResponseTimeHandlerContext(MicrometerHttpClientMetricsRecorder recorder, HttpClientRequest request, SocketAddress remoteAddress) {
-			super(request);
+		ResponseTimeHandlerContext(MicrometerHttpClientMetricsRecorder recorder, HttpRequest request, String path, SocketAddress remoteAddress) {
+			super((carrier, key, value) -> Objects.requireNonNull(carrier).headers().set(key, value));
 			this.recorder = recorder;
-			this.method = request.method();
-			this.path = request.path();
+			this.method = request.method().name();
+			this.path = path;
 			this.remoteAddress = formatSocketAddress(remoteAddress);
 			put(HttpClientRequest.class, request);
+			setCarrier(request);
+			setContextualName(this.method);
 		}
 
 		@Override
@@ -219,20 +149,20 @@ final class MicrometerHttpClientMetricsHandler extends AbstractHttpClientMetrics
 
 		@Override
 		public KeyValues getHighCardinalityKeyValues() {
-			return KeyValues.of(REACTOR_NETTY_PROTOCOL.getKeyName(), recorder.protocol(),
-					REACTOR_NETTY_STATUS.getKeyName(), status, REACTOR_NETTY_TYPE.getKeyName(), TYPE);
+			return KeyValues.of(REACTOR_NETTY_PROTOCOL.asString(), recorder.protocol(),
+					REACTOR_NETTY_STATUS.asString(), status, REACTOR_NETTY_TYPE.asString(), TYPE);
 		}
 
 		@Override
 		public KeyValues getLowCardinalityKeyValues() {
-			return KeyValues.of(METHOD.getKeyName(), method, REMOTE_ADDRESS.getKeyName(), remoteAddress,
-					STATUS.getKeyName(), status, URI.getKeyName(), path);
+			return KeyValues.of(METHOD.asString(), method, REMOTE_ADDRESS.asString(), remoteAddress,
+					STATUS.asString(), status, URI.asString(), path);
 		}
 
 		@Override
-		public HttpClientContext setResponse(HttpClientResponse response) {
+		public void setResponse(HttpResponse response) {
 			put(HttpClientResponse.class, response);
-			return super.setResponse(response);
+			super.setResponse(response);
 		}
 	}
 }

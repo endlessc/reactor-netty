@@ -26,6 +26,8 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import io.netty.channel.group.ChannelGroup;
+import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.http.HttpMessage;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
@@ -40,6 +42,8 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.http.Http2SettingsSpec;
 import reactor.netty.http.HttpProtocol;
+import reactor.netty.http.logging.HttpMessageLogFactory;
+import reactor.netty.http.logging.ReactorNettyHttpMessageLogFactory;
 import reactor.netty.http.server.logging.AccessLog;
 import reactor.netty.http.server.logging.AccessLogArgProvider;
 import reactor.netty.http.server.logging.AccessLogFactory;
@@ -335,7 +339,9 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * @param encoder the preferred ServerCookieEncoder
 	 *
 	 * @return a new {@link HttpServer}
+	 * @deprecated as of 1.1.0. This will be removed in 2.0.0 as Netty 5 supports only strict validation.
 	 */
+	@Deprecated
 	public final HttpServer cookieCodec(ServerCookieEncoder encoder) {
 		Objects.requireNonNull(encoder, "encoder");
 		ServerCookieDecoder decoder = encoder == ServerCookieEncoder.LAX ?
@@ -354,7 +360,9 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * @param decoder the preferred ServerCookieDecoder
 	 *
 	 * @return a new {@link HttpServer}
+	 * @deprecated as of 1.1.0. This will be removed in 2.0.0 as Netty 5 supports only strict validation.
 	 */
+	@Deprecated
 	public final HttpServer cookieCodec(ServerCookieEncoder encoder, ServerCookieDecoder decoder) {
 		Objects.requireNonNull(encoder, "encoder");
 		Objects.requireNonNull(decoder, "decoder");
@@ -469,6 +477,28 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	}
 
 	/**
+	 * When {@link HttpMessage} is about to be logged the configured factory will be used for
+	 * generating a sanitized log message.
+	 * <p>
+	 * Default to {@link ReactorNettyHttpMessageLogFactory}:
+	 * <ul>
+	 *     <li>hides the query from the uri</li>
+	 *     <li>hides the headers values</li>
+	 *     <li>only {@link DecoderException} message is presented</li>
+	 * </ul>
+	 *
+	 * @param httpMessageLogFactory the factory for generating the log message
+	 * @return a new {@link HttpServer}
+	 * @since 1.0.24
+	 */
+	public final HttpServer httpMessageLogFactory(HttpMessageLogFactory httpMessageLogFactory) {
+		Objects.requireNonNull(httpMessageLogFactory, "httpMessageLogFactory");
+		HttpServer dup = duplicate();
+		dup.configuration().httpMessageLogFactory = httpMessageLogFactory;
+		return dup;
+	}
+
+	/**
 	 * Configure the {@link io.netty.handler.codec.http.HttpServerCodec}'s request decoding options.
 	 *
 	 * @param requestDecoderOptions a function to mutate the provided Http request decoder options
@@ -551,6 +581,9 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * For example instead of using the actual uri {@code "/users/1"} as uri tag value, templated uri
 	 * {@code "/users/{id}"} can be used.
 	 * <p><strong>Note:</strong>
+	 * It is strongly recommended to provide template-like form for the URIs. Without a conversion to a template-like form,
+	 * each distinct URI leads to the creation of a distinct tag, which takes a lot of memory for the metrics.
+	 * <p><strong>Note:</strong>
 	 * It is strongly recommended applications to configure an upper limit for the number of the URI tags.
 	 * For example:
 	 * <pre class="code">
@@ -572,6 +605,12 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 				throw new UnsupportedOperationException(
 						"To enable metrics, you must add the dependencies to `io.micrometer:micrometer-core`" +
 								" and `io.micrometer:micrometer-tracing` to the class path first");
+			}
+			if (uriTagValue == Function.<String>identity()) {
+				log.debug("Metrics are enabled with [uriTagValue=Function#identity]. " +
+						"It is strongly recommended to provide template-like form for the URIs. " +
+						"Without a conversion to a template-like form, each distinct URI leads " +
+						"to the creation of a distinct tag, which takes a lot of memory for the metrics.");
 			}
 			HttpServer dup = duplicate();
 			dup.configuration().metricsRecorder(() -> configuration().defaultMetricsRecorder());

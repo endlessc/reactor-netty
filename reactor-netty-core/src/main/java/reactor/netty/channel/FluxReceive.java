@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,8 +18,8 @@ package reactor.netty.channel;
 import java.nio.channels.ClosedChannelException;
 import java.util.ArrayDeque;
 import java.util.Queue;
-import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.function.IntConsumer;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufHolder;
@@ -58,11 +58,9 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 	volatile boolean   inboundDone;
 	Throwable inboundError;
 
-	volatile Disposable receiverCancel;
+	volatile IntConsumer receiverCancel;
 
-	volatile int once;
-	static final AtomicIntegerFieldUpdater<FluxReceive> ONCE =
-		AtomicIntegerFieldUpdater.newUpdater(FluxReceive.class, "once");
+	boolean subscribedOnce;
 
 	// Please note, in this specific case WIP is non-volatile since all operation that
 	// involves work-in-progress pattern is within Netty Event-Loops which guarantees
@@ -82,25 +80,29 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 		this.eventLoop = channel.eventLoop();
 		channel.config()
 		       .setAutoRead(false);
-		CANCEL.lazySet(this, () -> {
+		CANCEL.lazySet(this, (state) -> {
 			if (eventLoop.inEventLoop()) {
-				unsubscribeReceiver();
+				if (state == 1) {
+					disposeAndUnsubscribeReceiver();
+				}
+				else {
+					unsubscribeReceiver();
+				}
 			}
 			else {
-				eventLoop.execute(this::unsubscribeReceiver);
+				if (state == 1) {
+					eventLoop.execute(this::disposeAndUnsubscribeReceiver);
+				}
+				else {
+					eventLoop.execute(this::unsubscribeReceiver);
+				}
 			}
 		});
 	}
 
 	@Override
 	public void cancel() {
-		cancelReceiver();
-		if (eventLoop.inEventLoop()) {
-			drainReceiver();
-		}
-		else {
-			eventLoop.execute(this::drainReceiver);
-		}
+		doCancel(0);
 	}
 
 	final long getPending() {
@@ -113,7 +115,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 
 	@Override
 	public void dispose() {
-		cancel();
+		doCancel(1);
 	}
 
 	@Override
@@ -148,11 +150,12 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 	}
 
 	final void startReceiver(CoreSubscriber<? super Object> s) {
-		if (once == 0 && ONCE.compareAndSet(this, 0, 1)) {
+		if (!subscribedOnce) {
+			subscribedOnce = true;
 			if (log.isDebugEnabled()) {
 				log.debug(format(channel, "{}: subscribing inbound receiver"), this);
 			}
-			if (inboundDone && getPending() == 0) {
+			if ((inboundDone && getPending() == 0) || isCancelled()) {
 				if (inboundError != null) {
 					Operators.error(s, inboundError);
 					return;
@@ -177,25 +180,35 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			}
 			else {
 				if (log.isDebugEnabled()) {
-					log.debug(format(channel, "{}: Only one connection receive subscriber allowed."), this);
+					log.debug(format(channel, "{}: Rejecting additional inbound receiver."), this);
 				}
-				Operators.error(s,
-						new IllegalStateException(
-								"Only one connection receive subscriber allowed."));
+
+				String msg = "Rejecting additional inbound receiver. State=" + toString(false);
+				IllegalStateException ex = inboundError == null ? new IllegalStateException(msg) :
+						new IllegalStateException(msg, inboundError);
+				Operators.error(s, ex);
 			}
 		}
 	}
 
-	final boolean cancelReceiver() {
-		Disposable c = receiverCancel;
+	final void cancelReceiver(int cancelCode) {
+		IntConsumer c = receiverCancel;
 		if (c != CANCELLED) {
 			c = CANCEL.getAndSet(this, CANCELLED);
 			if (c != CANCELLED) {
-				c.dispose();
-				return true;
+				c.accept(cancelCode);
 			}
 		}
-		return false;
+	}
+
+	final void doCancel(int cancelCode) {
+		cancelReceiver(cancelCode);
+		if (eventLoop.inEventLoop()) {
+			drainReceiver();
+		}
+		else {
+			eventLoop.execute(this::drainReceiver);
+		}
 	}
 
 	final void cleanQueue(@Nullable Queue<Object> q) {
@@ -203,7 +216,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 			Object o;
 			while ((o = q.poll()) != null) {
 				if (log.isDebugEnabled()) {
-					log.debug(format(channel, "{}: dropping frame {}"), this, o);
+					log.debug(format(channel, "{}: dropping frame {}"), this, parent.asDebugLogMessage(o));
 				}
 				ReferenceCountUtil.release(o);
 			}
@@ -343,7 +356,7 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 	final void onInboundNext(Object msg) {
 		if (inboundDone || isCancelled()) {
 			if (log.isDebugEnabled()) {
-				log.debug(format(channel, "{}: dropping frame {}"), this, msg);
+				log.debug(format(channel, "{}: dropping frame {}"), this, parent.asDebugLogMessage(msg));
 			}
 			ReferenceCountUtil.release(msg);
 			return;
@@ -469,6 +482,25 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 		}
 	}
 
+	final void disposeAndUnsubscribeReceiver() {
+		final CoreSubscriber<? super Object> a = receiver;
+		receiverDemand = 0L;
+		receiver = null;
+		if (isCancelled()) {
+			parent.onInboundCancel();
+		}
+
+		if (a != null) {
+			Throwable ex = inboundError;
+			if (ex != null) {
+				a.onError(ex);
+			}
+			else {
+				a.onComplete();
+			}
+		}
+	}
+
 	final void unsubscribeReceiver() {
 		receiverDemand = 0L;
 		receiver = null;
@@ -479,20 +511,24 @@ final class FluxReceive extends Flux<Object> implements Subscription, Disposable
 
 	@Override
 	public String toString() {
-		return "FluxReceive{" +
-				"pending=" + getPending() +
-				", cancelled=" + isCancelled() +
-				", inboundDone=" + inboundDone +
-				", inboundError=" + inboundError +
-				'}';
+		return toString(true);
 	}
 
-	static final AtomicReferenceFieldUpdater<FluxReceive, Disposable> CANCEL =
+	final String toString(boolean logErrorMessage) {
+		return '[' +
+				"terminated=" + inboundDone +
+				", cancelled=" + isCancelled() +
+				", pending=" + getPending() +
+				", error=" + (logErrorMessage ? inboundError : (inboundError != null)) +
+				']';
+	}
+
+	static final AtomicReferenceFieldUpdater<FluxReceive, IntConsumer> CANCEL =
 			AtomicReferenceFieldUpdater.newUpdater(FluxReceive.class,
-					Disposable.class,
+					IntConsumer.class,
 					"receiverCancel");
 
-	static final Disposable CANCELLED = () -> {
+	static final IntConsumer CANCELLED = (__) -> {
 	};
 
 	static final Logger log = Loggers.getLogger(FluxReceive.class);

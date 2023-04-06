@@ -28,9 +28,11 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.handler.codec.DecoderException;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpMessage;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
@@ -52,6 +54,8 @@ import reactor.netty.NettyOutbound;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.http.Http2SettingsSpec;
 import reactor.netty.http.HttpProtocol;
+import reactor.netty.http.logging.HttpMessageLogFactory;
+import reactor.netty.http.logging.ReactorNettyHttpMessageLogFactory;
 import reactor.netty.http.websocket.WebsocketInbound;
 import reactor.netty.http.websocket.WebsocketOutbound;
 import reactor.netty.internal.util.Metrics;
@@ -59,6 +63,8 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.transport.ClientTransport;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 import reactor.util.annotation.Nullable;
 
 /**
@@ -557,7 +563,9 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * @param cookieBuilder the header {@link Consumer} to invoke before requesting
 	 *
 	 * @return a new {@link HttpClient}
+	 * @deprecated as of 1.1.0. Use {@link #cookie(Cookie)} for configuring cookies. This will be removed in 2.0.0.
 	 */
+	@Deprecated
 	public final HttpClient cookie(String name, Consumer<? super Cookie> cookieBuilder) {
 		Objects.requireNonNull(name, "name");
 		Objects.requireNonNull(cookieBuilder, "cookieBuilder");
@@ -574,7 +582,9 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * @param encoder the preferred ClientCookieEncoder
 	 *
 	 * @return a new {@link HttpClient}
+	 * @deprecated as of 1.1.0. This will be removed in 2.0.0 as Netty 5 supports only strict validation.
 	 */
+	@Deprecated
 	public final HttpClient cookieCodec(ClientCookieEncoder encoder) {
 		Objects.requireNonNull(encoder, "encoder");
 		ClientCookieDecoder decoder = encoder == ClientCookieEncoder.LAX ?
@@ -590,7 +600,9 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * @param decoder the preferred ClientCookieDecoder
 	 *
 	 * @return a new {@link HttpClient}
+	 * @deprecated as of 1.1.0. This will be removed in 2.0.0 as Netty 5 supports only strict validation.
 	 */
+	@Deprecated
 	public final HttpClient cookieCodec(ClientCookieEncoder encoder, ClientCookieDecoder decoder) {
 		Objects.requireNonNull(encoder, "encoder");
 		Objects.requireNonNull(decoder, "decoder");
@@ -1073,6 +1085,28 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	}
 
 	/**
+	 * When {@link HttpMessage} is about to be logged the configured factory will be used for
+	 * generating a sanitized log message.
+	 * <p>
+	 * Default to {@link ReactorNettyHttpMessageLogFactory}:
+	 * <ul>
+	 *     <li>hides the query from the uri</li>
+	 *     <li>hides the headers values</li>
+	 *     <li>only {@link DecoderException} message is presented</li>
+	 * </ul>
+	 *
+	 * @param httpMessageLogFactory the factory for generating the log message
+	 * @return a new {@link HttpClient}
+	 * @since 1.0.24
+	 */
+	public final HttpClient httpMessageLogFactory(HttpMessageLogFactory httpMessageLogFactory) {
+		Objects.requireNonNull(httpMessageLogFactory, "httpMessageLogFactory");
+		HttpClient dup = duplicate();
+		dup.configuration().httpMessageLogFactory = httpMessageLogFactory;
+		return dup;
+	}
+
+	/**
 	 * Configure the {@link io.netty.handler.codec.http.HttpClientCodec}'s response decoding options.
 	 *
 	 * @param responseDecoderOptions a function to mutate the provided Http response decoder options
@@ -1132,6 +1166,9 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * For example instead of using the actual uri {@code "/users/1"} as uri tag value, templated uri
 	 * {@code "/users/{id}"} can be used.
 	 * <p><strong>Note:</strong>
+	 * It is strongly recommended to provide template-like form for the URIs. Without a conversion to a template-like form,
+	 * each distinct URI leads to the creation of a distinct tag, which takes a lot of memory for the metrics.
+	 * <p><strong>Note:</strong>
 	 * It is strongly recommended applications to configure an upper limit for the number of the URI tags.
 	 * For example:
 	 * <pre class="code">
@@ -1153,6 +1190,12 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 				throw new UnsupportedOperationException(
 						"To enable metrics, you must add the dependencies to `io.micrometer:micrometer-core`" +
 								" and `io.micrometer:micrometer-tracing` to the class path first");
+			}
+			if (uriTagValue == Function.<String>identity()) {
+				log.debug("Metrics are enabled with [uriTagValue=Function#identity]. " +
+						"It is strongly recommended to provide template-like form for the URIs. " +
+						"Without a conversion to a template-like form, each distinct URI leads " +
+						"to the creation of a distinct tag, which takes a lot of memory for the metrics.");
 			}
 			HttpClient dup = duplicate();
 			dup.configuration().metricsRecorder(() -> configuration().defaultMetricsRecorder());
@@ -1555,6 +1598,8 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		                                           .getImplementationVersion())
 		               .orElse("dev");
 	}
+
+	static final Logger log = Loggers.getLogger(HttpClient.class);
 
 	static final String HTTP_SCHEME = "http";
 

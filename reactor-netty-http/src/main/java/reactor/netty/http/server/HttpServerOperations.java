@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,10 @@ package reactor.netty.http.server;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.ZonedDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -38,7 +40,6 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.DefaultHeaders;
-import io.netty.handler.codec.TooLongFrameException;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.DefaultHttpResponse;
@@ -51,12 +52,15 @@ import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMessage;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http.TooLongHttpHeaderException;
+import io.netty.handler.codec.http.TooLongHttpLineException;
 import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
@@ -64,7 +68,6 @@ import io.netty.handler.codec.http.multipart.HttpData;
 import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus;
-import io.netty.handler.codec.http2.HttpConversionUtil;
 import io.netty.util.AsciiString;
 import io.netty.util.ReferenceCountUtil;
 import org.reactivestreams.Publisher;
@@ -77,9 +80,12 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.FutureMono;
 import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
+import reactor.netty.ReactorNetty;
 import reactor.netty.channel.AbortedException;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.HttpOperations;
+import reactor.netty.http.logging.HttpMessageArgProviderFactory;
+import reactor.netty.http.logging.HttpMessageLogFactory;
 import reactor.netty.http.websocket.WebsocketInbound;
 import reactor.netty.http.websocket.WebsocketOutbound;
 import reactor.util.Logger;
@@ -90,6 +96,9 @@ import reactor.util.context.Context;
 import static io.netty.buffer.Unpooled.EMPTY_BUFFER;
 import static io.netty.handler.codec.http.HttpUtil.isTransferEncodingChunked;
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HOST_NAME;
+import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HTTPS_PORT;
+import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HTTP_PORT;
 import static reactor.netty.http.server.HttpServerFormDecoderProvider.DEFAULT_FORM_DECODER_SPEC;
 import static reactor.netty.http.server.HttpServerState.REQUEST_DECODING_FAILED;
 
@@ -101,18 +110,21 @@ import static reactor.netty.http.server.HttpServerState.REQUEST_DECODING_FAILED;
 class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerResponse>
 		implements HttpServerRequest, HttpServerResponse {
 
-	final BiPredicate<HttpServerRequest, HttpServerResponse> compressionPredicate;
+	final BiPredicate<HttpServerRequest, HttpServerResponse> configuredCompressionPredicate;
 	final ConnectionInfo connectionInfo;
 	final ServerCookieDecoder cookieDecoder;
 	final ServerCookieEncoder cookieEncoder;
 	final ServerCookies cookieHolder;
 	final HttpServerFormDecoderProvider formDecoderProvider;
+	final boolean isHttp2;
 	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle;
 	final HttpRequest nettyRequest;
 	final HttpResponse nettyResponse;
 	final HttpHeaders responseHeaders;
 	final String scheme;
+	final ZonedDateTime timestamp;
 
+	BiPredicate<HttpServerRequest, HttpServerResponse> compressionPredicate;
 	Function<? super String, Map<String, String>> paramsResolver;
 	String path;
 	Consumer<? super HttpHeaders> trailerHeadersConsumer;
@@ -122,12 +134,14 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	HttpServerOperations(HttpServerOperations replaced) {
 		super(replaced);
 		this.compressionPredicate = replaced.compressionPredicate;
+		this.configuredCompressionPredicate = replaced.configuredCompressionPredicate;
 		this.connectionInfo = replaced.connectionInfo;
 		this.cookieDecoder = replaced.cookieDecoder;
 		this.cookieEncoder = replaced.cookieEncoder;
 		this.cookieHolder = replaced.cookieHolder;
 		this.currentContext = replaced.currentContext;
 		this.formDecoderProvider = replaced.formDecoderProvider;
+		this.isHttp2 = replaced.isHttp2;
 		this.mapHandle = replaced.mapHandle;
 		this.nettyRequest = replaced.nettyRequest;
 		this.nettyResponse = replaced.nettyResponse;
@@ -135,6 +149,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		this.path = replaced.path;
 		this.responseHeaders = replaced.responseHeaders;
 		this.scheme = replaced.scheme;
+		this.timestamp = replaced.timestamp;
 		this.trailerHeadersConsumer = replaced.trailerHeadersConsumer;
 	}
 
@@ -144,10 +159,13 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			ServerCookieDecoder decoder,
 			ServerCookieEncoder encoder,
 			HttpServerFormDecoderProvider formDecoderProvider,
+			HttpMessageLogFactory httpMessageLogFactory,
+			boolean isHttp2,
 			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle,
-			boolean secured) {
+			boolean secured,
+			ZonedDateTime timestamp) {
 		this(c, listener, nettyRequest, compressionPredicate, connectionInfo, decoder, encoder, formDecoderProvider,
-				mapHandle, true, secured);
+				httpMessageLogFactory, isHttp2, mapHandle, true, secured, timestamp);
 	}
 
 	HttpServerOperations(Connection c, ConnectionObserver listener, HttpRequest nettyRequest,
@@ -156,17 +174,22 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			ServerCookieDecoder decoder,
 			ServerCookieEncoder encoder,
 			HttpServerFormDecoderProvider formDecoderProvider,
+			HttpMessageLogFactory httpMessageLogFactory,
+			boolean isHttp2,
 			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle,
 			boolean resolvePath,
-			boolean secured) {
-		super(c, listener);
+			boolean secured,
+			ZonedDateTime timestamp) {
+		super(c, listener, httpMessageLogFactory);
 		this.compressionPredicate = compressionPredicate;
+		this.configuredCompressionPredicate = compressionPredicate;
 		this.connectionInfo = connectionInfo;
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
 		this.cookieHolder = ServerCookies.newServerRequestHolder(nettyRequest.headers(), decoder);
 		this.currentContext = Context.empty();
 		this.formDecoderProvider = formDecoderProvider;
+		this.isHttp2 = isHttp2;
 		this.mapHandle = mapHandle;
 		this.nettyRequest = nettyRequest;
 		this.nettyResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
@@ -179,6 +202,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		this.responseHeaders = nettyResponse.headers();
 		this.responseHeaders.set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
 		this.scheme = secured ? "https" : "http";
+		this.timestamp = timestamp;
 	}
 
 	@Override
@@ -204,7 +228,9 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 		if (!HttpMethod.HEAD.equals(method())) {
 			responseHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING);
-			if (!HttpResponseStatus.NOT_MODIFIED.equals(status())) {
+			int code = status().code();
+			if (!(HttpResponseStatus.NOT_MODIFIED.code() == code ||
+					HttpResponseStatus.NO_CONTENT.code() == code)) {
 
 				if (HttpUtil.getContentLength(nettyResponse, -1) == -1) {
 					responseHeaders.setInt(HttpHeaderNames.CONTENT_LENGTH, body.readableBytes());
@@ -325,7 +351,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	final boolean isHttp2() {
-		return requestHeaders().contains(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text());
+		return isHttp2;
 	}
 
 	@Override
@@ -411,6 +437,12 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	@Nullable
+	public SocketAddress connectionHostAddress() {
+		return channel().localAddress();
+	}
+
+	@Override
+	@Nullable
 	public InetSocketAddress remoteAddress() {
 		if (connectionInfo != null) {
 			return this.connectionInfo.getRemoteAddress();
@@ -418,6 +450,12 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		else {
 			return null;
 		}
+	}
+
+	@Override
+	@Nullable
+	public SocketAddress connectionRemoteAddress() {
+		return channel().remoteAddress();
 	}
 
 	@Override
@@ -439,8 +477,35 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
+	public String connectionScheme() {
+		return scheme;
+	}
+
+	@Override
+	public String hostName() {
+		return connectionInfo != null ? connectionInfo.getHostName() : DEFAULT_HOST_NAME;
+	}
+
+	@Override
+	public int hostPort() {
+		return connectionInfo != null ?
+				connectionInfo.getHostPort() :
+				scheme().equalsIgnoreCase("https") || scheme().equalsIgnoreCase("wss") ? DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+	}
+
+	@Override
 	public HttpHeaders responseHeaders() {
 		return responseHeaders;
+	}
+
+	@Override
+	public String protocol() {
+		return nettyRequest.protocolVersion().text();
+	}
+
+	@Override
+	public ZonedDateTime timestamp() {
+		return timestamp;
 	}
 
 	@Override
@@ -541,6 +606,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	public HttpServerResponse compression(boolean compress) {
+		compressionPredicate = compress ? configuredCompressionPredicate : COMPRESSION_DISABLED;
 		if (!compress) {
 			removeHandler(NettyPipeline.CompressionHandler);
 		}
@@ -613,10 +679,6 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	protected void afterMarkSentHeaders() {
-		if (HttpResponseStatus.NOT_MODIFIED.equals(status())) {
-			responseHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING)
-			               .remove(HttpHeaderNames.CONTENT_LENGTH);
-		}
 		if (compressionPredicate != null && compressionPredicate.test(this, this)) {
 			compression(true);
 		}
@@ -625,6 +687,14 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	@Override
 	protected void beforeMarkSentHeaders() {
 		//noop
+	}
+
+	@Override
+	protected boolean isContentAlwaysEmpty() {
+		int code = status().code();
+		return HttpResponseStatus.NOT_MODIFIED.code() == code ||
+				HttpResponseStatus.NO_CONTENT.code() == code ||
+				HttpResponseStatus.RESET_CONTENT.code() == code;
 	}
 
 	@Override
@@ -726,25 +796,49 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		return ((AtomicLong) ops.connection()).get();
 	}
 
+	static void sendDecodingFailures(
+			ChannelHandlerContext ctx,
+			ConnectionObserver listener,
+			boolean secure,
+			Throwable t,
+			Object msg,
+			HttpMessageLogFactory httpMessageLogFactory,
+			@Nullable ZonedDateTime timestamp) {
+		sendDecodingFailures(ctx, listener, secure, t, msg, httpMessageLogFactory, false, timestamp);
+	}
+
 	@SuppressWarnings("FutureReturnValueIgnored")
 	static void sendDecodingFailures(
 			ChannelHandlerContext ctx,
 			ConnectionObserver listener,
 			boolean secure,
 			Throwable t,
-			Object msg) {
+			Object msg,
+			HttpMessageLogFactory httpMessageLogFactory,
+			boolean isHttp2,
+			@Nullable ZonedDateTime timestamp) {
 
 		Throwable cause = t.getCause() != null ? t.getCause() : t;
 
 		if (log.isWarnEnabled()) {
-			log.warn(format(ctx.channel(), "Decoding failed: " + msg + " : "), cause);
+			log.warn(format(ctx.channel(), "Decoding failed: {}"),
+					msg instanceof HttpObject ?
+							httpMessageLogFactory.warn(HttpMessageArgProviderFactory.create(msg)) : msg);
 		}
 
 		ReferenceCountUtil.release(msg);
 
-		HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
-				cause instanceof TooLongFrameException ? HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE :
-				                                         HttpResponseStatus.BAD_REQUEST);
+		final HttpResponseStatus status;
+		if (cause instanceof TooLongHttpLineException) {
+			status = HttpResponseStatus.REQUEST_URI_TOO_LONG;
+		}
+		else if (cause instanceof TooLongHttpHeaderException) {
+			status = HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE;
+		}
+		else {
+			status = HttpResponseStatus.BAD_REQUEST;
+		}
+		HttpResponse response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status);
 		response.headers()
 		        .setInt(HttpHeaderNames.CONTENT_LENGTH, 0)
 		        .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
@@ -753,7 +847,8 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		if (ops == null) {
 			Connection conn = Connection.from(ctx.channel());
 			if (msg instanceof HttpRequest) {
-				ops = new FailedHttpServerRequest(conn, listener, (HttpRequest) msg, response, secure);
+				ops = new FailedHttpServerRequest(conn, listener, (HttpRequest) msg, response, httpMessageLogFactory, isHttp2,
+						secure, timestamp == null ? ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM) : timestamp);
 				ops.bind();
 			}
 			else {
@@ -905,6 +1000,8 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	static final Logger log = Loggers.getLogger(HttpServerOperations.class);
 	final static AsciiString      EVENT_STREAM = new AsciiString("text/event-stream");
 
+	static final BiPredicate<HttpServerRequest, HttpServerResponse> COMPRESSION_DISABLED = (req, res) -> false;
+
 	final static FullHttpResponse CONTINUE     =
 			new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
 					HttpResponseStatus.CONTINUE,
@@ -919,9 +1016,12 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 				ConnectionObserver listener,
 				HttpRequest nettyRequest,
 				HttpResponse nettyResponse,
-				boolean secure) {
+				HttpMessageLogFactory httpMessageLogFactory,
+				boolean isHttp2,
+				boolean secure,
+				ZonedDateTime timestamp) {
 			super(c, listener, nettyRequest, null, null, ServerCookieDecoder.STRICT, ServerCookieEncoder.STRICT,
-					DEFAULT_FORM_DECODER_SPEC, null, false, secure);
+					DEFAULT_FORM_DECODER_SPEC, httpMessageLogFactory, isHttp2, null, false, secure, timestamp);
 			this.customResponse = nettyResponse;
 			String tempPath = "";
 			try {

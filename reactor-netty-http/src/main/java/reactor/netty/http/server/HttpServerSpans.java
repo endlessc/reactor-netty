@@ -16,7 +16,7 @@
 package reactor.netty.http.server;
 
 import io.micrometer.common.docs.KeyName;
-import io.micrometer.tracing.docs.DocumentedSpan;
+import io.micrometer.tracing.docs.SpanDocumentation;
 
 /**
  * {@link HttpServer} spans.
@@ -24,7 +24,7 @@ import io.micrometer.tracing.docs.DocumentedSpan;
  * @author Violeta Georgieva
  * @since 1.1.0
  */
-enum HttpServerSpans implements DocumentedSpan {
+enum HttpServerSpans implements SpanDocumentation {
 
 	/**
 	 * Response Span.
@@ -49,22 +49,42 @@ enum HttpServerSpans implements DocumentedSpan {
 	enum ResponseTimeHighCardinalityTags implements KeyName {
 
 		/**
-		 * Reactor Netty protocol (always http).
+		 * HTTP scheme.
 		 */
-		REACTOR_NETTY_PROTOCOL {
+		HTTP_SCHEME {
 			@Override
 			public String asString() {
-				return "reactor.netty.protocol";
+				return "http.scheme";
 			}
 		},
 
 		/**
-		 * Reactor Netty status.
+		 * Status code.
 		 */
-		REACTOR_NETTY_STATUS {
+		HTTP_STATUS_CODE {
 			@Override
 			public String asString() {
-				return "reactor.netty.status";
+				return "http.status_code";
+			}
+		},
+
+		/**
+		 * Net host name.
+		 */
+		NET_HOST_NAME {
+			@Override
+			public String asString() {
+				return "net.host.name";
+			}
+		},
+
+		/**
+		 * Net host port.
+		 */
+		NET_HOST_PORT {
+			@Override
+			public String asString() {
+				return "net.host.port";
 			}
 		},
 

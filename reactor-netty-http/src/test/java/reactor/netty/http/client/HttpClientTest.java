@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -95,6 +95,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -102,10 +104,13 @@ import reactor.core.publisher.Sinks;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.ByteBufMono;
+import reactor.netty.CancelReceiverHandlerTest;
 import reactor.netty.Connection;
 import reactor.netty.FutureMono;
+import reactor.netty.LogTracker;
 import reactor.netty.NettyPipeline;
 import reactor.netty.SocketUtils;
+import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.Http11SslContextSpec;
 import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
@@ -769,7 +774,7 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	@SuppressWarnings("CollectionUndefinedEquality")
+	@SuppressWarnings({"CollectionUndefinedEquality", "deprecation"})
 	void testCookie() {
 		disposableServer =
 				createServer()
@@ -1167,7 +1172,7 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	void withConnector() {
+	void withConnector_1() {
 		disposableServer = createServer()
 		                             .handle((req, resp) ->
 		                                 resp.sendString(Mono.just(req.requestHeaders()
@@ -1192,6 +1197,66 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(content)
 		            .expectNext("success")
 		            .verifyComplete();
+	}
+
+	@ParameterizedTest
+	@MethodSource("dataWithConnector_2")
+	void withConnector_2(boolean withConnector, String expectation) {
+		disposableServer =
+				createServer().handle((req, resp) -> resp.sendString(Mono.just(req.requestHeaders().get("test"))))
+				              .bindNow();
+
+		HttpClient client = createHttpClientForContextWithPort();
+		if (withConnector) {
+			client = client.mapConnect(c -> c.contextWrite(Context.of("test", "Second")));
+		}
+
+		HttpClient.ResponseReceiver<?> responseReceiver =
+				client.post()
+				      .uri("/")
+				      .send((req, out) -> Mono.deferContextual(ctx -> {
+				          req.requestHeaders().set("test", ctx.getOrDefault("test", "Fail"));
+				          return Mono.empty();
+				      }));
+
+		doWithConnector_2(
+				responseReceiver.responseConnection((res, conn) -> Mono.deferContextual(ctx ->
+				                    conn.inbound()
+				                        .receive()
+				                        .aggregate()
+				                        .asString()
+				                        .flatMap(s -> Mono.just(s + ctx.getOrDefault("test", "Fail")))))
+				                .contextWrite(Context.of("test", "First")),
+				expectation);
+
+		doWithConnector_2(
+				responseReceiver.response((res, bytes) -> Mono.deferContextual(ctx ->
+				                    bytes.aggregate()
+				                         .asString()
+				                         .flatMap(s -> Mono.just(s + ctx.getOrDefault("test", "Fail")))))
+				                .contextWrite(Context.of("test", "First")),
+				expectation);
+
+		doWithConnector_2(
+				responseReceiver.responseSingle((res, bytes) -> Mono.deferContextual(ctx ->
+				                    bytes.asString()
+				                         .flatMap(s -> Mono.just(s + ctx.getOrDefault("test", "Fail")))))
+				                .contextWrite(Context.of("test", "First")),
+				expectation);
+	}
+
+	static Object[][] dataWithConnector_2() {
+		return new Object[][]{
+				{true, "SecondSecond"},
+				{false, "FirstFirst"}
+		};
+	}
+
+	private void doWithConnector_2(Publisher<String> content, String expectation) {
+		StepVerifier.create(content)
+		            .expectNext(expectation)
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(5));
 	}
 
 	@Test
@@ -3091,6 +3156,63 @@ class HttpClientTest extends BaseHttpTest {
 	@Test
 	public void testSharedNameResolver_NotSharedClientNoConnectionPool() throws InterruptedException {
 		doTestSharedNameResolver(HttpClient.newConnection(), false);
+	}
+
+	@Test
+	void testHttpClientCancelled() throws InterruptedException {
+		// logged by the server when last http packet is sent and channel is terminated
+		String serverCancelledLog = "[HttpServer] Channel inbound receiver cancelled (operation cancelled).";
+		// logged by client when cancelled while receiving response
+		String clientCancelledLog = HttpClientOperations.INBOUND_CANCEL_LOG;
+
+		ConnectionProvider pool = ConnectionProvider.create("testHttpClientCancelled", 1);
+		try (LogTracker lt = new LogTracker(ChannelOperations.class, serverCancelledLog);
+		     LogTracker lt2 = new LogTracker(HttpClientOperations.class, clientCancelledLog)) {
+			CountDownLatch serverClosed = new CountDownLatch(1);
+			Sinks.Empty<Void> empty = Sinks.empty();
+			CancelReceiverHandlerTest cancelReceiver = new CancelReceiverHandlerTest(empty::tryEmitEmpty, 1);
+
+			disposableServer = createServer()
+					.handle((in, out) -> {
+						in.withConnection(connection -> connection.onDispose(serverClosed::countDown));
+						return in.receive()
+								.asString()
+								.log("server.receive")
+								.then(out.sendString(Mono.just("data")).neverComplete());
+					})
+					.bindNow();
+
+			HttpClient httpClient = createHttpClientForContextWithPort(pool);
+			CountDownLatch clientCancelled = new CountDownLatch(1);
+
+			// Creates a client that should be cancelled by the Flix.zip (see below)
+			Mono<String> client = httpClient
+					.doOnRequest((req, conn) -> conn.addHandlerFirst(cancelReceiver))
+					.get()
+					.responseContent()
+					.aggregate()
+					.asString()
+					.log("client")
+					.doOnCancel(clientCancelled::countDown);
+
+			// Zip client with a mono which completes with an empty value when the server receives the request.
+			// The client should then be cancelled with a log message.
+			StepVerifier.create(Flux.zip(client, empty.asMono())
+							.log("zip"))
+					.expectNextCount(0)
+					.expectComplete()
+					.verify(Duration.ofSeconds(30));
+
+			assertThat(cancelReceiver.awaitAllReleased(30)).as("cancelReceiver").isTrue();
+			assertThat(clientCancelled.await(30, TimeUnit.SECONDS)).as("latchClient await").isTrue();
+			assertThat(serverClosed.await(30, TimeUnit.SECONDS)).as("latchServerClosed await").isTrue();
+			assertThat(lt.latch.await(30, TimeUnit.SECONDS)).as("logTracker await").isTrue();
+			assertThat(lt2.latch.await(30, TimeUnit.SECONDS)).as("logTracker2 await").isTrue();
+		}
+		finally {
+			pool.disposeLater()
+					.block(Duration.ofSeconds(30));
+		}
 	}
 
 	private void doTestSharedNameResolver(HttpClient client, boolean sharedClient) throws InterruptedException {

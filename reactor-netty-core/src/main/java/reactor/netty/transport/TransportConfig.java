@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,6 +39,7 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.internal.util.MapUtils;
 import reactor.netty.internal.util.Metrics;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
@@ -80,8 +81,18 @@ public abstract class TransportConfig {
 	}
 
 	public int channelHash() {
-		return Objects.hash(attrs, bindAddress != null ? bindAddress.get() : 0, channelGroup, doOnChannelInit,
-				loggingHandler, loopResources, metricsRecorder, observer, options, preferNative);
+		int result = 1;
+		result = 31 * result + Objects.hashCode(attrs);
+		result = 31 * result + (bindAddress != null ? Objects.hashCode(bindAddress.get()) : 0);
+		result = 31 * result + Objects.hashCode(channelGroup);
+		result = 31 * result + Objects.hashCode(doOnChannelInit);
+		result = 31 * result + Objects.hashCode(loggingHandler);
+		result = 31 * result + Objects.hashCode(loopResources);
+		result = 31 * result + Objects.hashCode(metricsRecorder);
+		result = 31 * result + Objects.hashCode(observer);
+		result = 31 * result + Objects.hashCode(options);
+		result = 31 * result + Boolean.hashCode(preferNative);
+		return result;
 	}
 
 	/**
@@ -341,7 +352,7 @@ public abstract class TransportConfig {
 			return value == null ? parentMap : Collections.singletonMap((K) key, (V) value);
 		}
 		else {
-			Map<K, V> attrs = new HashMap<>(parentMap.size() + 1);
+			Map<K, V> attrs = new HashMap<>(MapUtils.calculateInitialCapacity(parentMap.size() + 1));
 			attrs.putAll(parentMap);
 			if (value == null) {
 				attrs.remove(key);
@@ -388,7 +399,9 @@ public abstract class TransportConfig {
 						MicrometerEventLoopMeterRegistrar.INSTANCE.registerMetrics(channel.eventLoop());
 					}
 					catch (RuntimeException e) {
-						log.warn("Exception caught while recording metrics.", e);
+						if (log.isWarnEnabled()) {
+							log.warn(format(channel, "Exception caught while recording metrics."), e);
+						}
 						// Allow request-response exchange to continue, unaffected by metrics problem
 					}
 				}

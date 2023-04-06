@@ -16,7 +16,7 @@
 package reactor.netty.channel;
 
 import io.micrometer.common.docs.KeyName;
-import io.micrometer.observation.docs.DocumentedObservation;
+import io.micrometer.observation.docs.ObservationDocumentation;
 
 /**
  * Connect observations.
@@ -25,7 +25,7 @@ import io.micrometer.observation.docs.DocumentedObservation;
  * @author Violeta Georgieva
  * @since 1.1.0
  */
-enum ConnectObservations implements DocumentedObservation {
+enum ConnectObservations implements ObservationDocumentation {
 
 	/**
 	 * Connect metric.
@@ -51,6 +51,26 @@ enum ConnectObservations implements DocumentedObservation {
 	 * Connect High Cardinality Tags.
 	 */
 	enum ConnectTimeHighCardinalityTags implements KeyName {
+
+		/**
+		 * Net peer name.
+		 */
+		NET_PEER_NAME {
+			@Override
+			public String asString() {
+				return "net.peer.name";
+			}
+		},
+
+		/**
+		 * Net peer port.
+		 */
+		NET_PEER_PORT {
+			@Override
+			public String asString() {
+				return "net.peer.port";
+			}
+		},
 
 		/**
 		 * Reactor Netty protocol (tcp/http etc.).

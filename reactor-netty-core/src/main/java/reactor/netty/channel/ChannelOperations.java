@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -370,7 +370,7 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	 * Always discard content regardless whether there is a receiver.
 	 */
 	public final void discard() {
-		inbound.cancel();
+		inbound.dispose();
 	}
 
 	/**
@@ -415,7 +415,12 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	 * React on inbound cancel (receive() subscriber cancelled)
 	 */
 	protected void onInboundCancel() {
-
+		if (log.isDebugEnabled()) {
+			String info = isDisposed() ?
+					(!channel().isActive() ? "channel disconnected" : "subscription disposed") :
+					"operation cancelled";
+			log.debug(format(channel(), "[{}] Channel inbound receiver cancelled ({})."), formatName(), info);
+		}
 	}
 
 
@@ -533,6 +538,17 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		else {
 			return err;
 		}
+	}
+
+	/**
+	 * Transforms the object to a string for debug logs.
+	 *
+	 * @param o the object to be transformed
+	 * @return the string to be logged
+	 * @since 1.0.24
+	 */
+	protected String asDebugLogMessage(Object o) {
+		return o.toString();
 	}
 
 	@Override

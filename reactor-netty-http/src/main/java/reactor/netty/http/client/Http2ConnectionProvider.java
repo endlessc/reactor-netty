@@ -60,6 +60,8 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.ReactorNetty.getChannelContext;
+import static reactor.netty.ReactorNetty.setChannelContext;
 import static reactor.netty.http.client.HttpClientState.STREAM_CONFIGURED;
 import static reactor.netty.http.client.HttpClientState.UPGRADE_REJECTED;
 
@@ -127,6 +129,12 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 	protected void registerDefaultMetrics(String id, SocketAddress remoteAddress, InstrumentedPool.PoolMetrics metrics) {
 		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
 				.registerMetrics(name(), id, remoteAddress, metrics);
+	}
+
+	@Override
+	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
+		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+				.deRegisterMetrics(name(), id, remoteAddress);
 	}
 
 	static void invalidate(@Nullable ConnectionObserver owner) {
@@ -303,6 +311,9 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				return;
 			}
 
+			if (getChannelContext(channel) != null) {
+				setChannelContext(channel, null);
+			}
 			http2StreamChannelBootstrap(channel).open().addListener(this);
 		}
 
@@ -335,7 +346,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		@Override
 		public void operationComplete(Future<Http2StreamChannel> future) {
 			Channel channel = pooledRef.poolable().channel();
-			ChannelHandlerContext frameCodec = ((Http2Pool.Http2PooledRef) pooledRef).slot.http2FrameCodecCtx();
+			Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(pooledRef);
+			ChannelHandlerContext frameCodec = http2PooledRef.slot.http2FrameCodecCtx();
 			if (future.isSuccess()) {
 				Http2StreamChannel ch = future.getNow();
 
@@ -358,6 +370,9 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				}
 				else {
 					Http2ConnectionProvider.registerClose(ch, this);
+					if (!currentContext().isEmpty()) {
+						setChannelContext(ch, currentContext());
+					}
 					HttpClientConfig.addStreamHandlers(ch, obs.then(new HttpClientConfig.StreamConnectionObserver(currentContext())),
 							opsFactory, acceptGzip, metricsRecorder, -1, uriTagValue);
 
@@ -381,8 +396,9 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		boolean isH2cUpgrade() {
 			Channel channel = pooledRef.poolable().channel();
-			if (((Http2Pool.Http2PooledRef) pooledRef).slot.h2cUpgradeHandlerCtx() != null &&
-					((Http2Pool.Http2PooledRef) pooledRef).slot.http2MultiplexHandlerCtx() == null) {
+			Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(pooledRef);
+			if (http2PooledRef.slot.h2cUpgradeHandlerCtx() != null &&
+					http2PooledRef.slot.http2MultiplexHandlerCtx() == null) {
 				ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
 				if (ops != null) {
 					sink.success(ops);
@@ -394,7 +410,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		boolean notHttp2() {
 			Channel channel = pooledRef.poolable().channel();
-			String applicationProtocol = ((Http2Pool.Http2PooledRef) pooledRef).slot.applicationProtocol;
+			Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(pooledRef);
+			String applicationProtocol = http2PooledRef.slot.applicationProtocol;
 			if (applicationProtocol != null) {
 				if (ApplicationProtocolNames.HTTP_1_1.equals(applicationProtocol)) {
 					// No information for the negotiated application-level protocol,
@@ -414,8 +431,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 					return true;
 				}
 			}
-			else if (((Http2Pool.Http2PooledRef) pooledRef).slot.h2cUpgradeHandlerCtx() == null &&
-					((Http2Pool.Http2PooledRef) pooledRef).slot.http2MultiplexHandlerCtx() == null) {
+			else if (http2PooledRef.slot.h2cUpgradeHandlerCtx() == null &&
+					http2PooledRef.slot.http2MultiplexHandlerCtx() == null) {
 				// It is not H2. There are no handlers for H2C upgrade/H2C prior-knowledge,
 				// continue as an HTTP/1.1 request and remove the connection from this pool.
 				ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
@@ -426,6 +443,12 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 				}
 			}
 			return false;
+		}
+
+		static Http2Pool.Http2PooledRef http2PooledRef(PooledRef<Connection> pooledRef) {
+			return pooledRef instanceof Http2Pool.Http2PooledRef ?
+					(Http2Pool.Http2PooledRef) pooledRef :
+					(Http2Pool.Http2PooledRef) pooledRef.metadata();
 		}
 
 		static final AttributeKey<Http2StreamChannelBootstrap> HTTP2_STREAM_CHANNEL_BOOTSTRAP =
@@ -494,7 +517,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			this.remoteAddress = remoteAddress;
 			this.resolver = resolver;
 			this.pool = poolFactory.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
-					poolConFig -> new Http2Pool(poolConFig, poolFactory.allocationStrategy(), poolFactory.maxIdleTime(), poolFactory.maxLifeTime()));
+					poolConfig -> new Http2Pool(poolConfig, poolFactory.allocationStrategy()));
 		}
 
 		Publisher<Connection> connectChannel() {

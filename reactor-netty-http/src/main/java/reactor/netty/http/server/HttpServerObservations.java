@@ -16,7 +16,7 @@
 package reactor.netty.http.server;
 
 import io.micrometer.common.docs.KeyName;
-import io.micrometer.observation.docs.DocumentedObservation;
+import io.micrometer.observation.docs.ObservationDocumentation;
 
 /**
  * {@link HttpServer} observations.
@@ -24,7 +24,7 @@ import io.micrometer.observation.docs.DocumentedObservation;
  * @author Violeta Georgieva
  * @since 1.1.0
  */
-enum HttpServerObservations implements DocumentedObservation {
+enum HttpServerObservations implements ObservationDocumentation {
 
 	/**
 	 * Response metric.
@@ -52,22 +52,42 @@ enum HttpServerObservations implements DocumentedObservation {
 	enum ResponseTimeHighCardinalityTags implements KeyName {
 
 		/**
-		 * Reactor Netty protocol (always http).
+		 * HTTP scheme.
 		 */
-		REACTOR_NETTY_PROTOCOL {
+		HTTP_SCHEME {
 			@Override
 			public String asString() {
-				return "reactor.netty.protocol";
+				return "http.scheme";
 			}
 		},
 
 		/**
-		 * Reactor Netty status.
+		 * Status code.
 		 */
-		REACTOR_NETTY_STATUS {
+		HTTP_STATUS_CODE {
 			@Override
 			public String asString() {
-				return "reactor.netty.status";
+				return "http.status_code";
+			}
+		},
+
+		/**
+		 * Net host name.
+		 */
+		NET_HOST_NAME {
+			@Override
+			public String asString() {
+				return "net.host.name";
+			}
+		},
+
+		/**
+		 * Net host port.
+		 */
+		NET_HOST_PORT {
+			@Override
+			public String asString() {
+				return "net.host.port";
 			}
 		},
 

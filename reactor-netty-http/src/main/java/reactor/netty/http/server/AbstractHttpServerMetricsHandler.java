@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,8 @@ import reactor.util.annotation.Nullable;
 import java.time.Duration;
 import java.util.function.Function;
 
+import static reactor.netty.ReactorNetty.format;
+
 /**
  * @author Violeta Georgieva
  * @since 1.0.8
@@ -40,6 +42,8 @@ import java.util.function.Function;
 abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 
 	private static final Logger log = Loggers.getLogger(AbstractHttpServerMetricsHandler.class);
+
+	boolean channelActivated;
 
 	long dataReceived;
 
@@ -56,6 +60,7 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 	}
 
 	protected AbstractHttpServerMetricsHandler(AbstractHttpServerMetricsHandler copy) {
+		this.channelActivated = copy.channelActivated;
 		this.dataReceived = copy.dataReceived;
 		this.dataReceivedTime = copy.dataReceivedTime;
 		this.dataSent = copy.dataSent;
@@ -73,7 +78,9 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 				recorder().recordServerConnectionOpened(ctx.channel().localAddress());
 			}
 			catch (RuntimeException e) {
-				log.warn("Exception caught while recording metrics.", e);
+				if (log.isWarnEnabled()) {
+					log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+				}
 				// Allow request-response exchange to continue, unaffected by metrics problem
 			}
 		}
@@ -87,9 +94,15 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 				recorder().recordServerConnectionClosed(ctx.channel().localAddress());
 			}
 			catch (RuntimeException e) {
-				log.warn("Exception caught while recording metrics.", e);
+				if (log.isWarnEnabled()) {
+					log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+				}
 				// Allow request-response exchange to continue, unaffected by metrics problem
 			}
+		}
+		ChannelOperations<?, ?> channelOps = ChannelOperations.get(ctx.channel());
+		if (channelOps instanceof HttpServerOperations) {
+			recordInactiveConnectionOrStream((HttpServerOperations) channelOps);
 		}
 		ctx.fireChannelInactive();
 	}
@@ -125,25 +138,12 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 									ops.method().name(), ops.status().codeAsText().toString());
 						}
 						catch (RuntimeException e) {
-							log.warn("Exception caught while recording metrics.", e);
+							if (log.isWarnEnabled()) {
+								log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+							}
 							// Allow request-response exchange to continue, unaffected by metrics problem
 						}
-						// ops.hostAddress() == null when request decoding failed, in this case
-						// we do not report active connection, so we do not report inactive connection
-						if (ops.hostAddress() != null) {
-							try {
-								if (ops.isHttp2()) {
-									recordClosedStream(ops);
-								}
-								else {
-									recordInactiveConnection(ops);
-								}
-							}
-							catch (RuntimeException e) {
-								log.warn("Exception caught while recording metrics.", e);
-								// Allow request-response exchange to continue, unaffected by metrics problem
-							}
-						}
+						recordInactiveConnectionOrStream(ops);
 					}
 
 					dataSent = 0;
@@ -151,7 +151,9 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 			}
 		}
 		catch (RuntimeException e) {
-			log.warn("Exception caught while recording metrics.", e);
+			if (log.isWarnEnabled()) {
+				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+			}
 			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 		finally {
@@ -166,6 +168,7 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 			if (msg instanceof HttpRequest) {
 				ChannelOperations<?, ?> channelOps = ChannelOperations.get(ctx.channel());
 				if (channelOps instanceof HttpServerOperations) {
+					channelActivated = true;
 					HttpServerOperations ops = (HttpServerOperations) channelOps;
 					if (ops.isHttp2()) {
 						recordOpenStream(ops);
@@ -190,7 +193,9 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 			}
 		}
 		catch (RuntimeException e) {
-			log.warn("Exception caught while recording metrics.", e);
+			if (log.isWarnEnabled()) {
+				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+			}
 			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
@@ -208,7 +213,9 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 			}
 		}
 		catch (RuntimeException e) {
-			log.warn("Exception caught while recording metrics.", e);
+			if (log.isWarnEnabled()) {
+				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+			}
 			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
@@ -276,5 +283,27 @@ abstract class AbstractHttpServerMetricsHandler extends ChannelDuplexHandler {
 
 	protected void startWrite(HttpServerOperations ops, String path, String method, String status) {
 		dataSentTime = System.nanoTime();
+	}
+
+	void recordInactiveConnectionOrStream(HttpServerOperations ops) {
+		// ops.hostAddress() == null when request decoding failed, in this case
+		// we do not report active connection, so we do not report inactive connection
+		if (ops.hostAddress() != null && channelActivated) {
+			channelActivated = false;
+			try {
+				if (ops.isHttp2()) {
+					recordClosedStream(ops);
+				}
+				else {
+					recordInactiveConnection(ops);
+				}
+			}
+			catch (RuntimeException e) {
+				if (log.isWarnEnabled()) {
+					log.warn(format(ops.channel(), "Exception caught while recording metrics."), e);
+				}
+				// Allow request-response exchange to continue, unaffected by metrics problem
+			}
+		}
 	}
 }

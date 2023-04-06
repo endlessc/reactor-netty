@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,16 @@
  */
 package reactor.netty.transport;
 
+import io.netty.channel.EventLoop;
+import io.netty.handler.codec.dns.DnsRecord;
 import io.netty.handler.logging.LogLevel;
 import io.netty.resolver.ResolvedAddressTypes;
+import io.netty.resolver.dns.DnsAddressResolverGroup;
+import io.netty.resolver.dns.DnsCache;
+import io.netty.resolver.dns.DnsCacheEntry;
+import io.netty.resolver.dns.DnsNameResolverBuilder;
 import io.netty.resolver.dns.DnsServerAddressStreamProviders;
+import io.netty.resolver.dns.RoundRobinDnsAddressResolverGroup;
 import io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,11 +33,13 @@ import org.junit.jupiter.api.condition.OS;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.TcpResources;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,6 +130,15 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	void dnsAddressResolverGroupProvider() {
+		assertThat(builder.build().dnsAddressResolverGroupProvider()).isNull();
+
+		Function<DnsNameResolverBuilder, DnsAddressResolverGroup> provider = RoundRobinDnsAddressResolverGroup::new;
+		builder.dnsAddressResolverGroupProvider(provider);
+		assertThat(builder.build().dnsAddressResolverGroupProvider()).isEqualTo(provider);
+	}
+
+	@Test
 	void disableOptionalRecord() {
 		assertThat(builder.build().isDisableOptionalRecord()).isFalse();
 
@@ -138,10 +156,10 @@ class NameResolverProviderTest {
 
 	@Test
 	void hostsFileEntriesResolver() {
-		assertThat(builder.build().hostsFileEntriesResolver).isNull();
+		assertThat(builder.build().hostsFileEntriesResolver()).isNull();
 
 		builder.hostsFileEntriesResolver((inetHost, resolvedAddressTypes) -> null);
-		assertThat(builder.build().hostsFileEntriesResolver).isNotNull();
+		assertThat(builder.build().hostsFileEntriesResolver()).isNotNull();
 	}
 
 	@Test
@@ -225,6 +243,21 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	void resolveCache() {
+		assertThat(builder.build().resolveCache()).isNull();
+		TestDnsCache resolveCache = new TestDnsCache();
+		builder.resolveCache(resolveCache);
+		assertThat(builder.build().resolveCache()).isEqualTo(resolveCache);
+	}
+
+	@Test
+	void resolveCacheBadValues() {
+		assertThat(builder.build().resolveCache()).isNull();
+		assertThatExceptionOfType(NullPointerException.class)
+				.isThrownBy(() -> builder.resolveCache(null));
+	}
+
+	@Test
 	void bindAddressSupplier() {
 		assertThat(builder.build().bindAddressSupplier()).isNull();
 		Supplier<SocketAddress> addressSupplier = () -> new InetSocketAddress("localhost", 9527);
@@ -295,4 +328,32 @@ class NameResolverProviderTest {
 		assertThat(DnsServerAddressStreamProviders.platformDefault())
 				.isInstanceOf(MacOSDnsServerAddressStreamProvider.class);
 	}
+
+	private static class TestDnsCache implements DnsCache {
+
+		@Override
+		public void clear() {
+		}
+
+		@Override
+		public boolean clear(String hostname) {
+			return false;
+		}
+
+		@Override
+		public List<? extends DnsCacheEntry> get(String hostname, DnsRecord[] additionals) {
+			return null;
+		}
+
+		@Override
+		public DnsCacheEntry cache(String hostname, DnsRecord[] additionals, InetAddress address, long originalTtl, EventLoop loop) {
+			return null;
+		}
+
+		@Override
+		public DnsCacheEntry cache(String hostname, DnsRecord[] additionals, Throwable cause, EventLoop loop) {
+			return null;
+		}
+	}
+
 }

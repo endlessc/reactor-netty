@@ -16,7 +16,7 @@
 package reactor.netty.channel;
 
 import io.micrometer.common.docs.KeyName;
-import io.micrometer.tracing.docs.DocumentedSpan;
+import io.micrometer.tracing.docs.SpanDocumentation;
 
 /**
  * Connect spans.
@@ -25,7 +25,7 @@ import io.micrometer.tracing.docs.DocumentedSpan;
  * @author Violeta Georgieva
  * @since 1.1.0
  */
-enum ConnectSpans implements DocumentedSpan {
+enum ConnectSpans implements SpanDocumentation {
 
 	/**
 	 * Connect Span.
@@ -48,6 +48,26 @@ enum ConnectSpans implements DocumentedSpan {
 	};
 
 	enum ConnectTimeHighCardinalityTags implements KeyName {
+
+		/**
+		 * Net peer name.
+		 */
+		NET_PEER_NAME {
+			@Override
+			public String asString() {
+				return "net.peer.name";
+			}
+		},
+
+		/**
+		 * Net peer port.
+		 */
+		NET_PEER_PORT {
+			@Override
+			public String asString() {
+				return "net.peer.port";
+			}
+		},
 
 		/**
 		 * Reactor Netty protocol (tcp/http etc.).
@@ -76,16 +96,6 @@ enum ConnectSpans implements DocumentedSpan {
 			@Override
 			public String asString() {
 				return "reactor.netty.type";
-			}
-		},
-
-		/**
-		 * Remote address.
-		 */
-		REMOTE_ADDRESS {
-			@Override
-			public String asString() {
-				return "remote.address";
 			}
 		}
 	}

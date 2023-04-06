@@ -28,6 +28,7 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http2.Http2Connection;
 import io.netty.handler.codec.http2.Http2FrameCodec;
+import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
@@ -40,8 +41,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -75,8 +76,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static reactor.netty.Metrics.ACTIVE_CONNECTIONS;
 import static reactor.netty.Metrics.CONNECTION_PROVIDER_PREFIX;
 import static reactor.netty.Metrics.IDLE_CONNECTIONS;
@@ -400,11 +403,12 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 		}
 	}
 
-	@ParameterizedTest(name = "{displayName}({argumentsWithNames})")
-	@ValueSource(booleans = {false, true})
-	void testPoolGracefulShutdown(boolean enableGracefulShutdown) {
+	@ParameterizedTest
+	@MethodSource("gracefulShutdownCombinations")
+	void testPoolGracefulShutdown(boolean enableGracefulShutdown, boolean isHttp2) {
 		disposableServer =
 				createServer()
+				        .protocol(isHttp2 ? HttpProtocol.H2C : HttpProtocol.HTTP11)
 				        .handle((req, res) -> res.sendString(Mono.just("testPoolGracefulShutdown")
 				                                                 .delayElement(Duration.ofMillis(50))))
 				        .bindNow();
@@ -412,6 +416,10 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 		ConnectionProvider.Builder providerBuilder =
 				ConnectionProvider.builder("testPoolGracefulShutdown")
 				                  .maxConnections(1);
+		if (isHttp2) {
+			providerBuilder.allocationStrategy(
+					Http2AllocationStrategy.builder().maxConnections(1).maxConcurrentStreams(1).build());
+		}
 		if (enableGracefulShutdown) {
 			providerBuilder.disposeTimeout(Duration.ofMillis(200));
 		}
@@ -419,7 +427,8 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 
 		HttpClient client =
 				createClient(provider, disposableServer.port())
-				        .doOnDisconnected(conn -> {
+				        .protocol(isHttp2 ? HttpProtocol.H2C : HttpProtocol.HTTP11)
+				        .doAfterResponseSuccess((res, conn) -> {
 				            if (!provider.isDisposed()) {
 				                provider.dispose();
 				            }
@@ -459,6 +468,15 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 			assertThat(onNext).isEqualTo(1);
 			assertThat(onError).isEqualTo(1);
 		}
+	}
+
+	static Stream<Arguments> gracefulShutdownCombinations() {
+		return Stream.of(
+				Arguments.of(false, false),
+				Arguments.of(false, true),
+				Arguments.of(true, false),
+				Arguments.of(true, true)
+		);
 	}
 
 	@ParameterizedTest
@@ -627,6 +645,83 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 			provider.disposeLater()
 			        .block(Duration.ofSeconds(5));
 		}
+	}
+
+	@ParameterizedTest
+	@MethodSource("disposeInactivePoolsInBackgroundCombinations")
+	void testDisposeInactivePoolsInBackground(boolean enableEvictInBackground, boolean isHttp2) throws Exception {
+		disposableServer =
+				createServer()
+				        .wiretap(false)
+				        .protocol(isHttp2 ? HttpProtocol.H2C : HttpProtocol.HTTP11)
+				        .http2Settings(settings -> settings.maxConcurrentStreams(1))
+				        .handle((req, res) -> res.sendString(Mono.just("testDisposeInactivePoolsInBackground")))
+				        .bindNow();
+
+		ConnectionProvider.Builder builder =
+				ConnectionProvider.builder("testDisposeInactivePoolsInBackground")
+				                  .maxConnections(10)
+				                  .maxIdleTime(Duration.ofMillis(10))
+				                  .disposeInactivePoolsInBackground(Duration.ofMillis(200), Duration.ofMillis(500));
+
+		if (enableEvictInBackground) {
+			builder.evictInBackground(Duration.ofMillis(50));
+		}
+
+		CountDownLatch latch = new CountDownLatch(10);
+		DefaultPooledConnectionProvider provider = (DefaultPooledConnectionProvider) builder.build();
+		HttpClient client =
+				createClient(provider, disposableServer.port())
+				        .protocol(isHttp2 ? HttpProtocol.H2C : HttpProtocol.HTTP11)
+				        .doOnResponse((res, conn) -> {
+				            Channel channel = conn.channel() instanceof Http2StreamChannel ?
+				                    conn.channel().parent() : conn.channel();
+				            channel.closeFuture()
+				                   .addListener(future -> latch.countDown());
+				        });
+
+		try {
+			Flux.range(0, 10)
+			    .flatMap(i -> client.get()
+			                        .uri("/")
+			                        .responseContent()
+			                        .aggregate()
+			                        .asString())
+			    .collectList()
+			    .as(StepVerifier::create)
+			    .assertNext(l -> assertThat(l.size()).isEqualTo(10))
+			    .expectComplete()
+			    .verify(Duration.ofSeconds(5));
+
+			assertThat(provider.channelPools.size()).isEqualTo(1);
+
+			if (enableEvictInBackground) {
+				assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+			}
+
+			await().atMost(1000, TimeUnit.MILLISECONDS)
+			       .with()
+			       .pollInterval(50, TimeUnit.MILLISECONDS)
+			       .untilAsserted(() -> assertThat(provider.channelPools.size())
+			               .isEqualTo(enableEvictInBackground ? 0 : 1));
+
+			assertThat(provider.isDisposed()).isEqualTo(enableEvictInBackground);
+		}
+		finally {
+			if (!enableEvictInBackground) {
+				provider.disposeLater()
+				        .block(Duration.ofSeconds(5));
+			}
+		}
+	}
+
+	static Stream<Arguments> disposeInactivePoolsInBackgroundCombinations() {
+		return Stream.of(
+				Arguments.of(false, false),
+				Arguments.of(false, true),
+				Arguments.of(true, false),
+				Arguments.of(true, true)
+		);
 	}
 
 	static final class TestPromise extends DefaultChannelPromise {

@@ -16,7 +16,7 @@
 package reactor.netty.transport;
 
 import io.micrometer.common.docs.KeyName;
-import io.micrometer.tracing.docs.DocumentedSpan;
+import io.micrometer.tracing.docs.SpanDocumentation;
 
 /**
  * Hostname resolution spans.
@@ -24,7 +24,7 @@ import io.micrometer.tracing.docs.DocumentedSpan;
  * @author Violeta Georgieva
  * @since 1.1.0
  */
-enum HostnameResolutionSpans implements DocumentedSpan {
+enum HostnameResolutionSpans implements SpanDocumentation {
 
 	/**
 	 * Hostname Resolution Span.
@@ -47,6 +47,26 @@ enum HostnameResolutionSpans implements DocumentedSpan {
 	};
 
 	enum HostnameResolutionTimeHighCardinalityTags implements KeyName {
+
+		/**
+		 * Net peer name.
+		 */
+		NET_PEER_NAME {
+			@Override
+			public String asString() {
+				return "net.peer.name";
+			}
+		},
+
+		/**
+		 * Net peer port.
+		 */
+		NET_PEER_PORT {
+			@Override
+			public String asString() {
+				return "net.peer.port";
+			}
+		},
 
 		/**
 		 * Reactor Netty protocol (tcp/http etc.).
@@ -75,16 +95,6 @@ enum HostnameResolutionSpans implements DocumentedSpan {
 			@Override
 			public String asString() {
 				return "reactor.netty.type";
-			}
-		},
-
-		/**
-		 * Remote address.
-		 */
-		REMOTE_ADDRESS {
-			@Override
-			public String asString() {
-				return "remote.address";
 			}
 		}
 	}

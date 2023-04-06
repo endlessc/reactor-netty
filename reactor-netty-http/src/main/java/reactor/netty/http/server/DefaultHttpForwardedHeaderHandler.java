@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,9 @@ import java.util.regex.Pattern;
 
 import io.netty.handler.codec.http.HttpRequest;
 import reactor.netty.transport.AddressUtils;
+
+import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HTTPS_PORT;
+import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HTTP_PORT;
 
 /**
  * @author Andrey Shlykov
@@ -62,15 +65,17 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 
 	private ConnectionInfo parseForwardedInfo(ConnectionInfo connectionInfo, String forwardedHeader) {
 		String forwarded = forwardedHeader.split(",", 2)[0];
-		Matcher hostMatcher = FORWARDED_HOST_PATTERN.matcher(forwarded);
-		if (hostMatcher.find()) {
-			connectionInfo = connectionInfo.withHostAddress(
-					AddressUtils.parseAddress(hostMatcher.group(1), connectionInfo.getHostAddress().getPort(),
-							DEFAULT_FORWARDED_HEADER_VALIDATION));
-		}
 		Matcher protoMatcher = FORWARDED_PROTO_PATTERN.matcher(forwarded);
 		if (protoMatcher.find()) {
 			connectionInfo = connectionInfo.withScheme(protoMatcher.group(1).trim());
+		}
+		Matcher hostMatcher = FORWARDED_HOST_PATTERN.matcher(forwarded);
+		if (hostMatcher.find()) {
+			String scheme = connectionInfo.getScheme();
+			int port = scheme.equalsIgnoreCase("https") || scheme.equalsIgnoreCase("wss") ?
+					DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
+			connectionInfo = connectionInfo.withHostAddress(
+					AddressUtils.parseAddress(hostMatcher.group(1), port, DEFAULT_FORWARDED_HEADER_VALIDATION));
 		}
 		Matcher forMatcher = FORWARDED_FOR_PATTERN.matcher(forwarded);
 		if (forMatcher.find()) {
@@ -87,27 +92,37 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 			connectionInfo = connectionInfo.withRemoteAddress(
 					AddressUtils.parseAddress(ipHeader.split(",", 2)[0], connectionInfo.getRemoteAddress().getPort()));
 		}
-		String hostHeader = request.headers().get(X_FORWARDED_HOST_HEADER);
-		if (hostHeader != null) {
-			String portHeader = request.headers().get(X_FORWARDED_PORT_HEADER);
-			int port = connectionInfo.getHostAddress().getPort();
-			if (portHeader != null && !portHeader.isEmpty()) {
-				String portStr = portHeader.split(",", 2)[0].trim();
-				if (portStr.chars().allMatch(Character::isDigit)) {
-					port = Integer.parseInt(portStr);
-				}
-				else if (DEFAULT_FORWARDED_HEADER_VALIDATION) {
-					throw new IllegalArgumentException("Failed to parse a port from " + portHeader);
-				}
-			}
-			connectionInfo = connectionInfo.withHostAddress(
-					AddressUtils.createUnresolved(hostHeader.split(",", 2)[0].trim(), port));
-		}
 		String protoHeader = request.headers().get(X_FORWARDED_PROTO_HEADER);
 		if (protoHeader != null) {
 			connectionInfo = connectionInfo.withScheme(protoHeader.split(",", 2)[0].trim());
 		}
+		String hostHeader = request.headers().get(X_FORWARDED_HOST_HEADER);
+		if (hostHeader != null) {
+			connectionInfo = connectionInfo.withHostAddress(
+					AddressUtils.parseAddress(hostHeader.split(",", 2)[0].trim(),
+							getDefaultHostPort(connectionInfo), DEFAULT_FORWARDED_HEADER_VALIDATION));
+		}
+
+		String portHeader = request.headers().get(X_FORWARDED_PORT_HEADER);
+		if (portHeader != null && !portHeader.isEmpty()) {
+			String portStr = portHeader.split(",", 2)[0].trim();
+			if (portStr.chars().allMatch(Character::isDigit)) {
+				int port = Integer.parseInt(portStr);
+				connectionInfo = new ConnectionInfo(
+						AddressUtils.createUnresolved(connectionInfo.getHostAddress().getHostString(), port),
+						connectionInfo.getHostName(), port, connectionInfo.getRemoteAddress(), connectionInfo.getScheme());
+			}
+			else if (DEFAULT_FORWARDED_HEADER_VALIDATION) {
+				throw new IllegalArgumentException("Failed to parse a port from " + portHeader);
+			}
+		}
 		return connectionInfo;
+	}
+
+	private int getDefaultHostPort(ConnectionInfo connectionInfo) {
+		String scheme = connectionInfo.getScheme();
+		return scheme.equalsIgnoreCase("https") || scheme.equalsIgnoreCase("wss") ?
+				DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
 	}
 
 }

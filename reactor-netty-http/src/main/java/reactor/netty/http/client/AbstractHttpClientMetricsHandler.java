@@ -34,6 +34,8 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.function.Function;
 
+import static reactor.netty.ReactorNetty.format;
+
 /**
  * @author Violeta Georgieva
  * @since 1.0.8
@@ -95,14 +97,18 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 						recordWrite(address);
 					}
 					catch (RuntimeException e) {
-						log.warn("Exception caught while recording metrics.", e);
+						if (log.isWarnEnabled()) {
+							log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+						}
 						// Allow request-response exchange to continue, unaffected by metrics problem
 					}
 				});
 			}
 		}
 		catch (RuntimeException e) {
-			log.warn("Exception caught while recording metrics.", e);
+			if (log.isWarnEnabled()) {
+				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+			}
 			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
@@ -122,12 +128,14 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			dataReceived += extractProcessedDataFromBuffer(msg);
 
 			if (msg instanceof LastHttpContent) {
-				recordRead(ctx.channel().remoteAddress());
+				recordRead(ctx.channel());
 				reset();
 			}
 		}
 		catch (RuntimeException e) {
-			log.warn("Exception caught while recording metrics.", e);
+			if (log.isWarnEnabled()) {
+				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+			}
 			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
@@ -140,7 +148,9 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			recordException(ctx);
 		}
 		catch (RuntimeException e) {
-			log.warn("Exception caught while recording metrics.", e);
+			if (log.isWarnEnabled()) {
+				log.warn(format(ctx.channel(), "Exception caught while recording metrics."), e);
+			}
 			// Allow request-response exchange to continue, unaffected by metrics problem
 		}
 
@@ -157,7 +167,7 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			contextView = ops.currentContextView();
 		}
 
-		startWrite(request, ctx.channel(), contextView);
+		startWrite(request, ctx.channel());
 	}
 
 	private long extractProcessedDataFromBuffer(Object msg) {
@@ -177,7 +187,8 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 				path != null ? path : resolveUri(ctx));
 	}
 
-	protected void recordRead(SocketAddress address) {
+	protected void recordRead(Channel channel) {
+		SocketAddress address = channel.remoteAddress();
 		recorder().recordDataReceivedTime(address,
 				path, method, status,
 				Duration.ofNanos(System.nanoTime() - dataReceivedTime));
@@ -212,7 +223,7 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 		dataReceivedTime = System.nanoTime();
 	}
 
-	protected void startWrite(HttpRequest msg, Channel channel, @Nullable ContextView contextView) {
+	protected void startWrite(HttpRequest msg, Channel channel) {
 		dataSentTime = System.nanoTime();
 	}
 

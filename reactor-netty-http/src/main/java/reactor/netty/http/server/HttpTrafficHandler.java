@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@ package reactor.netty.http.server;
 
 import java.net.SocketAddress;
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.function.BiFunction;
@@ -30,6 +31,7 @@ import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.DecoderResultProvider;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpObject;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -44,6 +46,9 @@ import reactor.core.Exceptions;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
+import reactor.netty.ReactorNetty;
+import reactor.netty.http.logging.HttpMessageArgProviderFactory;
+import reactor.netty.http.logging.HttpMessageLogFactory;
 import reactor.util.annotation.Nullable;
 import reactor.util.concurrent.Queues;
 
@@ -52,7 +57,6 @@ import static io.netty.handler.codec.http.HttpUtil.isKeepAlive;
 import static io.netty.handler.codec.http.HttpUtil.isTransferEncodingChunked;
 import static io.netty.handler.codec.http.HttpUtil.setKeepAlive;
 import static reactor.netty.ReactorNetty.format;
-import static reactor.netty.ReactorNetty.toPrettyHexDump;
 
 /**
  * Replace {@link io.netty.handler.codec.http.HttpServerKeepAliveHandler} with extra
@@ -70,6 +74,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 	final ServerCookieEncoder                                     cookieEncoder;
 	final HttpServerFormDecoderProvider                           formDecoderProvider;
 	final BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
+	final HttpMessageLogFactory                                   httpMessageLogFactory;
 	final Duration                                                idleTimeout;
 	final ConnectionObserver                                      listener;
 	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
@@ -97,6 +102,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 			ServerCookieEncoder encoder,
 			HttpServerFormDecoderProvider formDecoderProvider,
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
+			HttpMessageLogFactory httpMessageLogFactory,
 			@Nullable Duration idleTimeout,
 			ConnectionObserver listener,
 			@Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle,
@@ -107,6 +113,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 		this.compress = compress;
 		this.cookieEncoder = encoder;
 		this.cookieDecoder = decoder;
+		this.httpMessageLogFactory = httpMessageLogFactory;
 		this.idleTimeout = idleTimeout;
 		this.mapHandle = mapHandle;
 		this.maxKeepAliveRequests = maxKeepAliveRequests;
@@ -146,8 +153,10 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 			final HttpRequest request = (HttpRequest) msg;
 
 			if (H2.equals(request.protocolVersion())) {
-				sendDecodingFailures(new IllegalStateException(
-						"Unexpected request [" + request.method() + " " + request.uri() + " HTTP/2.0]"), msg);
+				IllegalStateException e = new IllegalStateException(
+						"Unexpected request [" + request.method() + " " + request.uri() + " HTTP/2.0]");
+				request.setDecoderResult(DecoderResult.failure(e.getCause() != null ? e.getCause() : e));
+				sendDecodingFailures(e, msg);
 				return;
 			}
 
@@ -175,7 +184,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 							pipelined != null ? pipelined.size() : 0);
 				}
 				overflow = true;
-				doPipeline(ctx, msg);
+				doPipeline(ctx, new HttpRequestHolder(request));
 				return;
 			}
 			else {
@@ -188,6 +197,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 				}
 
 				HttpServerOperations ops;
+				ZonedDateTime timestamp = ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM);
 				try {
 					ops = new HttpServerOperations(Connection.from(ctx.channel()),
 							listener,
@@ -201,11 +211,15 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 							cookieDecoder,
 							cookieEncoder,
 							formDecoderProvider,
+							httpMessageLogFactory,
+							false,
 							mapHandle,
-							secure);
+							secure,
+							timestamp);
 				}
 				catch (RuntimeException e) {
-					sendDecodingFailures(e, msg);
+					request.setDecoderResult(DecoderResult.failure(e.getCause() != null ? e.getCause() : e));
+					sendDecodingFailures(e, msg, timestamp);
 					return;
 				}
 				ops.bind();
@@ -228,8 +242,10 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 			}
 			else {
 				if (HttpServerOperations.log.isDebugEnabled()) {
-					HttpServerOperations.log.debug(format(ctx.channel(), "Dropped HTTP content, " +
-							"since response has been sent already: {}"), msg);
+					HttpServerOperations.log.debug(
+							format(ctx.channel(), "Dropped HTTP content, since response has been sent already: {}"),
+							msg instanceof HttpObject ?
+									httpMessageLogFactory.debug(HttpMessageArgProviderFactory.create(msg)) : msg);
 				}
 				ReferenceCountUtil.release(msg);
 			}
@@ -259,8 +275,12 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 	}
 
 	void sendDecodingFailures(Throwable t, Object msg) {
+		sendDecodingFailures(t, msg, null);
+	}
+
+	void sendDecodingFailures(Throwable t, Object msg, @Nullable ZonedDateTime timestamp) {
 		persistentConnection = false;
-		HttpServerOperations.sendDecodingFailures(ctx, listener, secure, t, msg);
+		HttpServerOperations.sendDecodingFailures(ctx, listener, secure, t, msg, httpMessageLogFactory, timestamp);
 	}
 
 	void doPipeline(ChannelHandlerContext ctx, Object msg) {
@@ -343,8 +363,10 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 		}
 		if (persistentConnection && pendingResponses == 0) {
 			if (HttpServerOperations.log.isDebugEnabled()) {
-				HttpServerOperations.log.debug(format(ctx.channel(), "Dropped HTTP content, " +
-						"since response has been sent already: {}"), toPrettyHexDump(msg));
+				HttpServerOperations.log.debug(
+						format(ctx.channel(), "Dropped HTTP content, since response has been sent already: {}"),
+						msg instanceof HttpObject ?
+								httpMessageLogFactory.debug(HttpMessageArgProviderFactory.create(msg)) : msg);
 			}
 			ReferenceCountUtil.release(msg);
 			promise.setSuccess();
@@ -359,7 +381,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 		Object next;
 		HttpRequest nextRequest = null;
 		while ((next = pipelined.peek()) != null) {
-			if (next instanceof HttpRequest) {
+			if (next instanceof HttpRequestHolder) {
 				if (nextRequest != null) {
 					return;
 				}
@@ -368,33 +390,50 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 					return;
 				}
 
-				nextRequest = (HttpRequest) next;
+				HttpRequestHolder holder = (HttpRequestHolder) next;
+				nextRequest = holder.request;
 
 				DecoderResult decoderResult = nextRequest.decoderResult();
 				if (decoderResult.isFailure()) {
-					sendDecodingFailures(decoderResult.cause(), nextRequest);
+					sendDecodingFailures(decoderResult.cause(), nextRequest, holder.timestamp);
 					discard();
 					return;
 				}
 
-				HttpServerOperations ops = new HttpServerOperations(Connection.from(ctx.channel()),
-						listener,
-						nextRequest,
-						compress,
-						ConnectionInfo.from(ctx.channel(),
-						                    nextRequest,
-						                    secure,
-						                    remoteAddress,
-						                    forwardedHeaderHandler),
-						cookieDecoder,
-						cookieEncoder,
-						formDecoderProvider,
-						mapHandle,
-						secure);
+				HttpServerOperations ops;
+				try {
+					ops = new HttpServerOperations(Connection.from(ctx.channel()),
+							listener,
+							nextRequest,
+							compress,
+							ConnectionInfo.from(ctx.channel(),
+							                    nextRequest,
+							                    secure,
+							                    remoteAddress,
+							                    forwardedHeaderHandler),
+							cookieDecoder,
+							cookieEncoder,
+							formDecoderProvider,
+							httpMessageLogFactory,
+							false,
+							mapHandle,
+							secure,
+							holder.timestamp);
+				}
+				catch (RuntimeException e) {
+					holder.request.setDecoderResult(DecoderResult.failure(e.getCause() != null ? e.getCause() : e));
+					sendDecodingFailures(e, holder.request, holder.timestamp);
+					return;
+				}
 				ops.bind();
 				listener.onStateChange(ops, ConnectionObserver.State.CONFIGURED);
+
+				pipelined.poll();
+				ctx.fireChannelRead(holder.request);
 			}
-			ctx.fireChannelRead(pipelined.poll());
+			else {
+				ctx.fireChannelRead(pipelined.poll());
+			}
 		}
 		overflow = false;
 	}
@@ -452,7 +491,7 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 	 */
 	static boolean isSelfDefinedMessageLength(HttpResponse response) {
 		return isContentLengthSet(response) || isTransferEncodingChunked(response) || isMultipart(
-				response) || isInformational(response) || isNotModified(response);
+				response) || isInformational(response) || isNotModified(response) || isNoContent(response);
 	}
 
 	static boolean isInformational(HttpResponse response) {
@@ -460,8 +499,12 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 		               .codeClass() == HttpStatusClass.INFORMATIONAL;
 	}
 
+	static boolean isNoContent(HttpResponse response) {
+		return HttpResponseStatus.NO_CONTENT.code() == response.status().code();
+	}
+
 	static boolean isNotModified(HttpResponse response) {
-		return HttpResponseStatus.NOT_MODIFIED.equals(response.status());
+		return HttpResponseStatus.NOT_MODIFIED.code() == response.status().code();
 	}
 
 	static boolean isMultipart(HttpResponse response) {
@@ -474,4 +517,13 @@ final class HttpTrafficHandler extends ChannelDuplexHandler
 				MULTIPART_PREFIX.length());
 	}
 
+	static final class HttpRequestHolder {
+		final HttpRequest request;
+		final ZonedDateTime timestamp;
+
+		HttpRequestHolder(HttpRequest request) {
+			this.request = request;
+			this.timestamp = ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM);
+		}
+	}
 }

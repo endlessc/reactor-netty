@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.cert.CertificateException;
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -52,9 +53,12 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufHolder;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPromise;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.channel.group.DefaultChannelGroup;
@@ -73,16 +77,20 @@ import io.netty.handler.codec.http.HttpMessage;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpObjectDecoder;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus;
 import io.netty.handler.ssl.SniCompletionEvent;
+import io.netty.handler.ssl.SslCloseCompletionEvent;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.util.AttributeKey;
@@ -90,6 +98,7 @@ import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ReferenceCounted;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
+import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -99,6 +108,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
+import org.reactivestreams.Subscription;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
@@ -109,15 +119,19 @@ import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableServer;
 import reactor.netty.FutureMono;
+import reactor.netty.LogTracker;
 import reactor.netty.NettyOutbound;
 import reactor.netty.NettyPipeline;
+import reactor.netty.ReactorNetty;
 import reactor.netty.channel.AbortedException;
+import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.Http11SslContextSpec;
 import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientRequest;
 import reactor.netty.http.client.PrematureCloseException;
+import reactor.netty.http.logging.ReactorNettyHttpMessageLogFactory;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.SslProvider;
@@ -125,10 +139,11 @@ import reactor.netty.tcp.TcpClient;
 import reactor.netty.tcp.TcpServer;
 import reactor.netty.transport.TransportConfig;
 import reactor.test.StepVerifier;
+import reactor.util.Logger;
+import reactor.util.Loggers;
 import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
-import reactor.util.function.Tuple3;
 
 import javax.net.ssl.SNIHostName;
 
@@ -145,8 +160,60 @@ class HttpServerTests extends BaseHttpTest {
 
 	static SelfSignedCertificate ssc;
 	static final EventExecutor executor = new DefaultEventExecutor();
+	static final Logger log = Loggers.getLogger(HttpServerTests.class);
 
 	ChannelGroup group;
+
+	/**
+	 * Server Handler used to send a TLS close_notify after the server last response has been flushed.
+	 * The close_notify is sent without closing the connection.
+	 */
+	final static class SendCloseNotifyAfterLastResponseHandler extends ChannelOutboundHandlerAdapter {
+		final static String NAME = "handler.send_close_notify_after_response";
+		final CountDownLatch latch;
+
+		SendCloseNotifyAfterLastResponseHandler(CountDownLatch latch) {
+			this.latch = latch;
+		}
+
+		static void register(Connection cnx, CountDownLatch latch) {
+			SendCloseNotifyAfterLastResponseHandler handler = new SendCloseNotifyAfterLastResponseHandler(latch);
+			cnx.channel().pipeline().addBefore(NettyPipeline.HttpTrafficHandler, NAME, handler);
+		}
+
+		@Override
+		@SuppressWarnings("FutureReturnValueIgnored")
+		public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+			if (msg instanceof LastHttpContent) {
+				SslHandler sslHandler = ctx.channel().pipeline().get(SslHandler.class);
+				Objects.requireNonNull(sslHandler, "sslHandler not found from pipeline");
+				// closeOutbound sends a close_notify but don't close the connection.
+				promise.addListener(future -> sslHandler.closeOutbound().addListener(f -> latch.countDown()));
+			}
+			ctx.write(msg, promise);
+		}
+	}
+
+	/**
+	 * Handler used by secured servers which don't want to close client connection when receiving a client close_notify ack.
+	 * The handler is placed just before the ReactiveBridge (ChannelOperationsHandler), and will block
+	 * any received SslCloseCompletionEvent events. Hence, ChannelOperationsHandler won't get the close_notify ack,
+	 * and won't close the channel.
+	 */
+	final static class IgnoreCloseNotifyHandler extends ChannelInboundHandlerAdapter {
+		final static String NAME = "handler.ignore_close_notify";
+
+		static void register(Connection cnx) {
+			cnx.channel().pipeline().addBefore(NettyPipeline.ReactiveBridge, NAME, new IgnoreCloseNotifyHandler());
+		}
+
+		@Override
+		public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+			if (!(evt instanceof SslCloseCompletionEvent) || !((SslCloseCompletionEvent) evt).isSuccess()) {
+				ctx.fireUserEventTriggered(evt);
+			}
+		}
+	}
 
 	@BeforeAll
 	static void createSelfSignedCertificate() throws CertificateException {
@@ -291,56 +358,80 @@ class HttpServerTests extends BaseHttpTest {
 		assertThat(code).isEqualTo(500);
 	}
 
-	@Test
-	void httpPipelining() throws Exception {
-
+	@ParameterizedTest
+	@ValueSource(booleans = {false, true})
+	void httpPipelining(boolean enableAccessLog) throws Exception {
 		AtomicInteger i = new AtomicInteger();
 
 		disposableServer = createServer()
-		                             .handle((req, resp) ->
+		                             .accessLog(enableAccessLog)
+		                             .route(r -> r.get("/plaintext", (req, resp) ->
 		                                     resp.header(HttpHeaderNames.CONTENT_LENGTH, "1")
 		                                         .sendString(Mono.just(i.incrementAndGet())
 		                                                         .flatMap(d ->
 		                                                                 Mono.delay(Duration.ofSeconds(4 - d))
-		                                                                     .map(x -> d + "\n"))))
+		                                                                     .map(x -> d + "\n")))))
 		                             .bindNow();
 
 		DefaultFullHttpRequest request =
-				new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,
-				                           HttpMethod.GET,
-				                           "/plaintext");
+				new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/plaintext");
 
-		CountDownLatch latch = new CountDownLatch(6);
+		DefaultFullHttpRequest requestNotFound =
+				new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/not_found");
 
-		Connection client =
-				TcpClient.create()
-				         .port(disposableServer.port())
-				         .handle((in, out) -> {
-				                 in.withConnection(x ->
-				                         x.addHandlerFirst(new HttpClientCodec()))
-				                   .receiveObject()
-				                   .ofType(DefaultHttpContent.class)
-				                   .as(ByteBufFlux::fromInbound)
-				                   .asString()
-				                   .log()
-				                   .map(Integer::parseInt)
-				                   .subscribe(d -> {
-				                       for (int x = 0; x < d; x++) {
-				                           latch.countDown();
-				                       }
-				                   });
+		CountDownLatch latch = new CountDownLatch(10);
 
-				                 return out.sendObject(Flux.just(request.retain(),
-				                                                 request.retain(),
-				                                                 request.retain()))
-				                           .neverComplete();
-				         })
-				         .wiretap(true)
-				         .connectNow();
+		String okMessage = "GET /plaintext HTTP/1.1\" 200";
+		String notFoundMessage = "GET /not_found HTTP/1.1\" 404";
+		try (LogTracker logTracker = new LogTracker("reactor.netty.http.server.AccessLog", 4, okMessage, notFoundMessage)) {
+			Connection client =
+					TcpClient.create()
+					         .port(disposableServer.port())
+					         .handle((in, out) -> {
+					                 in.withConnection(x ->
+					                         x.addHandlerFirst(new HttpClientCodec()))
+					                   .receiveObject()
+					                   .map(o -> {
+					                       if (o == LastHttpContent.EMPTY_LAST_CONTENT) {
+					                           return new DefaultHttpContent(
+					                               Unpooled.wrappedBuffer((i.incrementAndGet() + "").getBytes(Charset.defaultCharset())));
+					                       }
+					                       return o;
+					                   })
+					                   .ofType(DefaultHttpContent.class)
+					                   .as(ByteBufFlux::fromInbound)
+					                   .asString()
+					                   .log()
+					                   .map(Integer::parseInt)
+					                   .subscribe(d -> {
+					                       for (int x = 0; x < d; x++) {
+					                           latch.countDown();
+					                       }
+					                   });
 
-		assertThat(latch.await(45, TimeUnit.SECONDS)).as("latch await").isTrue();
+					                 return out.sendObject(Flux.just(request.retain(),
+					                                                 request.retain(),
+					                                                 request.retain(),
+					                                                 requestNotFound))
+					                           .neverComplete();
+					         })
+					         .wiretap(true)
+					         .connectNow();
 
-		client.disposeNow();
+			assertThat(latch.await(45, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+			client.disposeNow();
+
+			if (enableAccessLog) {
+				assertThat(logTracker.latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+				assertThat(logTracker.actualMessages).hasSize(4);
+				assertThat(logTracker.actualMessages.get(0).getFormattedMessage()).contains(okMessage);
+				assertThat(logTracker.actualMessages.get(1).getFormattedMessage()).contains(okMessage);
+				assertThat(logTracker.actualMessages.get(2).getFormattedMessage()).contains(okMessage);
+				assertThat(logTracker.actualMessages.get(3).getFormattedMessage()).contains(notFoundMessage);
+			}
+		}
 	}
 
 	@Test
@@ -490,67 +581,6 @@ class HttpServerTests extends BaseHttpTest {
 		ref.get().disposeNow();
 		Thread.sleep(100);
 		assertThat(f.isDone()).isTrue();
-	}
-
-	@Test
-	void nonContentStatusCodes() {
-		disposableServer =
-				createServer()
-				          .host("localhost")
-				          .route(r -> r.get("/204-1", (req, res) -> res.status(HttpResponseStatus.NO_CONTENT)
-				                                                       .sendHeaders())
-				                       .get("/204-2", (req, res) -> res.status(HttpResponseStatus.NO_CONTENT))
-				                       .get("/205-1", (req, res) -> res.status(HttpResponseStatus.RESET_CONTENT)
-				                                                       .sendHeaders())
-				                       .get("/205-2", (req, res) -> res.status(HttpResponseStatus.RESET_CONTENT))
-				                       .get("/304-1", (req, res) -> res.status(HttpResponseStatus.NOT_MODIFIED)
-				                                                       .sendHeaders())
-				                       .get("/304-2", (req, res) -> res.status(HttpResponseStatus.NOT_MODIFIED))
-				                       .get("/304-3", (req, res) -> res.status(HttpResponseStatus.NOT_MODIFIED)
-				                                                       .send()))
-				          .bindNow();
-
-		InetSocketAddress address = (InetSocketAddress) disposableServer.address();
-		checkResponse("/204-1", address);
-		checkResponse("/204-2", address);
-		checkResponse("/205-1", address);
-		checkResponse("/205-2", address);
-		checkResponse("/304-1", address);
-		checkResponse("/304-2", address);
-		checkResponse("/304-3", address);
-	}
-
-	private void checkResponse(String url, InetSocketAddress address) {
-		Mono<Tuple3<Integer, HttpHeaders, String>> response =
-				createClient(() -> address)
-				          .get()
-				          .uri(url)
-				          .responseSingle((r, buf) ->
-				                  Mono.zip(Mono.just(r.status().code()),
-				                           Mono.just(r.responseHeaders()),
-				                           buf.asString().defaultIfEmpty("NO BODY"))
-				          );
-
-		StepVerifier.create(response)
-		            .expectNextMatches(t -> {
-		                int code = t.getT1();
-		                HttpHeaders h = t.getT2();
-		                if (code == 204 || code == 304) {
-		                    return !h.contains("Transfer-Encoding") &&
-		                           !h.contains("Content-Length") &&
-		                           "NO BODY".equals(t.getT3());
-		                }
-		                else if (code == 205) {
-		                    return !h.contains("Transfer-Encoding") &&
-		                           h.getInt("Content-Length").equals(0) &&
-		                           "NO BODY".equals(t.getT3());
-		                }
-		                else {
-		                    return false;
-		                }
-		            })
-		            .expectComplete()
-		            .verify(Duration.ofSeconds(30));
 	}
 
 	@Test
@@ -866,7 +896,29 @@ class HttpServerTests extends BaseHttpTest {
 				          .responseSingle((res, byteBufMono) -> Mono.just(res.status()));
 
 		StepVerifier.create(status)
-		            .expectNextMatches(HttpResponseStatus.REQUEST_ENTITY_TOO_LARGE::equals)
+		            .expectNextMatches(HttpResponseStatus.REQUEST_URI_TOO_LONG::equals)
+		            .expectComplete()
+		            .verify();
+	}
+
+	@Test
+	void httpServerRequestHeadersTooLong() {
+		HttpServer httpServer = HttpServer.create()
+				          .port(0)
+				          .httpRequestDecoder(c -> c.maxHeaderSize(20));
+		disposableServer =
+				httpServer.handle((req, res) -> res.sendString(Mono.just("Should not be reached")))
+				          .bindNow();
+
+		Mono<HttpResponseStatus> status =
+				createClient(disposableServer.port())
+				          .headers(h -> h.set("content-type", "somethingtooolooong"))
+				          .get()
+				          .uri("/path")
+				          .responseSingle((res, byteBufMono) -> Mono.just(res.status()));
+
+		StepVerifier.create(status)
+		            .expectNextMatches(HttpResponseStatus.REQUEST_HEADER_FIELDS_TOO_LARGE::equals)
 		            .expectComplete()
 		            .verify();
 	}
@@ -1495,17 +1547,17 @@ class HttpServerTests extends BaseHttpTest {
 				          .bindNow();
 
 		doTestDecodingFailureLastHttpContent("PUT /1 HTTP/1.1\r\nHost: a.example.com\r\n" +
-				"Transfer-Encoding: chunked\r\n\r\nsomething\r\n\r\n", "400 Bad Request", "connection: close");
+				"Transfer-Encoding: chunked\r\n\r\nsomething\r\n\r\n", 1, "400 Bad Request", "connection: close");
 
 		assertThat(error.get()).isNull();
 
 		doTestDecodingFailureLastHttpContent("PUT /2 HTTP/1.1\r\nHost: a.example.com\r\n" +
-				"Transfer-Encoding: chunked\r\n\r\nsomething\r\n\r\n", "200 OK");
+				"Transfer-Encoding: chunked\r\n\r\nsomething\r\n\r\n", 2, "200 OK");
 
 		assertThat(error.get()).isNull();
 	}
 
-	private void doTestDecodingFailureLastHttpContent(String message, String... expectations) throws Exception {
+	private void doTestDecodingFailureLastHttpContent(String message, int expectedSize, String... expectations) throws Exception {
 		TcpClient tcpClient =
 				TcpClient.create()
 				         .port(disposableServer.port())
@@ -1518,11 +1570,11 @@ class HttpServerTests extends BaseHttpTest {
 		          .closeFuture()
 		          .addListener(f -> latch.countDown());
 
-		AtomicReference<String> result = new AtomicReference<>();
+		AtomicReference<List<String>> result = new AtomicReference<>(new ArrayList<>());
 		connection.inbound()
 		          .receive()
 		          .asString()
-		          .doOnNext(result::set)
+		          .doOnNext(s -> result.get().add(s))
 		          .subscribe();
 
 		connection.outbound()
@@ -1531,7 +1583,8 @@ class HttpServerTests extends BaseHttpTest {
 		          .subscribe();
 
 		assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
-		assertThat(result.get()).contains(expectations);
+		assertThat(result.get()).hasSize(expectedSize);
+		assertThat(result.get().get(0)).contains(expectations);
 		assertThat(connection.channel().isActive()).isFalse();
 	}
 
@@ -1618,10 +1671,34 @@ class HttpServerTests extends BaseHttpTest {
 	}
 
 	@Test
+	@SuppressWarnings("FutureReturnValueIgnored")
 	void testIssue1001() throws Exception {
+		AtomicReference<Throwable> err = new AtomicReference<>();
 		disposableServer =
 				createServer()
 				          .host("localhost")
+				          .doOnChannelInit((obs, ch, addr) ->
+				              ch.pipeline().addBefore(NettyPipeline.HttpTrafficHandler, "", new ChannelDuplexHandler() {
+
+				                  HttpRequest request;
+
+				                  @Override
+				                  public void channelRead(ChannelHandlerContext ctx, Object msg) {
+				                      if (msg instanceof HttpRequest) {
+				                          request = (HttpRequest) msg;
+				                      }
+				                      ctx.fireChannelRead(msg);
+				                  }
+
+				                  @Override
+				                  public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+				                      if (msg instanceof HttpResponse && request != null && request.decoderResult().isFailure()) {
+				                          err.set(request.decoderResult().cause());
+				                      }
+				                      //"FutureReturnValueIgnored" this is deliberate
+				                      ctx.write(msg, promise);
+				                  }
+				              }))
 				          .handle((req, res) -> res.sendString(Mono.just("testIssue1001")))
 				          .bindNow();
 
@@ -1654,6 +1731,9 @@ class HttpServerTests extends BaseHttpTest {
 		assertThat(result.get()).contains("400", "connection: close");
 		assertThat(connection.channel().isActive()).isFalse();
 
+		assertThat(err.get()).isNotNull()
+				.isInstanceOf(URISyntaxException.class);
+
 		StepVerifier.create(
 		        createClient(disposableServer::address)
 		                  .get()
@@ -1664,15 +1744,36 @@ class HttpServerTests extends BaseHttpTest {
 	}
 
 	@Test
-	void testGracefulShutdown() throws Exception {
+	void testGracefulShutdownHttp11() throws Exception {
+		doTestGracefulShutdown(createServer(), createClient(() -> disposableServer.address()));
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2cCompatibleCombinations")
+	void testGracefulShutdownH2C(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		doTestGracefulShutdown(createServer().protocol(serverProtocols),
+				createClient(() -> disposableServer.address()).protocol(clientProtocols));
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2CompatibleCombinations")
+	void testGracefulShutdownH2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		doTestGracefulShutdown(createServer().protocol(serverProtocols).secure(spec -> spec.sslContext(serverCtx)),
+				createClient(() -> disposableServer.address()).protocol(clientProtocols).secure(spec -> spec.sslContext(clientCtx)));
+	}
+
+	private void doTestGracefulShutdown(HttpServer server, HttpClient client) throws Exception {
 		CountDownLatch latch1 = new CountDownLatch(2);
 		CountDownLatch latch2 = new CountDownLatch(2);
 		CountDownLatch latch3 = new CountDownLatch(1);
 		LoopResources loop = LoopResources.create("testGracefulShutdown");
 		group = new DefaultChannelGroup(executor);
 		disposableServer =
-				createServer()
-				          .runOn(loop)
+				server.runOn(loop)
 				          .doOnConnection(c -> {
 				              c.onDispose().subscribe(null, null, latch2::countDown);
 				              latch1.countDown();
@@ -1685,8 +1786,6 @@ class HttpServerTests extends BaseHttpTest {
 				                       .get("/delay1000", (req, res) -> res.sendString(Mono.just("delay1000")
 				                                                           .delayElement(Duration.ofSeconds(1)))))
 				          .bindNow(Duration.ofSeconds(30));
-
-		HttpClient client = createClient(disposableServer::address);
 
 		AtomicReference<String> result = new AtomicReference<>();
 		Flux.just("/delay500", "/delay1000")
@@ -1938,8 +2037,11 @@ class HttpServerTests extends BaseHttpTest {
 				ServerCookieDecoder.STRICT,
 				ServerCookieEncoder.STRICT,
 				DEFAULT_FORM_DECODER_SPEC,
+				ReactorNettyHttpMessageLogFactory.INSTANCE,
+				false,
 				null,
-				false);
+				false,
+				ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM));
 		ops.status(status);
 		HttpMessage response = ops.newFullBodyMessage(Unpooled.EMPTY_BUFFER);
 		assertThat(((FullHttpResponse) response).status().reasonPhrase()).isEqualTo(status.reasonPhrase());
@@ -2845,8 +2947,11 @@ class HttpServerTests extends BaseHttpTest {
 				ServerCookieDecoder.STRICT,
 				ServerCookieEncoder.STRICT,
 				DEFAULT_FORM_DECODER_SPEC,
+				ReactorNettyHttpMessageLogFactory.INSTANCE,
+				false,
 				null,
-				false);
+				false,
+				ZonedDateTime.now(ReactorNetty.ZONE_ID_SYSTEM));
 		assertThat(ops.isFormUrlencoded()).isEqualTo(expectation);
 		// "FutureReturnValueIgnored" is suppressed deliberately
 		channel.close();
@@ -2937,5 +3042,302 @@ class HttpServerTests extends BaseHttpTest {
 		    .blockLast(Duration.ofSeconds(10));
 
 		assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
+	}
+
+	/**
+	 * The test simulates a situation where a connection is idle and available in the client connection pool,
+	 * and then the client receives a close_notify, but the server has not yet closed the connection.
+	 * In this case, the connection should be closed immediately and removed from the pool, in order to avoid
+	 * any "SslClosedEngineException: SSLEngine closed already exception" the next time the connection will be
+	 * acquired and written.
+	 * So, in the test, a secured server responds to a first client request, and when the response is flushed, it sends a
+	 * close_notify to the client without closing the connection.
+	 * The first client should get its response OK, but when receiving the close_notify, it should immediately
+	 * close the connection, which should not re-enter into the pool again.
+	 * The next client request will work because the previous connection should have been closed.
+	 */
+	@Test
+	void test2498_close_notify_after_response_two_clients() throws Exception {
+		SslContext serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+				.build();
+
+		// Ensure that the server has sent the close_notify, and the client connection is closed after the 1st response.
+		CountDownLatch latch = new CountDownLatch(2);
+
+		disposableServer = createServer()
+				.secure(spec -> spec.sslContext(serverCtx))
+				.doOnConnection(cnx -> {
+					// will send a close_notify after the last response is sent, but won't close the connection
+					SendCloseNotifyAfterLastResponseHandler.register(cnx, latch);
+					// avoid closing the connection when the server receives the close_notify ack from the client
+					IgnoreCloseNotifyHandler.register(cnx);
+				})
+				.handle((req, res) -> {
+					return res.sendString(Mono.just("test"));
+				})
+				.bindNow();
+
+		// create the client
+		SslContext clientCtx = SslContextBuilder.forClient()
+				.trustManager(InsecureTrustManagerFactory.INSTANCE)
+				.build();
+
+		HttpClient client =  createClient(disposableServer::address)
+				.secure(spec -> spec.sslContext(clientCtx));
+
+		// send a first request
+		String resp = client
+				.doOnConnected(cnx -> cnx.channel().closeFuture().addListener(l -> latch.countDown()))
+				.get()
+				.uri("/")
+				.responseContent()
+				.aggregate()
+				.asString()
+				.block(Duration.ofSeconds(30));
+
+		assertThat(resp).isEqualTo("test");
+
+		// double check if close_notify was sent by server and if the client channel has been closed
+		assertThat(latch.await(40, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+		// send a new request, which should succeed because at reception of previous close_notify we should have
+		// immediately closed the connection, else, if the connection is reused here, we would then get a
+		// "SslClosedEngineException: SSLEngine closed already" exception
+
+		String resp2 = client
+				.get()
+				.uri("/")
+				.responseContent()
+				.aggregate()
+				.asString()
+				.block(Duration.ofSeconds(30));
+		assertThat(resp2).isEqualTo("test");
+	}
+
+	/**
+	 * The test simulates a situation where the client has fully written its request to a connection,
+	 * but while waiting for the response, then a close_notify is received, and the server has not
+	 * closed the connection.
+	 *
+	 * The client should then be aborted with a PrematureCloseException.
+	 */
+	@Test
+	void test2498_close_notify_on_request() throws Exception {
+		SslContext serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+				.build();
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		disposableServer = createServer()
+				.secure(spec -> spec.sslContext(serverCtx))
+				// avoid closing the connection when the server receives the close_notify ack from the client
+				.doOnConnection(IgnoreCloseNotifyHandler::register)
+				.handle((req, res) -> {
+					req.receive()
+							.aggregate()
+							.subscribe(request -> req.withConnection(c -> {
+								SslHandler sslHandler = c.channel().pipeline().get(SslHandler.class);
+								Objects.requireNonNull(sslHandler, "sslHandler not found from pipeline");
+								// send a close_notify but do not close the connection
+								sslHandler.closeOutbound().addListener(future -> latch.countDown());
+							}));
+					return Mono.never();
+				})
+				.bindNow();
+
+		// create the client, which should be aborted since the server responds with a close_notify
+		Flux<String> postFlux = Flux.just("content1", "content2", "content3", "content4")
+				.delayElements(Duration.ofMillis(10));
+
+		SslContext clientCtx = SslContextBuilder.forClient()
+				.trustManager(InsecureTrustManagerFactory.INSTANCE)
+				.build();
+
+		createClient(disposableServer::address)
+				.secure(spec -> spec.sslContext(clientCtx))
+				.post()
+				.send(ByteBufFlux.fromString(postFlux))
+				.uri("/")
+				.responseContent()
+				.aggregate()
+				.as(StepVerifier::create)
+				.expectErrorMatches(t -> t instanceof PrematureCloseException || t instanceof AbortedException)
+				.verify(Duration.ofSeconds(40));
+
+		// double check if the server has sent its close_notify
+		assertThat(latch.await(40, TimeUnit.SECONDS)).as("latch await").isTrue();
+	}
+
+	/**
+	 * The test simulates a situation where the client is receiving a close_notify while
+	 * writing request body parts to the connection.
+	 * The server immediately sends a close_notify when the client is connecting.
+	 * the client request is not consumed and the client connection is not closed.
+	 * While writing the request body parts, the client should be aborted with a
+	 * PrematureCloseException or an AbortedException, but not with an
+	 * "SslClosedEngineException: SSLEngine closed already" exception.
+	 */
+	@Test
+	void test2498_close_notify_on_connect() throws Exception {
+		SslContext serverCtx = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+				.build();
+
+		CountDownLatch latch = new CountDownLatch(1);
+
+		disposableServer = createServer()
+				.secure(spec -> spec.sslContext(serverCtx))
+				.doOnConnection(cnx -> {
+					// avoid closing the client connection when receiving the close_notify ack from client
+					IgnoreCloseNotifyHandler.register(cnx);
+					// sends a close_notify immediately, without closing the connection
+					SslHandler sslHandler = cnx.channel().pipeline().get(SslHandler.class);
+					Objects.requireNonNull(sslHandler, "sslHandler not found from pipeline");
+					sslHandler.closeOutbound().addListener(future -> latch.countDown());
+				})
+				.handle((req, res) -> Mono.never())
+				.bindNow();
+
+		// create the client, which should be aborted since the server responds with a close_notify
+		Flux<String> postFlux = Flux.range(0, 100)
+				.map(count -> "content" + count)
+				.delayElements(Duration.ofMillis(100));
+
+		SslContext clientCtx = SslContextBuilder.forClient()
+				.trustManager(InsecureTrustManagerFactory.INSTANCE)
+				.build();
+
+		createClient(disposableServer::address)
+				.secure(spec -> spec.sslContext(clientCtx))
+				.post()
+				.send(ByteBufFlux.fromString(postFlux))
+				.uri("/")
+				.responseContent()
+				.aggregate()
+				.as(StepVerifier::create)
+				.expectErrorMatches(t -> t instanceof PrematureCloseException || t instanceof AbortedException)
+				.verify(Duration.ofSeconds(40));
+
+		// double check if the server has sent its close_notify
+		assertThat(latch.await(40, TimeUnit.SECONDS)).as("latch await").isTrue();
+	}
+
+	/**
+	 * This scenario tests the following (HTTP chunk transfer encoding is used):
+	 *
+	 * <ul>
+	 * <li>server is configured with a line based decoder in order to parse request body chunks that contains some newlines.</li>
+	 * <li>client sends one single chunk: DATA1\nDATA2\n</li>
+	 * <li> server will cancel inbound receiver on DATA1, and will respond 400 bad request.
+	 * <li>DATA2 is expected to be discarded and released</li>
+	 * </ul>
+	 */
+	@Test
+	@SuppressWarnings("deprecation")
+	void testHttpServerCancelled() throws InterruptedException {
+		// logged by server when cancelled while reading http request body
+		String serverCancelLog = "[HttpServer] Channel inbound receiver cancelled (operation cancelled).";
+		// logged by client when cancelled after having received the whole response from the server
+		String clientCancelLog = "Http client inbound receiver cancelled, closing channel.";
+
+		try (LogTracker lt = new LogTracker(ChannelOperations.class, serverCancelLog);
+		     LogTracker lt2 = new LogTracker("reactor.netty.http.client.HttpClientOperations", clientCancelLog)) {
+			CountDownLatch serverInboundReleased = new CountDownLatch(1);
+			AtomicReference<Subscription> subscription = new AtomicReference<>();
+			disposableServer = createServer()
+					.handle((req, res) -> {
+						req.withConnection(conn -> {
+							conn.addHandler(new LineBasedFrameDecoder(128));
+							conn.addHandlerLast(new ChannelInboundHandlerAdapter() {
+								@Override
+								public void channelRead(@NotNull ChannelHandlerContext ctx, @NotNull Object msg) {
+									ByteBuf buf = (msg instanceof ByteBufHolder) ? ((ByteBufHolder) msg).content() :
+											((msg instanceof ByteBuf) ? (ByteBuf) msg : null);
+									ctx.fireChannelRead(msg);
+									// At this point, the message has been handled and must have been released.
+									if (buf != null && buf.refCnt() == 0) {
+										serverInboundReleased.countDown();
+										log.debug("Server handled received message, which is now released");
+									}
+								}
+							});
+						});
+						return req.receive()
+								.asString()
+								.log("server.receive")
+								.doOnSubscribe(subscription::set)
+								.doOnNext(n -> {
+									subscription.get().cancel();
+									res.status(400).send().subscribe();
+								})
+								.then(Mono.never());
+					})
+					.bindNow();
+
+			ByteBuf data = ByteBufAllocator.DEFAULT.buffer();
+			data.writeCharSequence("DATA1\nDATA2\n", Charset.defaultCharset());
+
+			createClient(disposableServer::address)
+					.wiretap(true)
+					.post()
+					.send(Flux.just(data))
+					.uri("/")
+					.responseSingle((rsp, buf) -> Mono.just(rsp))
+					.as(StepVerifier::create)
+					.expectNextMatches(r -> r.status().code() == 400 && "0".equals(r.responseHeaders().get("Content-Length")))
+					.expectComplete()
+					.verify(Duration.ofSeconds(30));
+
+			assertThat(serverInboundReleased.await(30, TimeUnit.SECONDS)).as("serverInboundReleased await").isTrue();
+			assertThat(lt.latch.await(30, TimeUnit.SECONDS)).as("logTrack await").isTrue();
+			assertThat(lt2.latch.await(30, TimeUnit.SECONDS)).as("logTrack2 await").isTrue();
+		}
+	}
+
+	@Test
+	@SuppressWarnings("deprecation")
+	void testHttpServerCancelledOnClientClose() throws InterruptedException {
+		// logged by client when disposing the connection before send the 2nd request data chunk
+		String clientCancelLog = "Http client inbound receiver cancelled, closing channel.";
+		// logged by server when cancelled while reading request body (because connection has been closed by client)
+		String serverCancelLog = "[HttpServer] Channel inbound receiver cancelled (channel disconnected).";
+
+		try (LogTracker lt = new LogTracker(ChannelOperations.class, serverCancelLog);
+		     LogTracker lt2 = new LogTracker("reactor.netty.http.client.HttpClientOperations", clientCancelLog)) {
+			disposableServer = createServer()
+					.handle((req, res) -> {
+						return req.receive()
+								.aggregate()
+								.asString()
+								.log("server.receive")
+								.then(res.status(200).sendString(Mono.just("OK")).neverComplete());
+					})
+					.bindNow();
+
+			AtomicReference<Connection> clientConn = new AtomicReference<>();
+			AtomicInteger counter = new AtomicInteger();
+			CountDownLatch clientClosed = new CountDownLatch(1);
+
+			createClient(disposableServer::address)
+					.wiretap(true)
+					.doOnRequest((req, conn) -> {
+						clientConn.set(conn);
+						conn.onDispose(() -> clientClosed.countDown());
+					})
+					.post()
+					.send(ByteBufFlux.fromString(Flux.just("foo", "bar"))
+							.doOnNext(byteBuf -> {
+								if (counter.incrementAndGet() == 2) {
+									log.warn("Client: disposing connection before sending 2nd chunk");
+									clientConn.get().dispose();
+								}
+							}))
+					.uri("/")
+					.responseSingle((rsp, buf) -> Mono.just(rsp))
+					.subscribe();
+
+			assertThat(lt.latch.await(30, TimeUnit.SECONDS)).as("logTracker await").isTrue();
+			assertThat(lt2.latch.await(30, TimeUnit.SECONDS)).as("logTracker2 await").isTrue();
+			assertThat(clientClosed.await(30, TimeUnit.SECONDS)).as("clientClosed await").isTrue();
+		}
 	}
 }

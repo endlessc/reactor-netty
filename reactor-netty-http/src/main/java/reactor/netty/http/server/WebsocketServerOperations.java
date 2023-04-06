@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,6 +65,8 @@ final class WebsocketServerOperations extends HttpServerOperations
 
 	volatile int closeSent;
 
+	final static String INBOUND_CANCEL_LOG = "WebSocket server inbound receiver cancelled, closing Websocket.";
+
 	@SuppressWarnings("FutureReturnValueIgnored")
 	WebsocketServerOperations(String wsUrl, WebsocketServerSpec websocketServerSpec, HttpServerOperations replaced) {
 		super(replaced);
@@ -123,7 +125,7 @@ final class WebsocketServerOperations extends HttpServerOperations
 			                  // This change is needed after the Netty change https://github.com/netty/netty/pull/11966
 			                  channel.read();
 			              }
-			              else {
+			              else if (log.isDebugEnabled()) {
 			                  log.debug(format(channel, "Cannot bind WebsocketServerOperations after the handshake."));
 			              }
 			          });
@@ -188,7 +190,7 @@ final class WebsocketServerOperations extends HttpServerOperations
 	@Override
 	protected void onInboundCancel() {
 		if (log.isDebugEnabled()) {
-			log.debug(format(channel(), "Cancelling Websocket inbound. Closing Websocket"));
+			log.debug(format(channel(), INBOUND_CANCEL_LOG));
 		}
 		sendCloseNow(new CloseWebSocketFrame(), WebSocketCloseStatus.ABNORMAL_CLOSURE, f -> terminate());
 	}

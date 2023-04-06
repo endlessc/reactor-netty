@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2022 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.DecoderResult;
 import io.netty.handler.codec.DecoderResultProvider;
+import io.netty.handler.ssl.SslCloseCompletionEvent;
 import io.netty.util.IllegalReferenceCountException;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.ReferenceCounted;
@@ -31,7 +32,6 @@ import reactor.util.Logger;
 import reactor.util.Loggers;
 
 import static reactor.netty.ReactorNetty.format;
-import static reactor.netty.ReactorNetty.toPrettyHexDump;
 
 /**
  * Netty {@link io.netty.channel.ChannelDuplexHandler} implementation that bridge data
@@ -83,6 +83,26 @@ final class ChannelOperationsHandler extends ChannelInboundHandlerAdapter {
 
 	@Override
 	@SuppressWarnings("FutureReturnValueIgnored")
+	public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+		if (evt instanceof SslCloseCompletionEvent) {
+			SslCloseCompletionEvent sslCloseCompletionEvent = (SslCloseCompletionEvent) evt;
+
+			// When a close_notify is received, the SSLHandler fires an SslCloseCompletionEvent.SUCCESS event,
+			// so if the event is success and if the channel is still active (not closing for example),
+			// then immediately close the channel.
+			// see https://www.rfc-editor.org/rfc/rfc5246#section-7.2.1, which states that when receiving a close_notify,
+			// then the connection must be closed down immediately.
+			if (sslCloseCompletionEvent.isSuccess() && ctx.channel().isActive()) {
+				if (log.isDebugEnabled()) {
+					log.debug(format(ctx.channel(), "Received a TLS close_notify, closing the channel now."));
+				}
+				ctx.close();
+			}
+		}
+	}
+
+	@Override
+	@SuppressWarnings("FutureReturnValueIgnored")
 	final public void channelRead(ChannelHandlerContext ctx, Object msg) {
 		if (msg == null || msg == Unpooled.EMPTY_BUFFER || msg instanceof EmptyByteBuf) {
 			return;
@@ -97,13 +117,11 @@ final class ChannelOperationsHandler extends ChannelInboundHandlerAdapter {
 					if (msg instanceof DecoderResultProvider) {
 						DecoderResult decoderResult = ((DecoderResultProvider) msg).decoderResult();
 						if (decoderResult.isFailure()) {
-							log.debug(format(ctx.channel(), "Decoding failed: " + msg + " : "),
-									decoderResult.cause());
+							log.debug(format(ctx.channel(), "Decoding failed."), decoderResult.cause());
 						}
 					}
 
-					log.debug(format(ctx.channel(), "No ChannelOperation attached. Dropping: {}"),
-							toPrettyHexDump(msg));
+					log.debug(format(ctx.channel(), "No ChannelOperation attached."));
 				}
 				ReferenceCountUtil.release(msg);
 			}

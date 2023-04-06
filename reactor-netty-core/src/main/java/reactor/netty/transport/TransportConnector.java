@@ -53,6 +53,7 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.ReactorNetty.setChannelContext;
 
 /**
  * {@link TransportConnector} is a helper class that creates, initializes and registers the channel.
@@ -115,6 +116,7 @@ public final class TransportConnector {
 	 * @param channelInitializer the {@link ChannelInitializer} that will be used for initializing the channel pipeline
 	 * @param contextView the current {@link ContextView}
 	 * @return a {@link Mono} of {@link Channel}
+	 * @since 1.0.26
 	 */
 	public static Mono<Channel> connect(TransportConfig config, SocketAddress remoteAddress,
 			AddressResolverGroup<?> resolverGroup, ChannelInitializer<Channel> channelInitializer, ContextView contextView) {
@@ -146,6 +148,7 @@ public final class TransportConnector {
 	 * @param eventLoop the {@link EventLoop} to use for handling the channel.
 	 * @param contextView the current {@link ContextView}
 	 * @return a {@link Mono} of {@link Channel}
+	 * @since 1.0.26
 	 */
 	public static Mono<Channel> connect(TransportConfig config, SocketAddress remoteAddress,
 			AddressResolverGroup<?> resolverGroup, ChannelInitializer<Channel> channelInitializer, EventLoop eventLoop,
@@ -204,12 +207,16 @@ public final class TransportConnector {
 			}
 			try {
 				if (!channel.config().setOption((ChannelOption<Object>) e.getKey(), e.getValue())) {
-					log.warn(format(channel, "Unknown channel option '{}' for channel '{}'"), e.getKey(), channel);
+					if (log.isWarnEnabled()) {
+						log.warn(format(channel, "Unknown channel option '{}' for channel '{}'"), e.getKey(), channel);
+					}
 				}
 			}
 			catch (Throwable t) {
-				log.warn(format(channel, "Failed to set channel option '{}' with value '{}' for channel '{}'"),
-						e.getKey(), e.getValue(), channel, t);
+				if (log.isWarnEnabled()) {
+					log.warn(format(channel, "Failed to set channel option '{}' with value '{}' for channel '{}'"),
+							e.getKey(), e.getValue(), channel, t);
+				}
 			}
 		}
 	}
@@ -318,6 +325,10 @@ public final class TransportConnector {
 				return Mono.error(t);
 			}
 
+			if (!contextView.isEmpty()) {
+				setChannelContext(channel, contextView);
+			}
+
 			Supplier<? extends SocketAddress> bindAddress = config.bindAddress();
 			if (!resolver.isSupported(remoteAddress) || resolver.isResolved(remoteAddress)) {
 				MonoChannelPromise monoChannelPromise = new MonoChannelPromise(channel);
@@ -334,8 +345,6 @@ public final class TransportConnector {
 
 			Future<List<SocketAddress>> resolveFuture;
 			if (resolver instanceof MicrometerAddressResolverGroupMetrics.MicrometerDelegatingAddressResolver) {
-				channel.attr(CONTEXT_VIEW).compareAndSet(null, contextView);
-
 				resolveFuture = ((MicrometerAddressResolverGroupMetrics.MicrometerDelegatingAddressResolver<SocketAddress>) resolver)
 						.resolveAll(remoteAddress, contextView);
 			}
@@ -670,8 +679,6 @@ public final class TransportConnector {
 	}
 
 	static final Logger log = Loggers.getLogger(TransportConnector.class);
-
-	static final AttributeKey<ContextView> CONTEXT_VIEW = AttributeKey.valueOf("$CONTEXT_VIEW");
 
 	static final Predicate<Throwable> RETRY_PREDICATE = t -> t instanceof RetryConnectException;
 }

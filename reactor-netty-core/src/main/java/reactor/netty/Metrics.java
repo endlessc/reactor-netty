@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,8 @@ import io.micrometer.core.instrument.observation.DefaultMeterObservationHandler;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
+import io.netty.channel.Channel;
+import io.netty.util.AttributeKey;
 import reactor.netty.observability.ReactorNettyTimerObservationHandler;
 import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
@@ -37,7 +39,7 @@ import java.net.SocketAddress;
 public class Metrics {
 	public static final MeterRegistry REGISTRY = io.micrometer.core.instrument.Metrics.globalRegistry;
 	public static final String OBSERVATION_KEY = "micrometer.observation";
-	public static final ObservationRegistry OBSERVATION_REGISTRY = ObservationRegistry.create();
+	public static ObservationRegistry OBSERVATION_REGISTRY = ObservationRegistry.create();
 	static {
 		OBSERVATION_REGISTRY.observationConfig().observationHandler(
 				new ObservationHandler.FirstMatchingCompositeObservationHandler(
@@ -287,6 +289,8 @@ public class Metrics {
 
 	public static final String ERROR = "ERROR";
 
+	public static final String UNKNOWN = "UNKNOWN";
+
 	@Nullable
 	public static Observation currentObservation(ContextView contextView) {
 		if (contextView.hasKey(OBSERVATION_KEY)) {
@@ -309,7 +313,47 @@ public class Metrics {
 		return null;
 	}
 
+	/**
+	 * Set the {@link ObservationRegistry} to use in Reactor Netty for tracing related purposes.
+	 *
+	 * @return the previously configured registry.
+	 * @since 1.1.6
+	 */
+	public static ObservationRegistry observationRegistry(ObservationRegistry observationRegistry) {
+		ObservationRegistry previous = OBSERVATION_REGISTRY;
+		OBSERVATION_REGISTRY = observationRegistry;
+		return previous;
+	}
+
 	public static Context updateContext(Context context, Object observation) {
 		return context.hasKey(OBSERVATION_KEY) ? context : context.put(OBSERVATION_KEY, observation);
+	}
+
+	static final AttributeKey<ContextView> CONTEXT_VIEW = AttributeKey.valueOf("$CONTEXT_VIEW");
+
+	/**
+	 * Updates the {@link ContextView} in the channel attributes with this {@link Observation}.
+	 * When there is already {@link Observation} in the {@link ContextView}, then is will be set as a parent
+	 * to this {@link Observation}.
+	 *
+	 * @param channel the channel
+	 * @param observation the {@link Observation}
+	 * @return the previous {@link Observation} when exists otherwise {@code null}
+	 * @since 1.1.1
+	 */
+	@Nullable
+	public static ContextView updateChannelContext(Channel channel, Observation observation) {
+		ContextView parentContextView = channel.attr(CONTEXT_VIEW).get();
+		if (parentContextView != null) {
+			Observation parentObservation = parentContextView.getOrDefault(OBSERVATION_KEY, null);
+			if (parentObservation != null) {
+				observation.parentObservation(parentObservation);
+			}
+			channel.attr(CONTEXT_VIEW).set(Context.of(parentContextView).put(OBSERVATION_KEY, observation));
+		}
+		else {
+			channel.attr(CONTEXT_VIEW).set(Context.of(OBSERVATION_KEY, observation));
+		}
+		return parentContextView;
 	}
 }

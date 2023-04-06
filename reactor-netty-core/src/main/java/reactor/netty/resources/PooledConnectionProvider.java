@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -190,15 +190,34 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			                    .stream()
 			                    .map(e -> {
 			                        Pool<T> pool = e.getValue();
+			                        SocketAddress remoteAddress = e.getKey().holder;
+			                        String id = e.getKey().hashCode() + "";
+			                        PoolFactory<T> poolFactory = poolFactory(remoteAddress);
 			                        if (pool instanceof GracefulShutdownInstrumentedPool) {
 			                            return ((GracefulShutdownInstrumentedPool<T>) pool)
 			                                    .disposeGracefully(disposeTimeout)
 			                                    .onErrorResume(t -> {
 			                                        log.error("Connection pool for [{}] didn't shut down gracefully", e.getKey(), t);
-			                                        return Mono.empty();
+			                                        return Mono.fromRunnable(() -> {
+			                                            if (poolFactory.registrar != null) {
+			                                                poolFactory.registrar.get().deRegisterMetrics(name, id, remoteAddress);
+			                                            }
+			                                            else if (Metrics.isMicrometerAvailable()) {
+			                                                deRegisterDefaultMetrics(id, remoteAddress);
+			                                            }
+			                                        });
 			                                    });
 			                        }
-			                        return pool.disposeLater();
+			                        return pool.disposeLater().then(
+			                                Mono.<Void>fromRunnable(() -> {
+			                                    if (poolFactory.registrar != null) {
+			                                        poolFactory.registrar.get().deRegisterMetrics(name, id, remoteAddress);
+			                                    }
+			                                    else if (Metrics.isMicrometerAvailable()) {
+			                                        deRegisterDefaultMetrics(id, remoteAddress);
+			                                    }
+			                                })
+			                        );
 			                    })
 			                    .collect(Collectors.toList());
 			if (pools.isEmpty()) {
@@ -221,9 +240,20 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		toDispose.forEach(e -> {
 			if (channelPools.remove(e.getKey(), e.getValue())) {
 				if (log.isDebugEnabled()) {
-					log.debug("ConnectionProvider[name={}]: Disposing pool for [{}]", name, e.getKey().fqdn);
+					log.debug("ConnectionProvider[name={}]: Disposing pool for [{}]", name, e.getKey().holder);
 				}
-				e.getValue().dispose();
+				String id = e.getKey().hashCode() + "";
+				PoolFactory<T> poolFactory = poolFactory(address);
+				e.getValue().disposeLater().then(
+						Mono.<Void>fromRunnable(() -> {
+							if (poolFactory.registrar != null) {
+								poolFactory.registrar.get().deRegisterMetrics(name, id, address);
+							}
+							else if (Metrics.isMicrometerAvailable()) {
+								deRegisterDefaultMetrics(id, address);
+							}
+						})
+				).subscribe();
 			}
 		});
 	}
@@ -281,6 +311,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		MicrometerPooledConnectionProviderMeterRegistrar.INSTANCE.registerMetrics(name, id, remoteAddress, metrics);
 	}
 
+	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
+		MicrometerPooledConnectionProviderMeterRegistrar.INSTANCE.deRegisterMetrics(name, id, remoteAddress);
+	}
+
 	final boolean compareAddresses(SocketAddress origin, SocketAddress target) {
 		if (origin.equals(target)) {
 			return true;
@@ -330,7 +364,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			toDispose.forEach(e -> {
 				if (channelPools.remove(e.getKey(), e.getValue())) {
 					if (log.isDebugEnabled()) {
-						log.debug("ConnectionProvider[name={}]: Disposing inactive pool for [{}]", name, e.getKey().fqdn);
+						log.debug("ConnectionProvider[name={}]: Disposing inactive pool for [{}]", name, e.getKey().holder);
 					}
 					e.getValue().dispose();
 				}
@@ -348,8 +382,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					Double.parseDouble(System.getProperty(ReactorNetty.POOL_GET_PERMITS_SAMPLING_RATE, "0"));
 			if (getPermitsSamplingRate > 1d) {
 				DEFAULT_POOL_GET_PERMITS_SAMPLING_RATE = 0;
-				log.warn("Invalid configuration [" + ReactorNetty.POOL_GET_PERMITS_SAMPLING_RATE + "=" + getPermitsSamplingRate +
-						"], the value must be between 0d and 1d (percentage). SamplingAllocationStrategy in not enabled.");
+				if (log.isWarnEnabled()) {
+					log.warn("Invalid configuration [" + ReactorNetty.POOL_GET_PERMITS_SAMPLING_RATE + "=" + getPermitsSamplingRate +
+							"], the value must be between 0d and 1d (percentage). SamplingAllocationStrategy in not enabled.");
+				}
 			}
 			else {
 				DEFAULT_POOL_GET_PERMITS_SAMPLING_RATE = getPermitsSamplingRate;
@@ -362,8 +398,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					Double.parseDouble(System.getProperty(ReactorNetty.POOL_RETURN_PERMITS_SAMPLING_RATE, "0"));
 			if (returnPermitsSamplingRate > 1d) {
 				DEFAULT_POOL_RETURN_PERMITS_SAMPLING_RATE = 0;
-				log.warn("Invalid configuration [" + ReactorNetty.POOL_RETURN_PERMITS_SAMPLING_RATE + "=" + returnPermitsSamplingRate +
-						"], the value must be between 0d and 1d (percentage). SamplingAllocationStrategy is enabled.");
+				if (log.isWarnEnabled()) {
+					log.warn("Invalid configuration [" + ReactorNetty.POOL_RETURN_PERMITS_SAMPLING_RATE + "=" + returnPermitsSamplingRate +
+							"], the value must be between 0d and 1d (percentage). SamplingAllocationStrategy is enabled.");
+				}
 			}
 			else {
 				DEFAULT_POOL_RETURN_PERMITS_SAMPLING_RATE = returnPermitsSamplingRate;
@@ -383,6 +421,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		final Duration disposeTimeout;
 		final BiFunction<Runnable, Duration, Disposable> pendingAcquireTimer;
 		final AllocationStrategy<?> allocationStrategy;
+		final BiPredicate<Connection, ConnectionMetadata> evictionPredicate;
 
 		PoolFactory(ConnectionPoolSpec<?> conf, Duration disposeTimeout) {
 			this(conf, disposeTimeout, null);
@@ -404,6 +443,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			this.disposeTimeout = disposeTimeout;
 			this.pendingAcquireTimer = conf.pendingAcquireTimer;
 			this.allocationStrategy = conf.allocationStrategy;
+			this.evictionPredicate = conf.evictionPredicate;
 		}
 
 		public InstrumentedPool<T> newPool(
@@ -422,27 +462,34 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 				Publisher<T> allocator,
 				@Nullable reactor.pool.AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
 				Function<T, Publisher<Void>> destroyHandler,
-				BiPredicate<T, PooledRefMetadata> evictionPredicate,
+				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate,
 				Function<PoolConfig<T>, InstrumentedPool<T>> poolFactory) {
 			if (disposeTimeout != null) {
-				return newPoolInternal(allocator, destroyHandler, evictionPredicate)
+				return newPoolInternal(allocator, destroyHandler, defaultEvictionPredicate)
 						.build(poolFactory.andThen(InstrumentedPoolDecorators::gracefulShutdown));
 			}
-			return newPoolInternal(allocator, destroyHandler, evictionPredicate).build(poolFactory);
+			return newPoolInternal(allocator, destroyHandler, defaultEvictionPredicate).build(poolFactory);
 		}
 
 		PoolBuilder<T, PoolConfig<T>> newPoolInternal(
 				Publisher<T> allocator,
 				Function<T, Publisher<Void>> destroyHandler,
-				BiPredicate<T, PooledRefMetadata> evictionPredicate) {
+				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate) {
 			PoolBuilder<T, PoolConfig<T>> poolBuilder =
 					PoolBuilder.from(allocator)
 					           .destroyHandler(destroyHandler)
-					           .evictionPredicate(evictionPredicate
-					                   .or((poolable, meta) -> (maxIdleTime != -1 && meta.idleTime() >= maxIdleTime)
-					                           || (maxLifeTime != -1 && meta.lifeTime() >= maxLifeTime)))
 					           .maxPendingAcquire(pendingAcquireMaxCount)
 					           .evictInBackground(evictionInterval);
+
+			if (this.evictionPredicate != null) {
+				poolBuilder = poolBuilder.evictionPredicate(
+						(poolable, meta) -> this.evictionPredicate.test(poolable, new PooledConnectionMetadata(meta)));
+			}
+			else {
+				poolBuilder = poolBuilder.evictionPredicate(defaultEvictionPredicate.or((poolable, meta) ->
+						(maxIdleTime != -1 && meta.idleTime() >= maxIdleTime)
+								|| (maxLifeTime != -1 && meta.lifeTime() >= maxLifeTime)));
+			}
 
 			if (DEFAULT_POOL_GET_PERMITS_SAMPLING_RATE > 0d && DEFAULT_POOL_GET_PERMITS_SAMPLING_RATE <= 1d
 					&& DEFAULT_POOL_RETURN_PERMITS_SAMPLING_RATE > 0d && DEFAULT_POOL_RETURN_PERMITS_SAMPLING_RATE <= 1d) {
@@ -546,13 +593,55 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		}
 	}
 
+	static final class PooledConnectionMetadata implements ConnectionMetadata {
+
+		final PooledRefMetadata delegate;
+
+		PooledConnectionMetadata(PooledRefMetadata delegate) {
+			this.delegate = delegate;
+		}
+
+		@Override
+		public int acquireCount() {
+			return delegate.acquireCount();
+		}
+
+		@Override
+		public long idleTime() {
+			return delegate.idleTime();
+		}
+
+		@Override
+		public long lifeTime() {
+			return delegate.lifeTime();
+		}
+
+		@Override
+		public long releaseTimestamp() {
+			return delegate.releaseTimestamp();
+		}
+
+		@Override
+		public long allocationTimestamp() {
+			return delegate.allocationTimestamp();
+		}
+	}
+
 	static final class PoolKey {
 		final String fqdn;
 		final SocketAddress holder;
 		final int pipelineKey;
 
 		PoolKey(SocketAddress holder, int pipelineKey) {
-			this.fqdn = holder.toString();
+			String fqdn = null;
+			if (holder instanceof InetSocketAddress) {
+				InetSocketAddress inetSocketAddress = (InetSocketAddress) holder;
+				if (!inetSocketAddress.isUnresolved()) {
+					// Use FQDN as a tie-breaker over IP's
+					fqdn = inetSocketAddress.getHostString().toLowerCase();
+				}
+			}
+			this.fqdn = fqdn;
 			this.holder = holder;
 			this.pipelineKey = pipelineKey;
 		}
@@ -573,7 +662,11 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 
 		@Override
 		public int hashCode() {
-			return Objects.hash(fqdn, holder, pipelineKey);
+			int result = 1;
+			result = 31 * result + Objects.hashCode(fqdn);
+			result = 31 * result + Objects.hashCode(holder);
+			result = 31 * result + pipelineKey;
+			return result;
 		}
 	}
 }

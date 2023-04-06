@@ -435,6 +435,60 @@ include::{examplesdir}/metrics/custom/Application.java[lines=18..35]
 <1> Enables HTTP client metrics and provides {javadoc}/reactor/netty/http/client/HttpClientMetricsRecorder.html[`HttpClientMetricsRecorder`] implementation.
 ====
 
+== Tracing
+The HTTP client supports built-in integration with https://micrometer.io/docs/tracing[`Micrometer Tracing`].
+
+The following table provides information for the HTTP client spans:
+
+[width="100%",options="header"]
+|=======
+| contextual name | description
+| HTTP <HTTP METHOD> | Information and total time for the request.
+See <<observability-spans-http-client-response-span>>.
+| hostname resolution | Information and time spent for resolving the address.
+See <<observability-spans-hostname-resolution-span>>.
+| connect | Information and time spent for connecting to the remote address.
+See <<observability-spans-connect-span>>.
+| tls handshake | Information and time spent for TLS handshake.
+See <<observability-spans-tls-handshake-span>>.
+|=======
+
+The following example enables that integration. This concrete example uses `Brave` and reports the information to `Zipkin`.
+See the https://micrometer.io/docs/tracing#_micrometer_tracing_opentelemetry_setup[`Micrometer Tracing`] documentation for `OpenTelemetry` setup.
+
+====
+[source,java,indent=0]
+.{examplesdir}/tracing/Application.java
+----
+include::{examplesdir}/tracing/Application.java[lines=18..90]
+----
+<1> Initializes Brave, Zipkin, and the Observation registry.
+<2> Templated URIs are used as an URI tag value when possible.
+<3> Enables the built-in integration with Micrometer.
+====
+
+The result in `Zipkin` looks like:
+
+image::images/http-client-tracing.png[]
+
+=== Access Current Observation
+Project Micrometer provides https://micrometer.io/docs/contextPropagation[`a library`] that assists with context propagation across
+different types of context mechanisms such as `ThreadLocal`, `Reactor Context` and others.
+
+The following example shows how to use this library in a custom `ChannelHandler`:
+
+====
+[source,java,indent=0]
+.{examplesdir}/tracing/custom/Application.java
+----
+include::{examplesdir}/tracing/custom/Application.java[lines=18..85]
+----
+<1> Initializes Brave, Zipkin, and the Observation registry.
+<2> Templated URIs are used as an URI tag value when possible.
+<3> Enables the built-in integration with Micrometer.
+<4> Custom `ChannelHandler` that uses context propagation library.
+====
+
 == Unix Domain Sockets
 The `HTTP` client supports Unix Domain Sockets (UDS) when native transport is in use.
 
@@ -483,6 +537,7 @@ Default: 0.
 | `completeOncePreferredResolved` | When this setting is enabled, the resolver notifies as soon as all queries for the preferred address type are complete.
 When this setting is disabled, the resolver notifies when all possible address types are complete.
 This configuration is applicable for `DnsNameResolver#resolveAll(String)`. By default, this setting is enabled.
+| `dnsAddressResolverGroupProvider` | Sets a custom function to create a `DnsAddressResolverGroup` given a `DnsNameResolverBuilder`
 | `disableOptionalRecord` | Disables the automatic inclusion of an optional record that tries to give a hint to the remote DNS server about
 how much data the resolver can read per response. By default, this setting is enabled.
 | `disableRecursionDesired` | Specifies whether this resolver has to send a DNS query with the recursion desired (RD) flag set.
@@ -495,6 +550,7 @@ Default: {nettyjavadoc}/io/netty/resolver/DefaultHostsFileEntriesResolver.html[`
 Default: -1 (to determine the value from the OS on Unix or use a value of 1 otherwise).
 | `queryTimeout` | Sets the timeout of each DNS query performed by this resolver (resolution: milliseconds). Default: 5000.
 | `resolvedAddressTypes` | The list of the protocol families of the resolved address.
+| `resolveCache` | The cache to use to store resolved DNS entries.
 | `bindAddressSupplier` | The supplier of the local address to bind to.
 | `roundRobinSelection` | Enables an
 {nettyjavadoc}/io/netty/resolver/AddressResolverGroup.html[`AddressResolverGroup`] of

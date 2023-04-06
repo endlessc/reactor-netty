@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -214,18 +214,20 @@ class HttpClientConnect extends HttpClient {
 				if (handler.toURI.isSecure()) {
 					if (_config.sslProvider == null) {
 						_config = new HttpClientConfig(config);
-						if (_config.checkProtocol(HttpClientConfig.h2c) && _config.protocols.length > 1) {
-							removeIncompatibleProtocol(_config, HttpProtocol.H2C);
-						}
 						_config.sslProvider = HttpClientSecure.defaultSslProvider(_config);
 					}
 
 					if (_config.checkProtocol(HttpClientConfig.h2c)) {
-						sink.error(new IllegalArgumentException(
-								"Configured H2 Clear-Text protocol with TLS. " +
-										"Use the non Clear-Text H2 protocol via HttpClient#protocol or disable TLS " +
-										"via HttpClient#noSSL()"));
-						return;
+						if (_config.protocols.length > 1) {
+							removeIncompatibleProtocol(_config, HttpProtocol.H2C);
+						}
+						else {
+							sink.error(new IllegalArgumentException(
+									"Configured H2 Clear-Text protocol with TLS. " +
+											"Use the non Clear-Text H2 protocol via HttpClient#protocol or disable TLS " +
+											"via HttpClient#noSSL()"));
+							return;
+						}
 					}
 
 					if (_config.sslProvider.getDefaultConfigurationType() == null) {
@@ -242,17 +244,19 @@ class HttpClientConnect extends HttpClient {
 				else {
 					if (_config.sslProvider != null) {
 						_config = new HttpClientConfig(config);
-						if (_config.checkProtocol(HttpClientConfig.h2) && _config.protocols.length > 1) {
-							removeIncompatibleProtocol(_config, HttpProtocol.H2);
-						}
 						_config.sslProvider = null;
 					}
 
 					if (_config.checkProtocol(HttpClientConfig.h2)) {
-						sink.error(new IllegalArgumentException(
-								"Configured H2 protocol without TLS. Use H2 Clear-Text " +
-										"protocol via HttpClient#protocol or configure TLS via HttpClient#secure"));
-						return;
+						if (_config.protocols.length > 1) {
+							removeIncompatibleProtocol(_config, HttpProtocol.H2);
+						}
+						else {
+							sink.error(new IllegalArgumentException(
+									"Configured H2 protocol without TLS. Use H2 Clear-Text " +
+											"protocol via HttpClient#protocol or configure TLS via HttpClient#secure"));
+							return;
+						}
 					}
 				}
 
@@ -350,7 +354,7 @@ class HttpClientConnect extends HttpClient {
 				HttpClientOperations ops = connection.as(HttpClientOperations.class);
 				if (ops != null && ops.hasSentHeaders()) {
 					// In some cases the channel close event may be delayed and thus the connection to be
-					// returned to the pool and later the eviction functionality to remote it from the pool.
+					// returned to the pool and later the eviction functionality to remove it from the pool.
 					// In some rare cases the connection might be acquired immediately, before the channel close
 					// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
 					// errors.
@@ -368,7 +372,7 @@ class HttpClientConnect extends HttpClient {
 				else {
 					if (ops != null) {
 						// In some cases the channel close event may be delayed and thus the connection to be
-						// returned to the pool and later the eviction functionality to remote it from the pool.
+						// returned to the pool and later the eviction functionality to remove it from the pool.
 						// In some rare cases the connection might be acquired immediately, before the channel close
 						// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
 						// errors.

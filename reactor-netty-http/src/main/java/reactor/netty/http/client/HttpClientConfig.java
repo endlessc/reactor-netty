@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,6 +73,8 @@ import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.Http2SettingsSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.HttpResources;
+import reactor.netty.http.logging.HttpMessageLogFactory;
+import reactor.netty.http.logging.ReactorNettyHttpMessageLogFactory;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.SslProvider;
@@ -85,6 +87,7 @@ import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.ReactorNetty.setChannelContext;
 import static reactor.netty.http.client.Http2ConnectionProvider.OWNER;
 
 /**
@@ -107,12 +110,18 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 	@Override
 	public int channelHash() {
-		return Objects.hash(super.channelHash(), acceptGzip, decoder, _protocols, sslProvider, uriTagValue);
+		int result = super.channelHash();
+		result = 31 * result + Boolean.hashCode(acceptGzip);
+		result = 31 * result + Objects.hashCode(decoder);
+		result = 31 * result + _protocols;
+		result = 31 * result + Objects.hashCode(sslProvider);
+		result = 31 * result + Objects.hashCode(uriTagValue);
+		return result;
 	}
 
 	@Override
 	public ChannelOperations.OnSetup channelOperationsProvider() {
-		return (ch, c, msg) -> new HttpClientOperations(ch, c, cookieEncoder, cookieDecoder);
+		return (ch, c, msg) -> new HttpClientOperations(ch, c, cookieEncoder, cookieDecoder, httpMessageLogFactory);
 	}
 
 	@Override
@@ -124,7 +133,9 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 * Return the configured {@link ClientCookieDecoder} or the default {@link ClientCookieDecoder#STRICT}.
 	 *
 	 * @return the configured {@link ClientCookieDecoder} or the default {@link ClientCookieDecoder#STRICT}
+	 * @deprecated as of 1.1.0. This will be removed in 2.0.0 as Netty 5 supports only strict validation.
 	 */
+	@Deprecated
 	public ClientCookieDecoder cookieDecoder() {
 		return cookieDecoder;
 	}
@@ -133,7 +144,9 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 * Return the configured {@link ClientCookieEncoder} or the default {@link ClientCookieEncoder#STRICT}.
 	 *
 	 * @return the configured {@link ClientCookieEncoder} or the default {@link ClientCookieEncoder#STRICT}
+	 * @deprecated as of 1.1.0. This will be removed in 2.0.0 as Netty 5 supports only strict validation.
 	 */
+	@Deprecated
 	public ClientCookieEncoder cookieEncoder() {
 		return cookieEncoder;
 	}
@@ -313,6 +326,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate;
 	HttpHeaders headers;
 	Http2SettingsSpec http2Settings;
+	HttpMessageLogFactory httpMessageLogFactory;
 	HttpMethod method;
 	HttpProtocol[] protocols;
 	int _protocols;
@@ -334,6 +348,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		this.cookieEncoder = ClientCookieEncoder.STRICT;
 		this.decoder = new HttpResponseDecoderSpec();
 		this.headers = new DefaultHttpHeaders();
+		this.httpMessageLogFactory = ReactorNettyHttpMessageLogFactory.INSTANCE;
 		this.method = HttpMethod.GET;
 		this.protocols = new HttpProtocol[]{HttpProtocol.HTTP11};
 		this._protocols = h11;
@@ -360,6 +375,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		this.followRedirectPredicate = parent.followRedirectPredicate;
 		this.headers = parent.headers;
 		this.http2Settings = parent.http2Settings;
+		this.httpMessageLogFactory = parent.httpMessageLogFactory;
 		this.method = parent.method;
 		this.protocols = parent.protocols;
 		this._protocols = parent._protocols;
@@ -596,7 +612,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 		p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.H2Flush, new FlushConsolidationHandler(1024, true))
 		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpCodec, http2FrameCodecBuilder.build())
-		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.H2MultiplexHandler, new Http2MultiplexHandler(new H2Codec(acceptGzip)))
+		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.H2MultiplexHandler, new Http2MultiplexHandler(H2InboundStreamHandler.INSTANCE))
 		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpTrafficHandler, new HttpTrafficHandler(observer));
 	}
 
@@ -774,12 +790,12 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			}
 			if (responseTimeoutHandler != null) {
 				pipeline.remove(NettyPipeline.ResponseTimeoutHandler);
-				http2MultiplexHandler = new Http2MultiplexHandler(new H2Codec(opsFactory, acceptGzip),
+				http2MultiplexHandler = new Http2MultiplexHandler(H2InboundStreamHandler.INSTANCE,
 						new H2Codec(owner, obs, opsFactory, acceptGzip, metricsRecorder,
 								responseTimeoutHandler.getReaderIdleTimeInMillis(), uriTagValue));
 			}
 			else {
-				http2MultiplexHandler = new Http2MultiplexHandler(new H2Codec(opsFactory, acceptGzip),
+				http2MultiplexHandler = new Http2MultiplexHandler(H2InboundStreamHandler.INSTANCE,
 						new H2Codec(owner, obs, opsFactory, acceptGzip, metricsRecorder, uriTagValue));
 			}
 			pipeline.addAfter(ctx.name(), NettyPipeline.HttpCodec, http2FrameCodec)
@@ -802,22 +818,10 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		final long responseTimeoutMillis;
 		final Function<String, String> uriTagValue;
 
-		H2Codec(boolean acceptGzip) {
-			// Handle inbound streams (server pushes)
-			// TODO this is not supported
-			this(null, null, null, acceptGzip, null, -1, null);
-		}
-
-		H2Codec(@Nullable ChannelOperations.OnSetup opsFactory, boolean acceptGzip) {
-			// Handle inbound streams (server pushes)
-			// TODO this is not supported
-			this(null, null, opsFactory, acceptGzip, null, -1, null);
-		}
-
 		H2Codec(
 				@Nullable Http2ConnectionProvider.DisposableAcquire owner,
 				@Nullable ConnectionObserver observer,
-				@Nullable ChannelOperations.OnSetup opsFactory,
+				ChannelOperations.OnSetup opsFactory,
 				boolean acceptGzip,
 				@Nullable ChannelMetricsRecorder metricsRecorder,
 				@Nullable Function<String, String> uriTagValue) {
@@ -828,7 +832,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		H2Codec(
 				@Nullable Http2ConnectionProvider.DisposableAcquire owner,
 				@Nullable ConnectionObserver observer,
-				@Nullable ChannelOperations.OnSetup opsFactory,
+				ChannelOperations.OnSetup opsFactory,
 				boolean acceptGzip,
 				@Nullable ChannelMetricsRecorder metricsRecorder,
 				long responseTimeoutMillis,
@@ -847,6 +851,9 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		protected void initChannel(Channel ch) {
 			if (observer != null && opsFactory != null && owner != null) {
 				Http2ConnectionProvider.registerClose(ch, owner);
+				if (!owner.currentContext().isEmpty()) {
+					setChannelContext(ch, owner.currentContext());
+				}
 				addStreamHandlers(ch, observer.then(new StreamConnectionObserver(owner.currentContext())), opsFactory,
 						acceptGzip, metricsRecorder, responseTimeoutMillis, uriTagValue);
 			}
@@ -854,6 +861,19 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 				// Handle server pushes (inbound streams)
 				// TODO this is not supported
 			}
+		}
+	}
+
+	/**
+	 * Handle inbound streams (server pushes).
+	 * This feature is not supported and disabled.
+	 */
+	static final class H2InboundStreamHandler extends ChannelHandlerAdapter {
+		static final ChannelHandler INSTANCE = new H2InboundStreamHandler();
+
+		@Override
+		public boolean isSharable() {
+			return true;
 		}
 	}
 

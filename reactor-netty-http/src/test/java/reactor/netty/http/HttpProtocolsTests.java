@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,15 +18,25 @@ package reactor.netty.http;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.AppenderBase;
 import ch.qos.logback.core.read.ListAppender;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2Connection;
+import io.netty.handler.codec.http2.Http2DataFrame;
 import io.netty.handler.codec.http2.Http2FrameCodec;
+import io.netty.handler.codec.http2.Http2HeadersFrame;
+import io.netty.handler.codec.http2.Http2SettingsAckFrame;
+import io.netty.handler.codec.http2.Http2SettingsFrame;
 import io.netty.handler.codec.http2.Http2StreamChannel;
+import io.netty.handler.ssl.SslHandshakeCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.ReadTimeoutHandler;
@@ -42,11 +52,14 @@ import reactor.core.scheduler.Schedulers;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.ByteBufFlux;
 import reactor.netty.Connection;
+import reactor.netty.LogTracker;
 import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientConfig;
+import reactor.netty.http.client.HttpClientResponse;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerConfig;
+import reactor.netty.http.server.logging.AccessLog;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.test.StepVerifier;
 import reactor.util.function.Tuple2;
@@ -55,18 +68,21 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static reactor.netty.ConnectionObserver.State.CONNECTED;
 
 /**
  * Test a combination of {@link HttpServer} + {@link HttpProtocol}
@@ -340,6 +356,60 @@ class HttpProtocolsTests extends BaseHttpTest {
 	@ParameterizedCompatibleCombinationsTest
 	void testAccessLog(HttpServer server, HttpClient client) throws Exception {
 		disposableServer =
+				server.route(r -> r.get("/", (req, resp) -> {
+				          resp.withConnection(conn -> {
+				              ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
+				              resp.header(NettyPipeline.AccessLogHandler, handler != null ? "FOUND" : "NOT FOUND");
+				          });
+				          return resp.send();
+				      }))
+				      .accessLog(true)
+				      .bindNow();
+
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		boolean isHttp11 = (serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11);
+		String okMessage = "GET / HTTP/" + (isHttp11 ? "1.1" : "2.0") + "\" 200";
+		String notFoundMessage = "GET /not_found HTTP/" + (isHttp11 ? "1.1" : "2.0") + "\" 404";
+		try (LogTracker logTracker = new LogTracker("reactor.netty.http.server.AccessLog", okMessage, notFoundMessage)) {
+			doTestAccessLog(client, "/",
+					res -> Mono.just(res.responseHeaders().get(NettyPipeline.AccessLogHandler)), "FOUND");
+
+			doTestAccessLog(client, "/not_found", res -> Mono.just(res.status().toString()), "404 Not Found");
+
+			assertThat(logTracker.latch.await(5, TimeUnit.SECONDS)).isTrue();
+
+			assertThat(logTracker.actualMessages).hasSize(2);
+			List<String> actual = new ArrayList<>(2);
+			logTracker.actualMessages.forEach(e -> {
+				String msg = e.getFormattedMessage();
+				int startInd = msg.indexOf('"') + 1;
+				int endInd = msg.lastIndexOf('"') + 5;
+				actual.add(e.getFormattedMessage().substring(startInd, endInd));
+			});
+			assertThat(actual).hasSameElementsAs(Arrays.asList(okMessage, notFoundMessage));
+		}
+	}
+
+	private void doTestAccessLog(HttpClient client, String uri,
+			Function<HttpClientResponse, Mono<String>> response, String expectation) {
+		client.port(disposableServer.port())
+		      .get()
+		      .uri(uri)
+		      .responseSingle((res, bytes) -> response.apply(res))
+		      .as(StepVerifier::create)
+		      .expectNext(expectation)
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void testAccessLogWithForwardedHeader(HttpServer server, HttpClient client) throws Exception {
+		Function<SocketAddress, String> applyAddress = addr ->
+				addr instanceof InetSocketAddress ? ((InetSocketAddress) addr).getHostString() : "-";
+
+		disposableServer =
 				server.handle((req, resp) -> {
 				          resp.withConnection(conn -> {
 				              ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
@@ -347,36 +417,28 @@ class HttpProtocolsTests extends BaseHttpTest {
 				          });
 				          return resp.send();
 				      })
-				      .accessLog(true)
+				      .forwarded(true)
+				      .accessLog(true, args -> AccessLog.create(
+				          "{} {} {}",
+				          applyAddress.apply(args.connectionInformation().remoteAddress()),
+				          applyAddress.apply(args.connectionInformation().hostAddress()),
+				          args.connectionInformation().scheme()))
 				      .bindNow();
 
-		AccessLogAppender accessLogAppender = new AccessLogAppender();
-		accessLogAppender.start();
-		Logger accessLogger = (Logger) LoggerFactory.getLogger("reactor.netty.http.server.AccessLog");
-		AtomicReference<String> protocol = new AtomicReference<>();
-		try {
-			accessLogger.addAppender(accessLogAppender);
-
+		String expectedLogRecord = "192.0.2.60 203.0.113.43 http";
+		try (LogTracker logTracker = new LogTracker("reactor.netty.http.server.AccessLog", expectedLogRecord)) {
 			client.port(disposableServer.port())
+			      .doOnRequest((req, cnx) -> req.addHeader("Forwarded",
+			              "for=192.0.2.60;proto=http;host=203.0.113.43"))
 			      .get()
 			      .uri("/")
-			      .responseSingle((res, bytes) -> {
-			          protocol.set(res.responseHeaders().get("x-http2-stream-id") != null ? "2.0" : "1.1");
-			          return Mono.just(res.responseHeaders().get(NettyPipeline.AccessLogHandler));
-			      })
+			      .responseSingle((res, bytes) -> Mono.just(res.responseHeaders().get(NettyPipeline.AccessLogHandler)))
 			      .as(StepVerifier::create)
 			      .expectNext("FOUND")
 			      .expectComplete()
 			      .verify(Duration.ofSeconds(5));
 
-			assertThat(accessLogAppender.latch.await(5, TimeUnit.SECONDS)).isTrue();
-
-			assertThat(accessLogAppender.list).hasSize(1);
-			assertThat(accessLogAppender.list.get(0).getFormattedMessage()).contains("GET / HTTP/" + protocol.get() + "\" 200");
-		}
-		finally {
-			accessLogger.detachAppender(accessLogAppender);
-			accessLogAppender.stop();
+			assertThat(logTracker.latch.await(5, TimeUnit.SECONDS)).isTrue();
 		}
 	}
 
@@ -395,8 +457,7 @@ class HttpProtocolsTests extends BaseHttpTest {
 		doTestResponseTimeout(localClient, 200);
 	}
 
-	private void doTestResponseTimeout(HttpClient client, long expectedTimeout)
-			throws Exception {
+	private static void doTestResponseTimeout(HttpClient client, long expectedTimeout) throws Exception {
 		AtomicBoolean onRequest = new AtomicBoolean();
 		AtomicBoolean onResponse = new AtomicBoolean();
 		AtomicBoolean onDisconnected = new AtomicBoolean();
@@ -468,7 +529,7 @@ class HttpProtocolsTests extends BaseHttpTest {
 		doTestConcurrentRequests(client.port(disposableServer.port()));
 	}
 
-	private void doTestConcurrentRequests(HttpClient client) {
+	private static void doTestConcurrentRequests(HttpClient client) {
 		List<String> responses =
 				Flux.range(0, 10)
 				    .flatMapDelayError(i -> client.get()
@@ -549,7 +610,7 @@ class HttpProtocolsTests extends BaseHttpTest {
 		doTestTrailerHeaders(client.port(disposableServer.port()), "empty", "testTrailerHeadersFullResponse");
 	}
 
-	private void doTestTrailerHeaders(HttpClient client, String expectedHeaderValue, String expectedResponse) {
+	private static void doTestTrailerHeaders(HttpClient client, String expectedHeaderValue, String expectedResponse) {
 		client.get()
 		      .uri("/")
 		      .responseSingle((res, bytes) -> bytes.asString().zipWith(res.trailerHeaders()))
@@ -569,22 +630,20 @@ class HttpProtocolsTests extends BaseHttpTest {
 
 		disposableServer =
 				server.idleTimeout(Duration.ofSeconds(60))
-						.route(routes ->
-								routes.post("/echo", (req, res) -> res.send(req.receive().retain())))
-						.bindNow();
+				      .route(routes ->
+				              routes.post("/echo", (req, res) -> res.send(req.receive().retain())))
+				      .bindNow();
 
-		StepVerifier.create(
-						client.port(disposableServer.port())
-								.post()
-								.uri("/echo")
-								.send(ByteBufFlux.fromString(Mono.just("Hello world!")))
-								.responseContent()
-								.aggregate()
-								.asString()
-								.timeout(Duration.ofSeconds(10))
-				)
-				.expectNext("Hello world!")
-				.verifyComplete();
+		StepVerifier.create(client.port(disposableServer.port())
+		                          .post()
+		                          .uri("/echo")
+		                          .send(ByteBufFlux.fromString(Mono.just("Hello world!")))
+		                          .responseContent()
+		                          .aggregate()
+		                          .asString()
+		                          .timeout(Duration.ofSeconds(10)))
+		            .expectNext("Hello world!")
+		            .verifyComplete();
 
 		try {
 			// Wait till all logs are flushed
@@ -595,15 +654,38 @@ class HttpProtocolsTests extends BaseHttpTest {
 		}
 
 		// ensure no WARN with error
-		assertThat(listAppender.list)
-				.noneMatch(event -> event.getLevel() == Level.WARN);
+		assertThat(listAppender.list).noneMatch(event -> event.getLevel() == Level.WARN);
 	}
 
 	@ParameterizedCompatibleCombinationsTest
 	void testIdleTimeout(HttpServer server, HttpClient client) throws Exception {
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+
 		CountDownLatch latch = new CountDownLatch(1);
+		IdleTimeoutTestChannelInboundHandler customHandler = new IdleTimeoutTestChannelInboundHandler();
 		disposableServer =
 				server.idleTimeout(Duration.ofMillis(500))
+				      .doOnChannelInit((obs, ch, addr) -> {
+				          if (((serverProtocols.length == 1 && serverProtocols[0] != HttpProtocol.HTTP11) ||
+				                  (clientProtocols.length == 1 && clientProtocols[0] != HttpProtocol.HTTP11)) &&
+				                  ch.pipeline().get(NettyPipeline.IdleTimeoutHandler) != null) {
+				              ch.pipeline().addAfter(NettyPipeline.IdleTimeoutHandler, "testIdleTimeout", customHandler);
+				          }
+				          else if (serverProtocols.length == 2 && serverProtocols[1] == HttpProtocol.H2) {
+				              ch.pipeline().addBefore(NettyPipeline.ReactiveBridge, "testIdleTimeout1",
+				                      new IdleTimeoutTest1ChannelInboundHandler(customHandler));
+				          }
+				      })
+				      .childObserve((conn, state) -> {
+				          Channel channel = conn.channel();
+				          if (state == CONNECTED &&
+				                  !(channel instanceof Http2StreamChannel) &&
+				                  channel.pipeline().get(NettyPipeline.IdleTimeoutHandler) != null &&
+				                  channel.pipeline().get("testIdleTimeout") == null) {
+				              channel.pipeline().addAfter(NettyPipeline.IdleTimeoutHandler, "testIdleTimeout", customHandler);
+				          }
+				      })
 				      .route(routes ->
 				          routes.post("/echo", (req, res) ->
 				              res.withConnection(conn -> {
@@ -646,17 +728,71 @@ class HttpProtocolsTests extends BaseHttpTest {
 		assertThat(latch.await(10, TimeUnit.SECONDS)).isTrue();
 
 		assertThat(goAwayReceived.await(10, TimeUnit.SECONDS)).isTrue();
+
+		assertThat(customHandler.latch.await(10, TimeUnit.SECONDS)).isTrue();
+
+		if ((serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11)) {
+			assertThat(customHandler.list).hasSize(3);
+			assertThat(customHandler.list.get(0)).isInstanceOf(HttpRequest.class);
+			assertThat(customHandler.list.get(1)).isInstanceOf(HttpContent.class);
+			assertThat(customHandler.list.get(2)).isInstanceOf(LastHttpContent.class);
+		}
+		else if (serverProtocols.length == 1 || clientProtocols.length == 1 ||
+				(serverProtocols.length == 2 && clientProtocols.length == 2 &&
+						serverProtocols[1] == HttpProtocol.H2 && clientProtocols[1] == HttpProtocol.H2)) {
+			assertThat(customHandler.list).hasSize(5);
+			assertThat(customHandler.list.get(0)).isInstanceOf(Http2SettingsFrame.class);
+			assertThat(customHandler.list.get(1)).isInstanceOf(Http2SettingsAckFrame.class);
+			assertThat(customHandler.list.get(2)).isInstanceOf(Http2HeadersFrame.class);
+			assertThat(customHandler.list.get(3)).isInstanceOf(Http2DataFrame.class);
+			assertThat(customHandler.list.get(4)).isInstanceOf(Http2DataFrame.class);
+		}
+		else if (clientProtocols.length == 2 && clientProtocols[1] == HttpProtocol.H2C) {
+			assertThat(customHandler.list).hasSize(4);
+			assertThat(customHandler.list.get(0)).isInstanceOf(Http2HeadersFrame.class);
+			assertThat(customHandler.list.get(1)).isInstanceOf(Http2DataFrame.class);
+			assertThat(customHandler.list.get(2)).isInstanceOf(Http2SettingsFrame.class);
+			assertThat(customHandler.list.get(3)).isInstanceOf(Http2SettingsAckFrame.class);
+		}
 	}
 
-	static final class AccessLogAppender extends AppenderBase<ILoggingEvent> {
+	static final class IdleTimeoutTestChannelInboundHandler extends ChannelInboundHandlerAdapter {
 
 		final CountDownLatch latch = new CountDownLatch(1);
-		final List<ILoggingEvent> list = new ArrayList<>();
+		final List<Object> list = new ArrayList<>();
 
 		@Override
-		protected void append(ILoggingEvent eventObject) {
-			list.add(eventObject);
+		public void channelInactive(ChannelHandlerContext ctx) {
 			latch.countDown();
+			ctx.fireChannelInactive();
+		}
+
+		@Override
+		public void channelRead(ChannelHandlerContext ctx, Object msg) {
+			list.add(msg);
+			ctx.fireChannelRead(msg);
+		}
+	}
+
+	static final class IdleTimeoutTest1ChannelInboundHandler extends ChannelInboundHandlerAdapter {
+
+		final IdleTimeoutTestChannelInboundHandler channelHandler;
+
+		IdleTimeoutTest1ChannelInboundHandler(IdleTimeoutTestChannelInboundHandler channelHandler) {
+			this.channelHandler = channelHandler;
+		}
+
+		@Override
+		public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+			ChannelPipeline pipeline = ctx.channel().pipeline();
+			if (evt instanceof SslHandshakeCompletionEvent &&
+					pipeline.get(NettyPipeline.IdleTimeoutHandler) != null &&
+					pipeline.get("testIdleTimeout") == null) {
+				pipeline.remove(this);
+				pipeline.addAfter(NettyPipeline.IdleTimeoutHandler, "testIdleTimeout", channelHandler);
+			}
+			ctx.fireUserEventTriggered(evt);
 		}
 	}
 }

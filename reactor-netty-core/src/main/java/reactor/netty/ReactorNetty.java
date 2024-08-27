@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -67,7 +67,7 @@ import reactor.util.context.ContextView;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Internal helpers for reactor-netty contracts
+ * Internal helpers for reactor-netty contracts.
  *
  * @author Stephane Maldini
  */
@@ -85,7 +85,7 @@ public final class ReactorNetty {
 
 	/**
 	 * Default worker thread count, fallback to available processor
-	 * (but with a minimum value of 4)
+	 * (but with a minimum value of 4).
 	 */
 	public static final String IO_WORKER_COUNT = "reactor.netty.ioWorkerCount";
 	/**
@@ -99,7 +99,7 @@ public final class ReactorNetty {
 	public static final String IO_SELECT_COUNT = "reactor.netty.ioSelectCount";
 	/**
 	 * Default worker thread count for UDP, fallback to available processor
-	 * (but with a minimum value of 4)
+	 * (but with a minimum value of 4).
 	 */
 	public static final String UDP_IO_THREAD_COUNT = "reactor.netty.udp.ioThreadCount";
 	/**
@@ -115,7 +115,7 @@ public final class ReactorNetty {
 
 	/**
 	 * Default value whether the native transport (epoll, kqueue) will be preferred,
-	 * fallback it will be preferred when available
+	 * fallback it will be preferred when available.
 	 */
 	public static final String NATIVE = "reactor.netty.native";
 
@@ -172,17 +172,17 @@ public final class ReactorNetty {
 
 
 	/**
-	 * Default SSL handshake timeout (milliseconds), fallback to 10 seconds
+	 * Default SSL handshake timeout (milliseconds), fallback to 10 seconds.
 	 */
 	public static final String SSL_HANDSHAKE_TIMEOUT = "reactor.netty.tcp.sslHandshakeTimeout";
 	/**
 	 * Default value whether the SSL debugging on the client side will be enabled/disabled,
-	 * fallback to SSL debugging disabled
+	 * fallback to SSL debugging disabled.
 	 */
 	public static final String SSL_CLIENT_DEBUG = "reactor.netty.tcp.ssl.client.debug";
 	/**
 	 * Default value whether the SSL debugging on the server side will be enabled/disabled,
-	 * fallback to SSL debugging disabled
+	 * fallback to SSL debugging disabled.
 	 */
 	public static final String SSL_SERVER_DEBUG = "reactor.netty.tcp.ssl.server.debug";
 
@@ -194,9 +194,14 @@ public final class ReactorNetty {
 	public static final String ACCESS_LOG_ENABLED = "reactor.netty.http.server.accessLogEnabled";
 
 	/**
-	 *  Specifies the zone id used by the access log
+	 *  Specifies the zone id used by the access log.
 	 */
 	public static final ZoneId ZONE_ID_SYSTEM = ZoneId.systemDefault();
+
+	/**
+	 * Default prefetch size ({@link Subscription#request(long)}) for data stream Publisher, fallback to 128.
+	 */
+	public static final String REACTOR_NETTY_SEND_MAX_PREFETCH_SIZE = "reactor.netty.send.maxPrefetchSize";
 
 	/**
 	 * Try to call {@link ReferenceCounted#release()} if the specified message implements {@link ReferenceCounted}.
@@ -213,7 +218,7 @@ public final class ReactorNetty {
 	}
 
 	/**
-	 * Append channel ID to a log message for correlated traces
+	 * Append channel ID to a log message for correlated traces.
 	 * @param channel current channel associated with the msg
 	 * @param msg the log msg
 	 * @return a formatted msg
@@ -795,7 +800,7 @@ public final class ReactorNetty {
 		}
 	}
 
-	final static class OutboundIdleStateHandler extends IdleStateHandler {
+	static final class OutboundIdleStateHandler extends IdleStateHandler {
 
 		final Runnable onWriteIdle;
 
@@ -814,7 +819,7 @@ public final class ReactorNetty {
 		}
 	}
 
-	final static class InboundIdleStateHandler extends IdleStateHandler {
+	static final class InboundIdleStateHandler extends IdleStateHandler {
 
 		final Runnable onReadIdle;
 
@@ -833,35 +838,35 @@ public final class ReactorNetty {
 		}
 	}
 
-	final static ConnectionObserver.State CONNECTED = new ConnectionObserver.State() {
+	static final ConnectionObserver.State CONNECTED = new ConnectionObserver.State() {
 		@Override
 		public String toString() {
 			return "[connected]";
 		}
 	};
 
-	final static ConnectionObserver.State ACQUIRED = new ConnectionObserver.State() {
+	static final ConnectionObserver.State ACQUIRED = new ConnectionObserver.State() {
 		@Override
 		public String toString() {
 			return "[acquired]";
 		}
 	};
 
-	final static ConnectionObserver.State CONFIGURED = new ConnectionObserver.State() {
+	static final ConnectionObserver.State CONFIGURED = new ConnectionObserver.State() {
 		@Override
 		public String toString() {
 			return "[configured]";
 		}
 	};
 
-	final static ConnectionObserver.State RELEASED = new ConnectionObserver.State() {
+	static final ConnectionObserver.State RELEASED = new ConnectionObserver.State() {
 		@Override
 		public String toString() {
 			return "[released]";
 		}
 	};
 
-	final static ConnectionObserver.State DISCONNECTING = new ConnectionObserver.State() {
+	static final ConnectionObserver.State DISCONNECTING = new ConnectionObserver.State() {
 		@Override
 		public String toString() {
 			return "[disconnecting]";
@@ -870,7 +875,7 @@ public final class ReactorNetty {
 
 	/**
 	 * A handler that can be used to extract {@link ByteBuf} out of {@link ByteBufHolder},
-	 * optionally also outputting additional messages
+	 * optionally also outputting additional messages.
 	 *
 	 * @author Stephane Maldini
 	 * @author Simon Baslé

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,9 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.handler.codec.http2.Http2Connection;
 import io.netty.handler.codec.http2.Http2DataFrame;
@@ -45,20 +47,26 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mockito;
+import org.reactivestreams.Publisher;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Signal;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.ByteBufFlux;
+import reactor.netty.ByteBufMono;
 import reactor.netty.Connection;
 import reactor.netty.LogTracker;
 import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientConfig;
 import reactor.netty.http.client.HttpClientResponse;
+import reactor.netty.http.client.PrematureCloseException;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerConfig;
+import reactor.netty.http.server.HttpServerRequest;
+import reactor.netty.http.server.HttpServerResponse;
 import reactor.netty.http.server.logging.AccessLog;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.test.StepVerifier;
@@ -78,6 +86,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -86,7 +96,7 @@ import static reactor.netty.ConnectionObserver.State.CONNECTED;
 
 /**
  * Test a combination of {@link HttpServer} + {@link HttpProtocol}
- * with a combination of {@link HttpClient} + {@link HttpProtocol}
+ * with a combination of {@link HttpClient} + {@link HttpProtocol}.
  *
  * @author Violeta Georgieva
  * @since 1.0.0
@@ -171,6 +181,7 @@ class HttpProtocolsTests extends BaseHttpTest {
 		return data(true, false, true);
 	}
 
+	@SuppressWarnings("deprecation")
 	static Object[][] data(boolean onlyCompatible, boolean disablePool, boolean useCustomPool) throws Exception {
 		SelfSignedCertificate cert = new SelfSignedCertificate();
 		Http11SslContextSpec serverCtxHttp11 = Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
@@ -643,7 +654,8 @@ class HttpProtocolsTests extends BaseHttpTest {
 		                          .asString()
 		                          .timeout(Duration.ofSeconds(10)))
 		            .expectNext("Hello world!")
-		            .verifyComplete();
+		            .expectComplete()
+		            .verify(Duration.ofSeconds(5));
 
 		try {
 			// Wait till all logs are flushed
@@ -757,6 +769,225 @@ class HttpProtocolsTests extends BaseHttpTest {
 		}
 	}
 
+	@ParameterizedCompatibleCombinationsTest
+	void testRequestTimeout(HttpServer server, HttpClient client) throws Exception {
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+		AtomicReference<List<Boolean>> handlerAvailable = new AtomicReference<>(new ArrayList<>(3));
+		AtomicReference<List<Boolean>> onTerminate = new AtomicReference<>(new ArrayList<>(3));
+		AtomicReference<List<Long>> timeout = new AtomicReference<>(new ArrayList<>(3));
+		CountDownLatch latch = new CountDownLatch(3);
+		disposableServer =
+				server.readTimeout(Duration.ofMillis(60))
+				      .requestTimeout(Duration.ofMillis(150))
+				      .doOnChannelInit((obs, ch, addr) -> {
+				          if ((serverProtocols.length == 2 && serverProtocols[1] == HttpProtocol.H2C) &&
+				                  (clientProtocols.length == 2 && clientProtocols[1] == HttpProtocol.H2C)) {
+				              ChannelHandler httpServerCodec = ch.pipeline().get(HttpServerCodec.class);
+				              if (httpServerCodec != null) {
+				                  String name = ch.pipeline().context(httpServerCodec).name();
+				                  ch.pipeline().addAfter(name, "testRequestTimeout",
+				                          new RequestTimeoutTestChannelInboundHandler(handlerAvailable, onTerminate, timeout, latch));
+				              }
+				          }
+				      })
+				      .handle((req, res) ->
+				          res.withConnection(conn -> {
+				                  if (!((serverProtocols.length == 2 && serverProtocols[1] == HttpProtocol.H2C) &&
+				                          (clientProtocols.length == 2 && clientProtocols[1] == HttpProtocol.H2C))) {
+				                      ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.ReadTimeoutHandler);
+				                      if (handler != null) {
+				                          handlerAvailable.get().add(true);
+				                          timeout.get().add(((ReadTimeoutHandler) handler).getReaderIdleTimeInMillis());
+				                      }
+				                  }
+				                  conn.onTerminate().subscribe(null, null, () -> {
+				                      onTerminate.get().add(conn.channel().isActive() &&
+				                              conn.channel().pipeline().get(NettyPipeline.ReadTimeoutHandler) != null);
+				                      latch.countDown();
+				                  });
+				             })
+				             .send(req.receive().retain()))
+				      .bindNow();
+
+		HttpClient localClient = client.port(disposableServer.port());
+
+		Mono<String> response1 =
+				localClient.post()
+				           .uri("/")
+				           .send(ByteBufFlux.fromString(Flux.just("test", "ProtocolVariations", "RequestTimeout")
+				                                            .delayElements(Duration.ofMillis(80))))
+				           .responseContent()
+				           .aggregate()
+				           .asString();
+
+		Mono<String> response2 =
+				localClient.post()
+				           .uri("/")
+				           .send(ByteBufFlux.fromString(Flux.just("test", "Protocol", "Variations", "Request", "Timeout")
+				                                            .delayElements(Duration.ofMillis(40))))
+				           .responseContent()
+				           .aggregate()
+				           .asString();
+
+		Mono<String> response3 =
+				localClient.post()
+				           .uri("/")
+				           .send(ByteBufFlux.fromString(Flux.just("test", "ProtocolVariations", "RequestTimeout")))
+				           .responseContent()
+				           .aggregate()
+				           .asString();
+
+		List<Signal<String>> result =
+				Flux.concat(response1.materialize(), response2.materialize(), response3.materialize())
+				    .collectList()
+				    .block(Duration.ofSeconds(30));
+
+		assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
+
+		assertThat(result).isNotNull();
+
+		assertThat(handlerAvailable.get()).hasSize(3).allMatch(b -> b);
+		assertThat(onTerminate.get()).hasSize(3).allMatch(b -> !b);
+		assertThat(timeout.get()).hasSize(3).allMatch(l -> l == 60);
+
+		int onNext = 0;
+		int onError = 0;
+		for (Signal<String> signal : result) {
+			if (signal.isOnNext()) {
+				onNext++;
+				assertThat(signal.get()).isEqualTo("testProtocolVariationsRequestTimeout");
+			}
+			else if (signal.getThrowable() instanceof PrematureCloseException ||
+					signal.getThrowable().getMessage().contains("Connection reset by peer")) {
+				onError++;
+			}
+		}
+
+		assertThat(onNext).isEqualTo(1);
+		assertThat(onError).isEqualTo(2);
+	}
+
+	@ParameterizedCompatibleCombinationsTest
+	void test100Continue(HttpServer server, HttpClient client) throws Exception {
+		CountDownLatch latch = new CountDownLatch(1);
+		disposableServer =
+				server.handle((req, res) -> req.receive()
+				                               .aggregate()
+				                               .asString()
+				                               .flatMap(s -> {
+				                                       latch.countDown();
+				                                       return res.sendString(Mono.just(s))
+				                                                 .then();
+				                               }))
+				      .bindNow();
+
+		Tuple2<String, Integer> content =
+				client.port(disposableServer.port())
+				      .headers(h -> h.add(HttpHeaderNames.EXPECT, HttpHeaderValues.CONTINUE))
+				      .post()
+				      .uri("/")
+				      .send(ByteBufFlux.fromString(Flux.just("1", "2", "3", "4", "5")))
+				      .responseSingle((res, bytes) -> bytes.asString()
+				                                           .zipWith(Mono.just(res.status().code())))
+				      .block(Duration.ofSeconds(5));
+
+		assertThat(latch.await(30, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+		assertThat(content).isNotNull();
+		assertThat(content.getT1()).isEqualTo("12345");
+		assertThat(content.getT2()).isEqualTo(200);
+	}
+
+	@ParameterizedCompatibleCombinationsCustomPoolTest
+	void test100ContinueConnectionClose(HttpServer server, HttpClient client) throws Exception {
+		doTest100ContinueConnection(server, client,
+				(req, res) -> res.status(400).sendString(Mono.just("ERROR")),
+				ByteBufFlux.fromString(Flux.just("1", "2", "3", "4", "5").delaySubscription(Duration.ofMillis(100))),
+				false);
+	}
+
+	@ParameterizedCompatibleCombinationsCustomPoolTest
+	void test100ContinueConnectionKeepAlive(HttpServer server, HttpClient client) throws Exception {
+		doTest100ContinueConnection(server, client,
+				(req, res) -> res.status(400).sendString(Mono.just("ERROR").delaySubscription(Duration.ofMillis(100))),
+				ByteBufMono.fromString(Mono.just("12345")),
+				true);
+	}
+
+	private void doTest100ContinueConnection(
+			HttpServer server,
+			HttpClient client,
+			BiFunction<? super HttpServerRequest, ? super HttpServerResponse, ? extends Publisher<Void>> postHandler,
+			Publisher<ByteBuf> sendBody,
+			boolean isKeepAlive) throws Exception {
+		HttpProtocol[] serverProtocols = server.configuration().protocols();
+		HttpProtocol[] clientProtocols = client.configuration().protocols();
+
+		CountDownLatch latch = new CountDownLatch(2);
+		AtomicReference<List<Channel>> channels = new AtomicReference<>(new ArrayList<>(2));
+		disposableServer =
+				server.doOnConnection(conn -> {
+				          channels.get().add(conn.channel());
+				          conn.onTerminate().subscribe(null, t -> latch.countDown(), latch::countDown);
+				      })
+				      .route(r ->
+				          r.post("/post", postHandler)
+				           .get("/get", (req, res) -> res.sendString(Mono.just("OK"))))
+				      .bindNow();
+
+		Mono<Tuple2<String, HttpClientResponse>> content1 =
+				client.port(disposableServer.port())
+				      .headers(h -> h.add(HttpHeaderNames.EXPECT, HttpHeaderValues.CONTINUE))
+				      .post()
+				      .uri("/post")
+				      .send(sendBody)
+				      .responseSingle((res, bytes) -> bytes.asString().zipWith(Mono.just(res)));
+
+		Mono<Tuple2<String, HttpClientResponse>> content2 =
+				client.port(disposableServer.port())
+				      .get()
+				      .uri("/get")
+				      .responseSingle((res, bytes) -> bytes.asString().zipWith(Mono.just(res)));
+
+		List<Tuple2<String, HttpClientResponse>> responses =
+				Flux.concat(content1, content2)
+				    .collectList()
+				    .block(Duration.ofSeconds(5));
+
+		assertThat(latch.await(30, TimeUnit.SECONDS)).as("latch await").isTrue();
+
+		assertThat(responses).isNotNull();
+		assertThat(responses.size()).isEqualTo(2);
+		assertThat(responses.get(0).getT1()).isEqualTo("ERROR");
+		assertThat(responses.get(0).getT2().status().code()).isEqualTo(400);
+		assertThat(responses.get(1).getT1()).isEqualTo("OK");
+		assertThat(responses.get(1).getT2().status().code()).isEqualTo(200);
+
+		assertThat(channels.get().size()).isEqualTo(2);
+		if ((serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
+				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11)) {
+			if (isKeepAlive) {
+				assertThat(channels.get().get(0)).isEqualTo(channels.get().get(1));
+
+				assertThat(responses.get(0).getT2().responseHeaders().get(HttpHeaderNames.CONNECTION))
+						.isNull();
+			}
+			else {
+				assertThat(channels.get()).doesNotHaveDuplicates();
+
+				assertThat(responses.get(0).getT2().responseHeaders().get(HttpHeaderNames.CONNECTION))
+						.isEqualTo(HttpHeaderValues.CLOSE.toString());
+			}
+		}
+		else {
+			assertThat(channels.get()).doesNotHaveDuplicates();
+
+			assertThat(responses.get(0).getT2().responseHeaders().get(HttpHeaderNames.CONNECTION))
+					.isNull();
+		}
+	}
+
 	static final class IdleTimeoutTestChannelInboundHandler extends ChannelInboundHandlerAdapter {
 
 		final CountDownLatch latch = new CountDownLatch(1);
@@ -793,6 +1024,46 @@ class HttpProtocolsTests extends BaseHttpTest {
 				pipeline.addAfter(NettyPipeline.IdleTimeoutHandler, "testIdleTimeout", channelHandler);
 			}
 			ctx.fireUserEventTriggered(evt);
+		}
+	}
+
+	static final class RequestTimeoutTestChannelInboundHandler extends ChannelInboundHandlerAdapter {
+
+		final AtomicReference<List<Boolean>> handlerAvailable;
+		final AtomicReference<List<Boolean>> onTerminate;
+		final AtomicReference<List<Long>> timeout;
+		final CountDownLatch latch;
+
+		RequestTimeoutTestChannelInboundHandler(
+				AtomicReference<List<Boolean>> handlerAvailable,
+				AtomicReference<List<Boolean>> onTerminate,
+				AtomicReference<List<Long>> timeout,
+				CountDownLatch latch) {
+			this.handlerAvailable = handlerAvailable;
+			this.onTerminate = onTerminate;
+			this.timeout = timeout;
+			this.latch = latch;
+		}
+		@Override
+		public void channelRead(ChannelHandlerContext ctx, Object msg) {
+			ctx.fireChannelRead(msg);
+
+			if (msg instanceof HttpRequest) {
+				ChannelHandler handler = ctx.channel().pipeline().get(NettyPipeline.ReadTimeoutHandler);
+				if (handler != null) {
+					handlerAvailable.get().add(true);
+					timeout.get().add(((ReadTimeoutHandler) handler).getReaderIdleTimeInMillis());
+				}
+			}
+		}
+
+		@Override
+		public void channelInactive(ChannelHandlerContext ctx) {
+			onTerminate.get().add(ctx.channel().isActive() &&
+					ctx.channel().pipeline().get(NettyPipeline.ReadTimeoutHandler) != null);
+			latch.countDown();
+
+			ctx.fireChannelInactive();
 		}
 	}
 }

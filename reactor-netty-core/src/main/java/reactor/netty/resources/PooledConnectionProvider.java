@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ import reactor.pool.InstrumentedPool;
 import reactor.pool.Pool;
 import reactor.pool.PoolBuilder;
 import reactor.pool.PoolConfig;
+import reactor.pool.PoolMetricsRecorder;
 import reactor.pool.PooledRef;
 import reactor.pool.PooledRefMetadata;
 import reactor.pool.decorators.GracefulShutdownInstrumentedPool;
@@ -77,7 +78,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 	/**
 	 * Context key used to propagate the caller event loop in the connection pool subscription.
 	 */
-	protected final static String CONTEXT_CALLER_EVENTLOOP = "callereventloop";
+	protected static final String CONTEXT_CALLER_EVENTLOOP = "callereventloop";
 
 	final PoolFactory<T> defaultPoolFactory;
 	final Map<SocketAddress, PoolFactory<T>> poolFactoryPerRemoteHost = new HashMap<>();
@@ -121,7 +122,6 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		Objects.requireNonNull(config, "config");
 		Objects.requireNonNull(connectionObserver, "connectionObserver");
 		Objects.requireNonNull(remote, "remoteAddress");
-		Objects.requireNonNull(resolverGroup, "resolverGroup");
 		return Mono.create(sink -> {
 			SocketAddress remoteAddress = Objects.requireNonNull(remote.get(), "Remote Address supplier returned null");
 			PoolKey holder = new PoolKey(remoteAddress, config.channelHash());
@@ -131,12 +131,16 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					log.debug("Creating a new [{}] client pool [{}] for [{}]", name, poolFactory, remoteAddress);
 				}
 
-				InstrumentedPool<T> newPool = createPool(config, poolFactory, remoteAddress, resolverGroup);
+				boolean metricsEnabled = poolFactory.metricsEnabled || config.metricsRecorder() != null;
+				String id = metricsEnabled ? poolKey.hashCode() + "" : null;
 
-				if (poolFactory.metricsEnabled || config.metricsRecorder() != null) {
+				InstrumentedPool<T> newPool = metricsEnabled && Metrics.isMicrometerAvailable() ?
+						createPool(id, config, poolFactory, remoteAddress, resolverGroup) :
+						createPool(config, poolFactory, remoteAddress, resolverGroup);
+
+				if (metricsEnabled) {
 					// registrar is null when metrics are enabled on HttpClient level or
 					// with the `metrics(boolean metricsEnabled)` method on ConnectionProvider
-					String id = poolKey.hashCode() + "";
 					if (poolFactory.registrar != null) {
 						poolFactory.registrar.get().registerMetrics(name, id, remoteAddress,
 								new DelegatingConnectionPoolMetrics(newPool.metrics()));
@@ -178,7 +182,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 				}
 			}
 			mono.subscribe(createDisposableAcquire(config, connectionObserver,
-					poolFactory.pendingAcquireTimeout, pool, sink, currentContext));
+					poolFactory.pendingAcquireTimeout, pool, remoteAddress, sink, currentContext));
 		});
 	}
 
@@ -196,28 +200,14 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			                        if (pool instanceof GracefulShutdownInstrumentedPool) {
 			                            return ((GracefulShutdownInstrumentedPool<T>) pool)
 			                                    .disposeGracefully(disposeTimeout)
+			                                    .then(deRegisterDefaultMetrics(id, pool.config().metricsRecorder(), poolFactory.registrar, remoteAddress))
 			                                    .onErrorResume(t -> {
 			                                        log.error("Connection pool for [{}] didn't shut down gracefully", e.getKey(), t);
-			                                        return Mono.fromRunnable(() -> {
-			                                            if (poolFactory.registrar != null) {
-			                                                poolFactory.registrar.get().deRegisterMetrics(name, id, remoteAddress);
-			                                            }
-			                                            else if (Metrics.isMicrometerAvailable()) {
-			                                                deRegisterDefaultMetrics(id, remoteAddress);
-			                                            }
-			                                        });
+			                                        return deRegisterDefaultMetrics(id, pool.config().metricsRecorder(), poolFactory.registrar, remoteAddress);
 			                                    });
 			                        }
-			                        return pool.disposeLater().then(
-			                                Mono.<Void>fromRunnable(() -> {
-			                                    if (poolFactory.registrar != null) {
-			                                        poolFactory.registrar.get().deRegisterMetrics(name, id, remoteAddress);
-			                                    }
-			                                    else if (Metrics.isMicrometerAvailable()) {
-			                                        deRegisterDefaultMetrics(id, remoteAddress);
-			                                    }
-			                                })
-			                        );
+			                        return pool.disposeLater()
+			                                   .then(deRegisterDefaultMetrics(id, pool.config().metricsRecorder(), poolFactory.registrar, remoteAddress));
 			                    })
 			                    .collect(Collectors.toList());
 			if (pools.isEmpty()) {
@@ -251,6 +241,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 							}
 							else if (Metrics.isMicrometerAvailable()) {
 								deRegisterDefaultMetrics(id, address);
+								PoolMetricsRecorder recorder = e.getValue().config().metricsRecorder();
+								if (recorder instanceof Disposable) {
+									((Disposable) recorder).dispose();
+								}
 							}
 						})
 				).subscribe();
@@ -297,11 +291,31 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			MonoSink<Connection> sink,
 			Context currentContext);
 
+	protected CoreSubscriber<PooledRef<T>> createDisposableAcquire(
+			TransportConfig config,
+			ConnectionObserver connectionObserver,
+			long pendingAcquireTimeout,
+			InstrumentedPool<T> pool,
+			SocketAddress remoteAddress,
+			MonoSink<Connection> sink,
+			Context currentContext) {
+		return createDisposableAcquire(config, connectionObserver, pendingAcquireTimeout, pool, sink, currentContext);
+	}
+
 	protected abstract InstrumentedPool<T> createPool(
 			TransportConfig config,
 			PoolFactory<T> poolFactory,
 			SocketAddress remoteAddress,
-			AddressResolverGroup<?> resolverGroup);
+			@Nullable AddressResolverGroup<?> resolverGroup);
+
+	protected InstrumentedPool<T> createPool(
+			String id,
+			TransportConfig config,
+			PoolFactory<T> poolFactory,
+			SocketAddress remoteAddress,
+			@Nullable AddressResolverGroup<?> resolverGroup) {
+		return createPool(config, poolFactory, remoteAddress, resolverGroup);
+	}
 
 	protected PoolFactory<T> poolFactory(SocketAddress remoteAddress) {
 		return poolFactoryPerRemoteHost.getOrDefault(remoteAddress, defaultPoolFactory);
@@ -313,6 +327,20 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 
 	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
 		MicrometerPooledConnectionProviderMeterRegistrar.INSTANCE.deRegisterMetrics(name, id, remoteAddress);
+	}
+
+	Mono<Void> deRegisterDefaultMetrics(String id, PoolMetricsRecorder recorder, @Nullable Supplier<? extends MeterRegistrar> registrar, SocketAddress remoteAddress) {
+		return Mono.fromRunnable(() -> {
+			if (registrar != null) {
+				registrar.get().deRegisterMetrics(name, id, remoteAddress);
+			}
+			else if (Metrics.isMicrometerAvailable()) {
+				deRegisterDefaultMetrics(id, remoteAddress);
+				if (recorder instanceof Disposable) {
+					((Disposable) recorder).dispose();
+				}
+			}
+		});
 	}
 
 	final boolean compareAddresses(SocketAddress origin, SocketAddress target) {
@@ -366,7 +394,23 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					if (log.isDebugEnabled()) {
 						log.debug("ConnectionProvider[name={}]: Disposing inactive pool for [{}]", name, e.getKey().holder);
 					}
-					e.getValue().dispose();
+					SocketAddress address = e.getKey().holder;
+					String id = e.getKey().hashCode() + "";
+					PoolFactory<T> poolFactory = poolFactory(address);
+					e.getValue().disposeLater().then(
+							Mono.<Void>fromRunnable(() -> {
+								if (poolFactory.registrar != null) {
+									poolFactory.registrar.get().deRegisterMetrics(name, id, address);
+								}
+								else if (Metrics.isMicrometerAvailable()) {
+									deRegisterDefaultMetrics(id, address);
+									PoolMetricsRecorder recorder = e.getValue().config().metricsRecorder();
+									if (recorder instanceof Disposable) {
+										((Disposable) recorder).dispose();
+									}
+								}
+							})
+					).subscribe();
 				}
 			});
 		}
@@ -460,6 +504,18 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 
 		public InstrumentedPool<T> newPool(
 				Publisher<T> allocator,
+				Function<T, Publisher<Void>> destroyHandler,
+				BiPredicate<T, PooledRefMetadata> evictionPredicate,
+				PoolMetricsRecorder poolMetricsRecorder) {
+			if (disposeTimeout != null) {
+				return newPoolInternal(allocator, destroyHandler, evictionPredicate, poolMetricsRecorder)
+						.buildPoolAndDecorateWith(InstrumentedPoolDecorators::gracefulShutdown);
+			}
+			return newPoolInternal(allocator, destroyHandler, evictionPredicate, poolMetricsRecorder).buildPool();
+		}
+
+		public InstrumentedPool<T> newPool(
+				Publisher<T> allocator,
 				@Nullable reactor.pool.AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
 				Function<T, Publisher<Void>> destroyHandler,
 				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate,
@@ -471,10 +527,31 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			return newPoolInternal(allocator, destroyHandler, defaultEvictionPredicate).build(poolFactory);
 		}
 
+		public InstrumentedPool<T> newPool(
+				Publisher<T> allocator,
+				Function<T, Publisher<Void>> destroyHandler,
+				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate,
+				PoolMetricsRecorder poolMetricsRecorder,
+				Function<PoolConfig<T>, InstrumentedPool<T>> poolFactory) {
+			if (disposeTimeout != null) {
+				return newPoolInternal(allocator, destroyHandler, defaultEvictionPredicate, poolMetricsRecorder)
+						.build(poolFactory.andThen(InstrumentedPoolDecorators::gracefulShutdown));
+			}
+			return newPoolInternal(allocator, destroyHandler, defaultEvictionPredicate, poolMetricsRecorder).build(poolFactory);
+		}
+
 		PoolBuilder<T, PoolConfig<T>> newPoolInternal(
 				Publisher<T> allocator,
 				Function<T, Publisher<Void>> destroyHandler,
 				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate) {
+			return newPoolInternal(allocator, destroyHandler, defaultEvictionPredicate, null);
+		}
+
+		PoolBuilder<T, PoolConfig<T>> newPoolInternal(
+				Publisher<T> allocator,
+				Function<T, Publisher<Void>> destroyHandler,
+				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate,
+				@Nullable PoolMetricsRecorder poolMetricsRecorder) {
 			PoolBuilder<T, PoolConfig<T>> poolBuilder =
 					PoolBuilder.from(allocator)
 					           .destroyHandler(destroyHandler)
@@ -521,6 +598,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			}
 			else {
 				poolBuilder = poolBuilder.idleResourceReuseMruOrder();
+			}
+
+			if (poolMetricsRecorder != null) {
+				poolBuilder.metricsRecorder(poolMetricsRecorder);
 			}
 
 			return poolBuilder;

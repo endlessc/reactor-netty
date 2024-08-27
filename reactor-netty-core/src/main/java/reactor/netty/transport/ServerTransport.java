@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
+import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.DecoderException;
 import io.netty.util.AttributeKey;
@@ -64,7 +65,7 @@ import reactor.util.context.Context;
 import static reactor.netty.ReactorNetty.format;
 
 /**
- * A generic server {@link Transport} that will {@link #bind()} to a local address and provide a {@link DisposableServer}
+ * A generic server {@link Transport} that will {@link #bind()} to a local address and provide a {@link DisposableServer}.
  *
  * @param <T> ServerTransport implementation
  * @param <CONF> Server Configuration implementation
@@ -110,9 +111,13 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 
 			ConnectionObserver childObs =
 					new ChildObserver(config.defaultChildObserver().then(config.childObserver()));
-			Acceptor acceptor = new Acceptor(config.childEventLoopGroup(), config.channelInitializer(childObs, null, true),
-					config.childOptions, config.childAttrs, isDomainSocket);
-			TransportConnector.bind(config, new AcceptorInitializer(acceptor), local, isDomainSocket)
+			ChannelInitializer<Channel> channelInitializer = config.channelInitializer(childObs, null, true);
+			if (!config.channelType(isDomainSocket).equals(DatagramChannel.class)) {
+				Acceptor acceptor = new Acceptor(config.childEventLoopGroup(), channelInitializer,
+						config.childOptions, config.childAttrs, isDomainSocket);
+				channelInitializer = new AcceptorInitializer(acceptor);
+			}
+			TransportConnector.bind(config, channelInitializer, local, isDomainSocket)
 			                  .subscribe(disposableServer);
 		});
 
@@ -205,7 +210,7 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 	}
 
 	/**
-	 * Set or add the given {@link ConnectionObserver} for each remote connection
+	 * Set or add the given {@link ConnectionObserver} for each remote connection.
 	 *
 	 * @param observer the {@link ConnectionObserver} addition
 	 * @return a new {@link ServerTransport} reference
@@ -553,16 +558,13 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 					List<Mono<Void>> monos =
 							MapUtils.computeIfAbsent(channelsToMono,
 									isParentServerChannel ? channel : parent,
-									key -> {
-										List<Mono<Void>> list = new ArrayList<>();
-										if (!isParentServerChannel) {
-											// In case of HTTP/2 Reactor Netty will send GO_AWAY with lastStreamId to notify the
-											// client to stop opening streams, the actual CLOSE will happen when all
-											// streams up to lastStreamId are closed
-											list.add(FutureMono.from(key.close()));
-										}
-										return list;
-									});
+									key -> new ArrayList<>());
+					if (monos.isEmpty() && !isParentServerChannel) {
+						// In case of HTTP/2 Reactor Netty will send GO_AWAY with lastStreamId to notify the
+						// client to stop opening streams, the actual CLOSE will happen when all
+						// streams up to lastStreamId are closed
+						monos.add(FutureMono.from(parent.close()));
+					}
 					ChannelOperations<?, ?> ops = ChannelOperations.get(channel);
 					if (ops != null) {
 						monos.add(ops.onTerminate().doFinally(sig -> ops.dispose()));

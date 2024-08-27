@@ -22,10 +22,11 @@ import java.util.regex.Pattern;
 import io.netty.handler.codec.http.HttpRequest;
 import reactor.netty.transport.AddressUtils;
 
-import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HTTPS_PORT;
-import static reactor.netty.http.server.ConnectionInfo.DEFAULT_HTTP_PORT;
+import static reactor.netty.http.server.ConnectionInfo.getDefaultHostPort;
 
 /**
+ * Default implementation for handling {@code X-Forwarded}/{@code Forwarded} headers.
+ *
  * @author Andrey Shlykov
  * @since 0.9.12
  */
@@ -71,11 +72,9 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 		}
 		Matcher hostMatcher = FORWARDED_HOST_PATTERN.matcher(forwarded);
 		if (hostMatcher.find()) {
-			String scheme = connectionInfo.getScheme();
-			int port = scheme.equalsIgnoreCase("https") || scheme.equalsIgnoreCase("wss") ?
-					DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
 			connectionInfo = connectionInfo.withHostAddress(
-					AddressUtils.parseAddress(hostMatcher.group(1), port, DEFAULT_FORWARDED_HEADER_VALIDATION));
+					AddressUtils.parseAddress(hostMatcher.group(1),
+							getDefaultHostPort(connectionInfo.getScheme()), DEFAULT_FORWARDED_HEADER_VALIDATION));
 		}
 		Matcher forMatcher = FORWARDED_FOR_PATTERN.matcher(forwarded);
 		if (forMatcher.find()) {
@@ -100,7 +99,7 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 		if (hostHeader != null) {
 			connectionInfo = connectionInfo.withHostAddress(
 					AddressUtils.parseAddress(hostHeader.split(",", 2)[0].trim(),
-							getDefaultHostPort(connectionInfo), DEFAULT_FORWARDED_HEADER_VALIDATION));
+							getDefaultHostPort(connectionInfo.getScheme()), DEFAULT_FORWARDED_HEADER_VALIDATION));
 		}
 
 		String portHeader = request.headers().get(X_FORWARDED_PORT_HEADER);
@@ -108,9 +107,9 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 			String portStr = portHeader.split(",", 2)[0].trim();
 			if (portStr.chars().allMatch(Character::isDigit)) {
 				int port = Integer.parseInt(portStr);
-				connectionInfo = new ConnectionInfo(
+				connectionInfo = connectionInfo.withHostAddress(
 						AddressUtils.createUnresolved(connectionInfo.getHostAddress().getHostString(), port),
-						connectionInfo.getHostName(), port, connectionInfo.getRemoteAddress(), connectionInfo.getScheme());
+						connectionInfo.getHostName(), port);
 			}
 			else if (DEFAULT_FORWARDED_HEADER_VALIDATION) {
 				throw new IllegalArgumentException("Failed to parse a port from " + portHeader);
@@ -118,11 +117,4 @@ final class DefaultHttpForwardedHeaderHandler implements BiFunction<ConnectionIn
 		}
 		return connectionInfo;
 	}
-
-	private int getDefaultHostPort(ConnectionInfo connectionInfo) {
-		String scheme = connectionInfo.getScheme();
-		return scheme.equalsIgnoreCase("https") || scheme.equalsIgnoreCase("wss") ?
-				DEFAULT_HTTPS_PORT : DEFAULT_HTTP_PORT;
-	}
-
 }

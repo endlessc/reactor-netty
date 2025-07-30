@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,9 +28,9 @@ import java.util.function.Function;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.EventLoop;
-import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -52,13 +52,13 @@ import reactor.pool.PooledRef;
 import reactor.pool.PooledRefMetadata;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.concurrent.Queues;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.ReactorNetty.getChannelContext;
 import static reactor.netty.ReactorNetty.setChannelContext;
+import static reactor.netty.transport.DomainSocketAddressUtils.isDomainSocketAddress;
 
 /**
  * A default implementation for pooled {@link ConnectionProvider}.
@@ -110,7 +110,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 
 	static final Logger log = Loggers.getLogger(DefaultPooledConnectionProvider.class);
 
-	static final AttributeKey<ConnectionObserver> OWNER = AttributeKey.valueOf("connectionOwner");
+	static final AttributeKey<@Nullable ConnectionObserver> OWNER = AttributeKey.valueOf("connectionOwner");
 
 	static final class DisposableAcquire
 			implements ConnectionObserver, Runnable, CoreSubscriber<PooledRef<PooledConnection>>, Disposable {
@@ -123,7 +123,14 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 		final boolean retried;
 		final MonoSink<Connection> sink;
 
+		@SuppressWarnings("NullAway")
+		// Deliberately suppress "NullAway"
+		// This is a lazy initialization
 		PooledRef<PooledConnection> pooledRef;
+		// Never null when accessed - only via dispose()
+		// which is registered into sink.onCancel() callback.
+		// See onSubscribe(Subscription).
+		@SuppressWarnings("NullAway")
 		Subscription subscription;
 
 		DisposableAcquire(
@@ -161,6 +168,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 
 		@Override
 		public void dispose() {
+			// sink.onCancel() registration happens in onSubscribe()
 			subscription.cancel();
 		}
 
@@ -318,7 +326,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 			}
 		}
 
-		void registerClose(PooledRef<PooledConnection> pooledRef, InstrumentedPool<PooledConnection> pool) {
+		static void registerClose(PooledRef<PooledConnection> pooledRef, InstrumentedPool<PooledConnection> pool) {
 			Channel channel = pooledRef.poolable().channel;
 			if (log.isDebugEnabled()) {
 				log.debug(format(channel, "Registering pool release on close event for channel"));
@@ -369,8 +377,8 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 
 		static class Pending {
 			final Connection connection;
-			final Throwable error;
-			final State state;
+			final @Nullable Throwable error;
+			final @Nullable State state;
 
 			Pending(Connection connection, @Nullable Throwable error, @Nullable State state) {
 				this.connection = connection;
@@ -385,7 +393,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 		final Sinks.Empty<Void> onTerminate;
 		final InstrumentedPool<PooledConnection> pool;
 
-		PooledRef<PooledConnection> pooledRef;
+		@Nullable PooledRef<PooledConnection> pooledRef;
 
 		PooledConnection(Channel channel, InstrumentedPool<PooledConnection> pool) {
 			this.channel = channel;
@@ -436,16 +444,17 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 					setChannelContext(channel, null);
 				}
 
-				if (pooledRef == null) {
+				PooledRef<PooledConnection> localPooledRef = pooledRef;
+				if (localPooledRef == null) {
 					return;
 				}
 
-				pooledRef.release()
+				localPooledRef.release()
 				         .subscribe(
 				                 null,
 				                 t -> {
 				                     if (log.isDebugEnabled()) {
-				                         logPoolState(pooledRef.poolable().channel, pool,
+				                         logPoolState(localPooledRef.poolable().channel, pool,
 				                                 "Failed cleaning the channel from pool", t);
 				                     }
 				                     // EmitResult is ignored as it is guaranteed that this call happens in an event loop,
@@ -455,7 +464,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 				                 },
 				                 () -> {
 				                     if (log.isDebugEnabled()) {
-				                         logPoolState(pooledRef.poolable().channel, pool, "Channel cleaned");
+				                         logPoolState(localPooledRef.poolable().channel, pool, "Channel cleaned");
 				                     }
 				                     // EmitResult is ignored as it is guaranteed that this call happens in an event loop,
 				                     // and it is guarded by release(), so tryEmitEmpty() should happen just once
@@ -507,7 +516,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 		final TransportConfig config;
 		final InstrumentedPool<PooledConnection> pool;
 		final SocketAddress remoteAddress;
-		final AddressResolverGroup<?> resolver;
+		final @Nullable AddressResolverGroup<?> resolver;
 
 		PooledConnectionAllocator(
 				TransportConfig config,
@@ -517,6 +526,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 			this(null, null, config, provider, remoteAddress, resolver);
 		}
 
+		@SuppressWarnings("NullAway")
 		PooledConnectionAllocator(
 				@Nullable String id,
 				@Nullable String name,
@@ -530,6 +540,8 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 			this.pool = id == null ?
 					provider.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE) :
 					provider.newPool(connectChannel(), DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
+							// Deliberately suppress "NullAway"
+							// With id != null, this means name != null
 							new MicrometerPoolMetricsRecorder(id, name, remoteAddress));
 		}
 
@@ -550,7 +562,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 				else {
 					Objects.requireNonNull(config.bindAddress(), "bindAddress");
 					SocketAddress local = Objects.requireNonNull(config.bindAddress().get(), "Bind Address supplier returned null");
-					TransportConnector.bind(config, initializer, local, remoteAddress instanceof DomainSocketAddress)
+					TransportConnector.bind(config, initializer, local, isDomainSocketAddress(remoteAddress))
 							.subscribe(initializer);
 				}
 			});
@@ -559,7 +571,7 @@ final class DefaultPooledConnectionProvider extends PooledConnectionProvider<Def
 		final class PooledConnectionInitializer extends ChannelInitializer<Channel> implements CoreSubscriber<Channel> {
 			final MonoSink<PooledConnection> sink;
 
-			PooledConnection pooledConnection;
+			@Nullable PooledConnection pooledConnection;
 
 			PooledConnectionInitializer(MonoSink<PooledConnection> sink) {
 				this.sink = sink;

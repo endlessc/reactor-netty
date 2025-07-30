@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.Locale;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,43 +34,45 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  */
 class TrailerHeadersTests {
 
-	static final String ERROR_MESSAGE = "Trailer header name [%s] not declared with [Trailer] header," +
-			" or it is not a valid trailer header name";
-	static final String COMMA = ",";
+	static final String ERROR_MESSAGE_1 = "Header [%s] is not allowed as a trailer header";
+	static final String ERROR_MESSAGE_2 = "Pseudo header [%s] is not allowed as a trailer header";
+
 	static final String EMPTY = "";
 	static final String HEADER_NAME_1 = "foo";
 	static final String HEADER_NAME_2 = "bar";
 	static final String HEADER_VALUE = "test";
+	static final String PSEUDO_HEADER_NAME_1 = ":protocol";
+	static final String PSEUDO_HEADER_NAME_2 = " :protocol";
+	static final String PSEUDO_HEADER_NAME_3 = ":protocol ";
 	static final String SPACE = " ";
 
-	@ParameterizedTest(name = "{displayName}({0})")
+	@ParameterizedTest
 	@MethodSource("disallowedTrailerHeaderNames")
-	void testDisallowedTrailerHeaderNames(String declaredHeaderName) {
+	void testDisallowedTrailerHeaderNames(String headerName) {
+		String headerNameUpperCase = headerName.toUpperCase(Locale.ENGLISH);
 		assertThatExceptionOfType(IllegalArgumentException.class)
-				.isThrownBy(() -> new HttpServerOperations.TrailerHeaders(declaredHeaderName).add(declaredHeaderName, HEADER_VALUE))
-				.withMessage(String.format(ERROR_MESSAGE, declaredHeaderName));
+				.isThrownBy(() -> new HttpServerOperations.TrailerHeaders(false).add(headerNameUpperCase, HEADER_VALUE))
+				.withMessage(String.format(ERROR_MESSAGE_1, headerNameUpperCase));
 	}
 
-	@ParameterizedTest(name = "{displayName}({index})")
-	@ValueSource(strings = {
-			HEADER_NAME_1,
-			COMMA + HEADER_NAME_1,
-			HEADER_NAME_1 + COMMA,
-			HEADER_NAME_1 + SPACE,
-			HEADER_NAME_1 + COMMA + SPACE
-	})
-	void testNameIncludedInTrailerHeader(String declaredHeaderNames) {
-		HttpHeaders headers = new HttpServerOperations.TrailerHeaders(declaredHeaderNames);
-		assertThat(headers.isEmpty()).isTrue();
-		headers.add(HEADER_NAME_1, HEADER_VALUE);
-		assertThat(headers.isEmpty()).isFalse();
-		assertThat(headers.size()).isEqualTo(1);
-		assertThat(headers.get(HEADER_NAME_1)).isEqualTo(HEADER_VALUE);
+	@ParameterizedTest
+	@ValueSource(strings = {EMPTY, SPACE})
+	void testEmptyTrailerHeaderNames(String headerName) {
+		assertThatExceptionOfType(IllegalArgumentException.class)
+				.isThrownBy(() -> new HttpServerOperations.TrailerHeaders(false).add(headerName, HEADER_VALUE))
+				.withMessage(String.format(ERROR_MESSAGE_1, headerName));
 	}
 
+	@ParameterizedTest
+	@ValueSource(strings = {PSEUDO_HEADER_NAME_1, PSEUDO_HEADER_NAME_2, PSEUDO_HEADER_NAME_3})
+	void testPseudoHeaderInTrailerHeaderNames(String headerName) {
+		assertThatExceptionOfType(IllegalArgumentException.class)
+				.isThrownBy(() -> new HttpServerOperations.TrailerHeaders(true).add(headerName, HEADER_VALUE))
+				.withMessage(String.format(ERROR_MESSAGE_2, headerName));
+	}
 	@Test
-	void testNamesIncludedInTrailerHeader() {
-		HttpHeaders headers = new HttpServerOperations.TrailerHeaders(HEADER_NAME_1 + ',' + HEADER_NAME_2);
+	void testTrailerHeaders() {
+		HttpHeaders headers = new HttpServerOperations.TrailerHeaders(false);
 		assertThat(headers.isEmpty()).isTrue();
 		headers.add(HEADER_NAME_1, HEADER_VALUE);
 		headers.add(HEADER_NAME_2, HEADER_VALUE);
@@ -77,21 +80,6 @@ class TrailerHeadersTests {
 		assertThat(headers.size()).isEqualTo(2);
 		assertThat(headers.get(HEADER_NAME_1)).isEqualTo(HEADER_VALUE);
 		assertThat(headers.get(HEADER_NAME_2)).isEqualTo(HEADER_VALUE);
-	}
-
-	@Test
-	void testNameNotIncludedInTrailerHeader() {
-		assertThatExceptionOfType(IllegalArgumentException.class)
-				.isThrownBy(() -> new HttpServerOperations.TrailerHeaders(HEADER_NAME_1).add(HEADER_NAME_2, HEADER_VALUE))
-				.withMessage(String.format(ERROR_MESSAGE, HEADER_NAME_2));
-	}
-
-	@ParameterizedTest(name = "{displayName}({index})")
-	@ValueSource(strings = {COMMA, EMPTY, SPACE})
-	void testNothingIsIncludedInTrailerHeader(String declaredHeaderNames) {
-		assertThatExceptionOfType(IllegalArgumentException.class)
-				.isThrownBy(() -> new HttpServerOperations.TrailerHeaders(declaredHeaderNames).add(EMPTY, HEADER_VALUE))
-				.withMessage(String.format(ERROR_MESSAGE, EMPTY));
 	}
 
 	static Set<String> disallowedTrailerHeaderNames() {

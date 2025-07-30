@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -46,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  */
 class HttpClientNoMicrometerTest {
 
-	private DisposableServer disposableServer;
+	private @Nullable DisposableServer disposableServer;
 
 	@AfterEach
 	void cleanup() {
@@ -83,8 +85,8 @@ class HttpClientNoMicrometerTest {
 
 	@Test
 	void clientCreatedWithMetricsDoesntLoadGaugeHttp2() throws Exception {
-		SelfSignedCertificate ssc = new SelfSignedCertificate();
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		X509Bundle ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));

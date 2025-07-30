@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,11 +40,13 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.websocketx.WebSocketClientHandshakeException;
 import io.netty.handler.ssl.SslClosedEngineException;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AsciiString;
 import io.netty.util.AttributeKey;
 import io.netty.util.NetUtil;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -61,11 +63,11 @@ import reactor.netty.transport.AddressUtils;
 import reactor.netty.transport.ProxyProvider;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 import reactor.util.retry.Retry;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.http.client.HttpClientOperations.H2;
 import static reactor.netty.http.client.HttpClientState.STREAM_CONFIGURED;
 
 /**
@@ -115,14 +117,16 @@ class HttpClientConnect extends HttpClient {
 			mono = new MonoHttpConnect(config);
 		}
 
-		if (config.doOnConnect() != null) {
-			mono = mono.doOnSubscribe(s -> config.doOnConnect().accept(config));
+		Consumer<? super HttpClientConfig> doOnConnect = config.doOnConnect();
+		if (doOnConnect != null) {
+			mono = mono.doOnSubscribe(s -> doOnConnect.accept(config));
 		}
 
-		if (config.doOnRequestError != null) {
+		BiConsumer<? super HttpClientRequest, ? super Throwable> doOnRequestError = config.doOnRequestError;
+		if (doOnRequestError != null) {
 			mono = mono.onErrorResume(error ->
 					Mono.deferContextual(Mono::just)
-					    .doOnNext(ctx -> config.doOnRequestError.accept(new FailedHttpClientRequest(ctx, config), error))
+					    .doOnNext(ctx -> doOnRequestError.accept(new FailedHttpClientRequest(ctx, config), error))
 					    .then(Mono.error(error)));
 		}
 
@@ -181,8 +185,14 @@ class HttpClientConnect extends HttpClient {
 			httpClient = httpClient.option((ChannelOption<Object>) entry.getKey(), entry.getValue());
 		}
 
-		if (config.proxyProvider() != null) {
-			httpClient.configuration().proxyProvider(config.proxyProvider());
+		ProxyProvider proxyProvider = config.proxyProvider();
+		if (proxyProvider != null) {
+			httpClient.configuration().proxyProvider(proxyProvider);
+		}
+
+		Supplier<ProxyProvider> proxyProviderSupplier = config.proxyProviderSupplier();
+		if (proxyProviderSupplier != null) {
+			httpClient.configuration().proxyProviderSupplier(proxyProviderSupplier);
 		}
 
 		if (config.sslProvider() != null) {
@@ -205,11 +215,13 @@ class HttpClientConnect extends HttpClient {
 			HttpClientHandler handler = new HttpClientHandler(config);
 
 			Mono.<Connection>create(sink -> {
+				boolean configCopied = false;
 				HttpClientConfig _config = config;
 
-				//append secure handler if needed
+				//append a secure handler if needed
 				if (handler.toURI.isSecure()) {
 					if (_config.sslProvider == null) {
+						configCopied = true;
 						_config = new HttpClientConfig(config);
 						_config.sslProvider = HttpClientSecure.defaultSslProvider(_config);
 					}
@@ -229,6 +241,7 @@ class HttpClientConnect extends HttpClient {
 				}
 				else {
 					if (_config.sslProvider != null) {
+						configCopied = true;
 						_config = new HttpClientConfig(config);
 						_config.sslProvider = null;
 					}
@@ -250,14 +263,26 @@ class HttpClientConnect extends HttpClient {
 					}
 				}
 
+				if (_config.proxyProvider() == null) {
+					Supplier<ProxyProvider> proxyProviderSupplier = _config.proxyProviderSupplier();
+					if (proxyProviderSupplier != null) {
+						if (!configCopied) {
+							configCopied = true;
+							_config = new HttpClientConfig(config);
+						}
+						ProxyProvider proxyProvider = proxyProviderSupplier.get();
+						_config.proxyProvider(proxyProvider);
+						handler.proxyProvider = proxyProvider;
+					}
+				}
+
 				ConnectionObserver observer =
 						new HttpObserver(sink, handler)
 						        .then(_config.defaultConnectionObserver())
 						        .then(_config.connectionObserver())
 						        .then(new HttpIOHandlerObserver(sink, handler));
 
-				AddressResolverGroup<?> resolver =
-						!_config.checkProtocol(HttpClientConfig.h3) ? _config.resolverInternal() : null;
+				AddressResolverGroup<?> resolver = _config.resolverInternal();
 
 				_config.httpConnectionProvider()
 						.acquire(_config, observer, handler, resolver)
@@ -267,7 +292,7 @@ class HttpClientConnect extends HttpClient {
 			  .subscribe(actual);
 		}
 
-		private void removeIncompatibleProtocol(HttpClientConfig config, HttpProtocol protocol) {
+		private static void removeIncompatibleProtocol(HttpClientConfig config, HttpProtocol protocol) {
 			List<HttpProtocol> newProtocols = new ArrayList<>();
 			for (int i = 0; i < config.protocols.length; i++) {
 				if (config.protocols[i] != protocol) {
@@ -347,7 +372,7 @@ class HttpClientConnect extends HttpClient {
 					// In some cases the channel close event may be delayed and thus the connection to be
 					// returned to the pool and later the eviction functionality to remove it from the pool.
 					// In some rare cases the connection might be acquired immediately, before the channel close
-					// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
+					// event and the eviction functionality is able to remove it from the pool; this may lead to I/O
 					// errors.
 					// Mark the connection as non-persistent here so that it is never returned to the pool and leave
 					// the channel close event to invalidate it.
@@ -365,7 +390,7 @@ class HttpClientConnect extends HttpClient {
 						// In some cases the channel close event may be delayed and thus the connection to be
 						// returned to the pool and later the eviction functionality to remove it from the pool.
 						// In some rare cases the connection might be acquired immediately, before the channel close
-						// event and the eviction functionality be able to remove it from the pool, this may lead to I/O
+						// event and the eviction functionality is able to remove it from the pool; this may lead to I/O
 						// errors.
 						// Mark the connection as non-persistent here so that it is never returned to the pool and leave
 						// the channel close event to invalidate it.
@@ -440,34 +465,34 @@ class HttpClientConnect extends HttpClient {
 
 	static final class HttpClientHandler extends SocketAddress
 			implements Predicate<Throwable>, Supplier<SocketAddress> {
+		static final Long FALSE = 0L;
 
-		volatile HttpMethod           method;
-		final HttpHeaders             defaultHeaders;
-		final BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>>
-		                              handler;
-		final boolean                 compress;
-		final UriEndpointFactory      uriEndpointFactory;
-		final WebsocketClientSpec     websocketClientSpec;
-		final BiPredicate<HttpClientRequest, HttpClientResponse>
-		                              followRedirectPredicate;
-		final BiConsumer<HttpHeaders, HttpClientRequest>
-		                              redirectRequestBiConsumer;
-		final Consumer<HttpClientRequest>
-		                              redirectRequestConsumer;
-		final HttpResponseDecoderSpec decoder;
-		final ProxyProvider           proxyProvider;
-		final Duration                responseTimeout;
+		volatile HttpMethod                     method;
+		final HttpHeaders                       defaultHeaders;
+		final @Nullable BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>>
+		                                        handler;
+		final UriEndpointFactory                uriEndpointFactory;
+		final @Nullable WebsocketClientSpec     websocketClientSpec;
+		final @Nullable BiPredicate<HttpClientRequest, HttpClientResponse>
+		                                        followRedirectPredicate;
+		final @Nullable BiConsumer<HttpHeaders, HttpClientRequest>
+		                                        redirectRequestBiConsumer;
+		final @Nullable Consumer<HttpClientRequest>
+		                                        redirectRequestConsumer;
+		final HttpResponseDecoderSpec           decoder;
+		final @Nullable Duration                responseTimeout;
 
-		volatile UriEndpoint        toURI;
-		volatile String             resourceUrl;
-		volatile UriEndpoint        fromURI;
-		volatile Supplier<String>[] redirectedFrom;
-		volatile boolean            shouldRetry;
-		volatile HttpHeaders        previousRequestHeaders;
+		@Nullable ProxyProvider                 proxyProvider;
+
+		volatile UriEndpoint                    toURI;
+		volatile String                         resourceUrl;
+		volatile @Nullable UriEndpoint          fromURI;
+		volatile Supplier<String> @Nullable []  redirectedFrom;
+		volatile boolean                        shouldRetry;
+		volatile @Nullable HttpHeaders          previousRequestHeaders;
 
 		HttpClientHandler(HttpClientConfig configuration) {
 			this.method = configuration.method;
-			this.compress = configuration.acceptGzip;
 			this.followRedirectPredicate = configuration.followRedirectPredicate;
 			this.redirectRequestBiConsumer = configuration.redirectRequestBiConsumer;
 			this.redirectRequestConsumer = configuration.redirectRequestConsumer;
@@ -497,10 +522,10 @@ class HttpClientConnect extends HttpClient {
 					uri = baseUrl + uri;
 				}
 
-				this.toURI = uriEndpointFactory.createUriEndpoint(uri, configuration.websocketClientSpec != null);
+				this.fromURI = this.toURI = uriEndpointFactory.createUriEndpoint(uri, configuration.websocketClientSpec != null);
 			}
 			else {
-				this.toURI = uriEndpointFactory.createUriEndpoint(configuration.uri, configuration.websocketClientSpec != null);
+				this.fromURI = this.toURI = uriEndpointFactory.createUriEndpoint(configuration.uri, configuration.websocketClientSpec != null);
 			}
 			this.resourceUrl = toURI.toExternalForm();
 		}
@@ -515,6 +540,7 @@ class HttpClientConnect extends HttpClient {
 			return address;
 		}
 
+		@SuppressWarnings("ReferenceEquality")
 		Publisher<Void> requestWithBody(HttpClientOperations ch) {
 			try {
 				ch.resourceUrl = this.resourceUrl;
@@ -550,16 +576,28 @@ class HttpClientConnect extends HttpClient {
 				ch.followRedirectPredicate(followRedirectPredicate);
 
 				if (!Objects.equals(method, HttpMethod.GET) &&
-							!Objects.equals(method, HttpMethod.HEAD) &&
-							!Objects.equals(method, HttpMethod.DELETE) &&
-							!headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
+						!Objects.equals(method, HttpMethod.HEAD) &&
+						!Objects.equals(method, HttpMethod.DELETE) &&
+						!headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
 					ch.chunkedTransfer(true);
 				}
 
 				ch.listener().onStateChange(ch, HttpClientState.REQUEST_PREPARED);
 				if (websocketClientSpec != null) {
+					// ReferenceEquality is deliberate
+					if (ch.version == H2) {
+						Long value = ch.channel().parent().attr(ENABLE_CONNECT_PROTOCOL).get();
+						if (value == null) {
+							throw new WebSocketClientHandshakeException("Websocket is not supported by the server. " +
+									"Missing SETTINGS_ENABLE_CONNECT_PROTOCOL(0x8).");
+						}
+						if (FALSE.equals(value)) {
+							throw new WebSocketClientHandshakeException("Websocket is not supported by the server. " +
+									"[SETTINGS_ENABLE_CONNECT_PROTOCOL(0x8)=0] was received.");
+						}
+					}
 					Mono<Void> result =
-							Mono.fromRunnable(() -> ch.withWebsocketSupport(websocketClientSpec, compress));
+							Mono.fromRunnable(() -> ch.withWebsocketSupport(websocketClientSpec));
 					if (handler != null) {
 						result = result.thenEmpty(Mono.fromRunnable(() -> Flux.concat(handler.apply(ch, ch))));
 					}
@@ -593,7 +631,13 @@ class HttpClientConnect extends HttpClient {
 				}
 
 				ch.redirectRequestConsumer(consumer);
-				return handler != null ? handler.apply(ch, ch) : ch.send();
+				if (handler != null) {
+					Publisher<Void> publisher = handler.apply(ch, ch);
+					return ch.equals(publisher) ? ch.send() : publisher;
+				}
+				else {
+					return ch.send();
+				}
 			}
 			catch (Throwable t) {
 				return Mono.error(t);
@@ -634,16 +678,15 @@ class HttpClientConnect extends HttpClient {
 				}
 			}
 			else {
-				toURITemp = uriEndpointFactory.createUriEndpoint(from, to, () -> address);
+				toURITemp = UriEndpointFactory.createUriEndpoint(from, to, () -> address);
 			}
-			fromURI = from;
 			toURI = toURITemp;
 			resourceUrl = toURITemp.toExternalForm();
 			this.redirectedFrom = addToRedirectedFromArray(redirectedFrom, from);
 		}
 
 		@SuppressWarnings({"unchecked", "rawtypes"})
-		static Supplier<String>[] addToRedirectedFromArray(@Nullable Supplier<String>[] redirectedFrom, UriEndpoint from) {
+		static Supplier<String>[] addToRedirectedFromArray(Supplier<String> @Nullable [] redirectedFrom, UriEndpoint from) {
 			Supplier<String> fromUrlSupplier = from::toExternalForm;
 			if (redirectedFrom == null) {
 				return new Supplier[]{fromUrlSupplier};
@@ -692,6 +735,8 @@ class HttpClientConnect extends HttpClient {
 	}
 
 	static final AsciiString ALL = new AsciiString("*/*");
+
+	static final AttributeKey<@Nullable Long> ENABLE_CONNECT_PROTOCOL = AttributeKey.valueOf("$ENABLE_CONNECT_PROTOCOL");
 
 	static final Logger log = Loggers.getLogger(HttpClientConnect.class);
 

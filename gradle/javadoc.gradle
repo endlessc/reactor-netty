@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,10 @@ if (project.name == 'reactor-netty-examples' || project.name == 'reactor-netty-g
 }
 
 project.tasks.withType(Javadoc) {
+	javadocTool = javaToolchains.javadocToolFor {
+		languageVersion = JavaLanguageVersion.of(17)
+	}
+
 	dependsOn jar
 	group = "Reactor Netty Javadoc"
 
@@ -25,18 +29,19 @@ project.tasks.withType(Javadoc) {
 	title = "${project.name} ${version}"
 
 	compileTestJava.options.compilerArgs += "-parameters"
-	tasks.withType(Javadoc) {
-		options.addStringOption('Xdoclint:none', '-quiet')
+
+	failOnError = true
+
+	options {
+		source = "1.8"
+		addStringOption('Xdoclint:none', '-quiet')
+		addStringOption('charSet', 'UTF-8')
+		memberLevel = org.gradle.external.javadoc.JavadocMemberLevel.PROTECTED
+		author = true
+		header = "${project.name}"
+		overview = "$rootDir/docs/api/overview.html"
+		links(rootProject.ext.javadocLinks)
 	}
-
-	options.addStringOption('charSet', 'UTF-8')
-
-	options.memberLevel = org.gradle.external.javadoc.JavadocMemberLevel.PROTECTED
-	options.author = true
-	options.header = "${project.name}"
-	options.overview = "$rootDir/docs/api/overview.html"
-	options.stylesheetFile = file("$rootDir/docs/api/stylesheet.css")
-	options.links(rootProject.ext.javadocLinks)
 
 	maxMemory = "1024m"
 	destinationDir = new File(buildDir, "docs/javadoc")

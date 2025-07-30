@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,12 +27,13 @@ import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.resolver.dns.DnsCache;
 import io.netty.resolver.dns.DnsNameResolver;
 import io.netty.resolver.dns.DnsNameResolverBuilder;
+import io.netty.resolver.dns.DnsNameResolverChannelStrategy;
 import io.netty.resolver.dns.DnsQueryLifecycleObserverFactory;
 import io.netty.resolver.dns.LoggingDnsQueryLifeCycleObserverFactory;
 import io.netty.resolver.dns.RoundRobinDnsAddressResolverGroup;
 import io.netty.util.concurrent.Future;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.resources.LoopResources;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.time.Duration;
@@ -53,13 +54,14 @@ public final class NameResolverProvider {
 
 		/**
 		 * Set a new local address supplier that supply the address to bind to.
+		 * If {@code null} is provided by the supplier, there will be no bind operation.
 		 * By default, the host is configured for any local address, and the system picks up an ephemeral port.
 		 *
 		 * @param bindAddressSupplier A supplier of local address to bind to
 		 * @return {@code this}
 		 * @since 1.0.14
 		 */
-		NameResolverSpec bindAddressSupplier(Supplier<? extends SocketAddress> bindAddressSupplier);
+		NameResolverSpec bindAddressSupplier(Supplier<? extends @Nullable SocketAddress> bindAddressSupplier);
 
 		/**
 		 * Build a new {@link NameResolverProvider}.
@@ -114,6 +116,17 @@ public final class NameResolverProvider {
 		 * @return {@code this}
 		 */
 		NameResolverSpec completeOncePreferredResolved(boolean enable);
+
+		/**
+		 * Sets the strategy that is used to determine how a {@link DatagramChannel} is used by the resolver for sending
+		 * queries over UDP protocol.
+		 * Default to {@link DnsNameResolverChannelStrategy#ChannelPerResolver}
+		 *
+		 * @param datagramChannelStrategy the {@link DnsNameResolverChannelStrategy} to use when doing queries over UDP protocol
+		 * @return {@code this}
+		 * @since 1.2.3
+		 */
+		NameResolverSpec datagramChannelStrategy(DnsNameResolverChannelStrategy datagramChannelStrategy);
 
 		/**
 		 * Disables the automatic inclusion of an optional record that tries to hint the remote DNS server about
@@ -243,7 +256,7 @@ public final class NameResolverProvider {
 		/**
 		 * Performs the communication with the DNS servers on a supplied {@link EventLoopGroup}
 		 * from the {@link LoopResources} container.
-		 * Will prefer native (epoll/kqueue) implementation if available
+		 * Will prefer native (epoll/io_uring/kqueue) implementation if available
 		 * unless the environment property {@code reactor.netty.native} is set to {@code false}.
 		 *
 		 * @param loopResources the {@link LoopResources}
@@ -256,7 +269,7 @@ public final class NameResolverProvider {
 		 * from the {@link LoopResources} container.
 		 *
 		 * @param loopResources the {@link LoopResources}
-		 * @param preferNative should prefer running on epoll or kqueue instead of java NIO
+		 * @param preferNative should prefer running on epoll, io_uring or kqueue instead of java NIO
 		 * @return {@code this}
 		 */
 		NameResolverSpec runOn(LoopResources loopResources, boolean preferNative);
@@ -297,8 +310,7 @@ public final class NameResolverProvider {
 	 * @return the configured supplier of local address to bind to or null
 	 * @since 1.0.14
 	 */
-	@Nullable
-	public Supplier<? extends SocketAddress> bindAddressSupplier() {
+	public @Nullable Supplier<? extends @Nullable SocketAddress> bindAddressSupplier() {
 		return bindAddressSupplier;
 	}
 
@@ -330,13 +342,22 @@ public final class NameResolverProvider {
 	}
 
 	/**
+	 * Returns the configured custom {@link DnsNameResolverChannelStrategy}.
+	 *
+	 * @return the configured custom {@link DnsNameResolverChannelStrategy}
+	 * @since 1.2.3
+	 */
+	public DnsNameResolverChannelStrategy datagramChannelStrategy() {
+		return datagramChannelStrategy;
+	}
+
+	/**
 	 * Returns the configured custom provider of {@link DnsAddressResolverGroup} or null.
 	 *
 	 * @return the configured custom provider of {@link DnsAddressResolverGroup} or null
 	 * @since 1.1.6
 	 */
-	@Nullable
-	public Function<DnsNameResolverBuilder, DnsAddressResolverGroup> dnsAddressResolverGroupProvider() {
+	public @Nullable Function<DnsNameResolverBuilder, DnsAddressResolverGroup> dnsAddressResolverGroupProvider() {
 		return dnsAddressResolverGroupProvider;
 	}
 
@@ -346,8 +367,7 @@ public final class NameResolverProvider {
 	 * @return the configured custom {@link HostsFileEntriesResolver} to be used for hosts file entries or null
 	 * @since 1.0.12
 	 */
-	@Nullable
-	public HostsFileEntriesResolver hostsFileEntriesResolver() {
+	public @Nullable HostsFileEntriesResolver hostsFileEntriesResolver() {
 		return hostsFileEntriesResolver;
 	}
 
@@ -381,9 +401,9 @@ public final class NameResolverProvider {
 	}
 
 	/**
-	 * Returns {@code true} if prefer native event loop and channel factory (e.g. epoll or kqueue).
+	 * Returns {@code true} if prefer native event loop and channel factory (e.g. epoll, io_uring or kqueue).
 	 *
-	 * @return {@code true} if prefer native event loop and channel factory (e.g. epoll or kqueue)
+	 * @return {@code true} if prefer native event loop and channel factory (e.g. epoll, io_uring or kqueue)
 	 */
 	public boolean isPreferNative() {
 		return preferNative;
@@ -413,8 +433,7 @@ public final class NameResolverProvider {
 	 *
 	 * @return the configured {@link LoopResources} or null
 	 */
-	@Nullable
-	public LoopResources loopResources() {
+	public @Nullable LoopResources loopResources() {
 		return loopResources;
 	}
 
@@ -460,8 +479,7 @@ public final class NameResolverProvider {
 	 * @return the configured DNS resolver cache or null
 	 * @since 1.0.27
 	 */
-	@Nullable
-	public DnsCache resolveCache() {
+	public @Nullable DnsCache resolveCache() {
 		return resolveCache;
 	}
 
@@ -470,8 +488,7 @@ public final class NameResolverProvider {
 	 *
 	 * @return the configured list of the protocol families of the address resolved or null
 	 */
-	@Nullable
-	public ResolvedAddressTypes resolvedAddressTypes() {
+	public @Nullable ResolvedAddressTypes resolvedAddressTypes() {
 		return resolvedAddressTypes;
 	}
 
@@ -480,14 +497,13 @@ public final class NameResolverProvider {
 	 *
 	 * @return the configured list of search domains of the resolver or null
 	 */
-	@Nullable
-	public Iterable<String> searchDomains() {
+	public @Nullable Iterable<String> searchDomains() {
 		return searchDomains;
 	}
 
 	@Override
 	@SuppressWarnings("UndefinedEquals")
-	public boolean equals(Object o) {
+	public boolean equals(@Nullable Object o) {
 		if (this == o) {
 			return true;
 		}
@@ -500,6 +516,7 @@ public final class NameResolverProvider {
 				cacheMinTimeToLive.equals(that.cacheMinTimeToLive) &&
 				cacheNegativeTimeToLive.equals(that.cacheNegativeTimeToLive) &&
 				completeOncePreferredResolved == that.completeOncePreferredResolved &&
+				datagramChannelStrategy == that.datagramChannelStrategy &&
 				disableOptionalRecord == that.disableOptionalRecord &&
 				disableRecursionDesired == that.disableRecursionDesired &&
 				Objects.equals(dnsAddressResolverGroupProvider, that.dnsAddressResolverGroupProvider) &&
@@ -526,6 +543,7 @@ public final class NameResolverProvider {
 		result = 31 * result + Objects.hashCode(cacheMinTimeToLive);
 		result = 31 * result + Objects.hashCode(cacheNegativeTimeToLive);
 		result = 31 * result + Boolean.hashCode(completeOncePreferredResolved);
+		result = 31 * result + Objects.hashCode(datagramChannelStrategy);
 		result = 31 * result + Boolean.hashCode(disableOptionalRecord);
 		result = 31 * result + Boolean.hashCode(disableRecursionDesired);
 		result = 31 * result + Objects.hashCode(dnsAddressResolverGroupProvider);
@@ -573,11 +591,12 @@ public final class NameResolverProvider {
 				.ndots(ndots)
 				.queryTimeoutMillis(queryTimeout.toMillis())
 				.eventLoop(group.next())
-				.channelFactory(() -> loop.onChannel(DatagramChannel.class, group))
+				.datagramChannelStrategy(datagramChannelStrategy)
+				.datagramChannelFactory(() -> loop.onChannel(DatagramChannel.class, group))
 				.socketChannelFactory(() -> loop.onChannel(SocketChannel.class, group), retryTcpOnTimeout);
 		if (bindAddressSupplier != null) {
 			// There is no check for bindAddressSupplier.get() == null
-			// This is deliberate, when null value is provided Netty will use the default behaviour
+			// This is deliberate, when null value is provided Netty will not bind
 			builder.localAddress(bindAddressSupplier.get());
 		}
 		if (hostsFileEntriesResolver != null) {
@@ -601,27 +620,28 @@ public final class NameResolverProvider {
 		return roundRobinSelection ? new RoundRobinDnsAddressResolverGroup(builder) : new DnsAddressResolverGroup(builder);
 	}
 
-	final Supplier<? extends SocketAddress> bindAddressSupplier;
+	final @Nullable Supplier<? extends @Nullable SocketAddress> bindAddressSupplier;
 	final Duration cacheMaxTimeToLive;
 	final Duration cacheMinTimeToLive;
 	final Duration cacheNegativeTimeToLive;
 	final boolean completeOncePreferredResolved;
+	final DnsNameResolverChannelStrategy datagramChannelStrategy;
 	final boolean disableOptionalRecord;
 	final boolean disableRecursionDesired;
-	final Function<DnsNameResolverBuilder, DnsAddressResolverGroup> dnsAddressResolverGroupProvider;
-	final HostsFileEntriesResolver hostsFileEntriesResolver;
-	final DnsQueryLifecycleObserverFactory loggingFactory;
-	final LoopResources loopResources;
+	final @Nullable Function<DnsNameResolverBuilder, DnsAddressResolverGroup> dnsAddressResolverGroupProvider;
+	final @Nullable HostsFileEntriesResolver hostsFileEntriesResolver;
+	final @Nullable DnsQueryLifecycleObserverFactory loggingFactory;
+	final @Nullable LoopResources loopResources;
 	final int maxPayloadSize;
 	final int maxQueriesPerResolve;
 	final int ndots;
 	final boolean preferNative;
 	final Duration queryTimeout;
-	final DnsCache resolveCache;
-	final ResolvedAddressTypes resolvedAddressTypes;
+	final @Nullable DnsCache resolveCache;
+	final @Nullable ResolvedAddressTypes resolvedAddressTypes;
 	final boolean retryTcpOnTimeout;
 	final boolean roundRobinSelection;
-	final Iterable<String> searchDomains;
+	final @Nullable Iterable<String> searchDomains;
 
 	NameResolverProvider(Build build) {
 		this.bindAddressSupplier = build.bindAddressSupplier;
@@ -629,6 +649,7 @@ public final class NameResolverProvider {
 		this.cacheMinTimeToLive = build.cacheMinTimeToLive;
 		this.cacheNegativeTimeToLive = build.cacheNegativeTimeToLive;
 		this.completeOncePreferredResolved = build.completeOncePreferredResolved;
+		this.datagramChannelStrategy = build.datagramChannelStrategy;
 		this.disableOptionalRecord = build.disableOptionalRecord;
 		this.disableRecursionDesired = build.disableRecursionDesired;
 		this.dnsAddressResolverGroupProvider = build.dnsAddressResolverGroupProvider;
@@ -652,36 +673,38 @@ public final class NameResolverProvider {
 		static final Duration DEFAULT_CACHE_MIN_TIME_TO_LIVE = Duration.ofSeconds(0);
 		static final Duration DEFAULT_CACHE_NEGATIVE_TIME_TO_LIVE = Duration.ofSeconds(0);
 		static final boolean DEFAULT_COMPLETE_ONCE_PREFERRED_RESOLVED = true;
+		static final DnsNameResolverChannelStrategy DEFAULT_DATAGRAM_CHANNEL_STRATEGY = DnsNameResolverChannelStrategy.ChannelPerResolver;
 		static final int DEFAULT_MAX_PAYLOAD_SIZE = 4096;
 		static final int DEFAULT_MAX_QUERIES_PER_RESOLVE = 16;
 		static final int DEFAULT_NDOTS = -1;
 		static final Duration DEFAULT_QUERY_TIMEOUT = Duration.ofSeconds(5);
 
-		Supplier<? extends SocketAddress> bindAddressSupplier;
+		@Nullable Supplier<? extends @Nullable SocketAddress> bindAddressSupplier;
 		Duration cacheMaxTimeToLive = DEFAULT_CACHE_MAX_TIME_TO_LIVE;
 		Duration cacheMinTimeToLive = DEFAULT_CACHE_MIN_TIME_TO_LIVE;
 		Duration cacheNegativeTimeToLive = DEFAULT_CACHE_NEGATIVE_TIME_TO_LIVE;
 		boolean completeOncePreferredResolved = DEFAULT_COMPLETE_ONCE_PREFERRED_RESOLVED;
+		DnsNameResolverChannelStrategy datagramChannelStrategy = DEFAULT_DATAGRAM_CHANNEL_STRATEGY;
 		boolean disableOptionalRecord;
 		boolean disableRecursionDesired;
-		Function<DnsNameResolverBuilder, DnsAddressResolverGroup> dnsAddressResolverGroupProvider;
-		HostsFileEntriesResolver hostsFileEntriesResolver;
-		DnsQueryLifecycleObserverFactory loggingFactory;
-		LoopResources loopResources;
+		@Nullable Function<DnsNameResolverBuilder, DnsAddressResolverGroup> dnsAddressResolverGroupProvider;
+		@Nullable HostsFileEntriesResolver hostsFileEntriesResolver;
+		@Nullable DnsQueryLifecycleObserverFactory loggingFactory;
+		@Nullable LoopResources loopResources;
 		int maxPayloadSize = DEFAULT_MAX_PAYLOAD_SIZE;
 		int maxQueriesPerResolve = DEFAULT_MAX_QUERIES_PER_RESOLVE;
 		int ndots = DEFAULT_NDOTS;
 		boolean preferNative = LoopResources.DEFAULT_NATIVE;
 		Duration queryTimeout = DEFAULT_QUERY_TIMEOUT;
-		DnsCache resolveCache;
-		ResolvedAddressTypes resolvedAddressTypes;
+		@Nullable DnsCache resolveCache;
+		@Nullable ResolvedAddressTypes resolvedAddressTypes;
 		boolean retryTcpOnTimeout;
 		boolean roundRobinSelection;
-		Iterable<String> searchDomains;
+		@Nullable Iterable<String> searchDomains;
 
 		@Override
-		public NameResolverSpec bindAddressSupplier(Supplier<? extends SocketAddress> bindAddressSupplier) {
-			// If the default behaviour for bindAddress is the desired behaviour, one can provide a Supplier that returns null
+		public NameResolverSpec bindAddressSupplier(Supplier<? extends @Nullable SocketAddress> bindAddressSupplier) {
+			// One can provide a Supplier that returns null if no bind operation is expected
 			Objects.requireNonNull(bindAddressSupplier, "bindAddressSupplier");
 			this.bindAddressSupplier = bindAddressSupplier;
 			return this;
@@ -708,6 +731,12 @@ public final class NameResolverProvider {
 		@Override
 		public NameResolverSpec completeOncePreferredResolved(boolean enable) {
 			this.completeOncePreferredResolved = enable;
+			return this;
+		}
+
+		@Override
+		public NameResolverSpec datagramChannelStrategy(DnsNameResolverChannelStrategy datagramChannelStrategy) {
+			this.datagramChannelStrategy = Objects.requireNonNull(datagramChannelStrategy);
 			return this;
 		}
 

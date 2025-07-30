@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ import ch.qos.logback.classic.spi.LoggingEvent;
 import ch.qos.logback.core.Appender;
 import io.netty.channel.ChannelHandler;
 import io.netty.handler.codec.http.cookie.Cookie;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,7 +31,7 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.NettyPipeline;
-import reactor.util.annotation.Nullable;
+import reactor.netty.http.server.HttpServer;
 import reactor.util.function.Tuple2;
 
 import java.time.Duration;
@@ -38,6 +39,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static reactor.netty.http.server.logging.AccessLog.LOG;
@@ -61,6 +63,7 @@ class AccessLogTest extends BaseHttpTest {
 
 	private Appender<ILoggingEvent> mockedAppender;
 	private ArgumentCaptor<LoggingEvent> loggingEventArgumentCaptor;
+	private HttpServer server;
 
 	@BeforeEach
 	@SuppressWarnings("unchecked")
@@ -69,6 +72,15 @@ class AccessLogTest extends BaseHttpTest {
 		loggingEventArgumentCaptor = ArgumentCaptor.forClass(LoggingEvent.class);
 		Mockito.when(mockedAppender.getName()).thenReturn("MOCK");
 		ROOT.addAppender(mockedAppender);
+
+		server = createServer()
+				.handle((req, resp) -> {
+					resp.withConnection(conn -> {
+						ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
+						resp.header(ACCESS_LOG_HANDLER, handler != null ? FOUND : NOT_FOUND);
+					});
+					return resp.send();
+				});
 	}
 
 	@AfterEach
@@ -78,16 +90,7 @@ class AccessLogTest extends BaseHttpTest {
 
 	@Test
 	void accessLogDefaultFormat() {
-		disposableServer = createServer()
-				.handle((req, resp) -> {
-					resp.withConnection(conn -> {
-						ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
-						resp.header(ACCESS_LOG_HANDLER, handler != null ? FOUND : NOT_FOUND);
-					});
-					return resp.send();
-				})
-				.accessLog(true)
-				.bindNow();
+		disposableServer = server.accessLog(true).bindNow();
 
 		Tuple2<String, String> response = getHttpClientResponse(URI_1);
 
@@ -96,16 +99,7 @@ class AccessLogTest extends BaseHttpTest {
 
 	@Test
 	void accessLogCustomFormat() {
-		disposableServer = createServer()
-				.handle((req, resp) -> {
-					resp.withConnection(conn -> {
-						ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
-						resp.header(ACCESS_LOG_HANDLER, handler != null ? FOUND : NOT_FOUND);
-					});
-					return resp.send();
-				})
-				.accessLog(true, CUSTOM_ACCESS_LOG)
-				.bindNow();
+		disposableServer = server.accessLog(true, CUSTOM_ACCESS_LOG).bindNow();
 
 		Tuple2<String, String> response = getHttpClientResponse(URI_1);
 
@@ -114,17 +108,10 @@ class AccessLogTest extends BaseHttpTest {
 
 	@Test
 	void secondCallToAccessLogOverridesPreviousOne() {
-		disposableServer = createServer()
-				.handle((req, resp) -> {
-					resp.withConnection(conn -> {
-						ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
-						resp.header(ACCESS_LOG_HANDLER, handler != null ? FOUND : NOT_FOUND);
-					});
-					return resp.send();
-				})
-				.accessLog(true, CUSTOM_ACCESS_LOG)
-				.accessLog(false)
-				.bindNow();
+		disposableServer =
+				server.accessLog(true, CUSTOM_ACCESS_LOG)
+				      .accessLog(false)
+				      .bindNow();
 
 		Tuple2<String, String> response = getHttpClientResponse(URI_1);
 
@@ -133,16 +120,9 @@ class AccessLogTest extends BaseHttpTest {
 
 	@Test
 	void accessLogFiltering() {
-		disposableServer = createServer()
-				.handle((req, resp) -> {
-					resp.withConnection(conn -> {
-						ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
-						resp.header(ACCESS_LOG_HANDLER, handler != null ? FOUND : NOT_FOUND);
-					});
-					return resp.send();
-				})
-				.accessLog(true, AccessLogFactory.createFilter(p -> !String.valueOf(p.uri()).startsWith("/filtered/")))
-				.bindNow();
+		disposableServer =
+				server.accessLog(true, AccessLogFactory.createFilter(p -> !String.valueOf(p.uri()).startsWith("/filtered/")))
+				      .bindNow();
 
 		Tuple2<String, String> response = getHttpClientResponse(URI_1);
 
@@ -154,23 +134,34 @@ class AccessLogTest extends BaseHttpTest {
 
 	@Test
 	void accessLogFilteringAndFormatting() {
-		disposableServer = createServer()
-				.handle((req, resp) -> {
-					resp.withConnection(conn -> {
-						ChannelHandler handler = conn.channel().pipeline().get(NettyPipeline.AccessLogHandler);
-						resp.header(ACCESS_LOG_HANDLER, handler != null ? FOUND : NOT_FOUND);
-					});
-					return resp.send();
-				})
-				.accessLog(true, AccessLogFactory.createFilter(p -> !String.valueOf(p.uri()).startsWith("/filtered/"),
-						CUSTOM_ACCESS_LOG))
-				.bindNow();
+		disposableServer =
+				server.accessLog(true, AccessLogFactory.createFilter(p -> !String.valueOf(p.uri()).startsWith("/filtered/"), CUSTOM_ACCESS_LOG))
+				      .bindNow();
 
 		Tuple2<String, String> response = getHttpClientResponse(URI_1);
 
 		getHttpClientResponse(URI_2);
 
 		assertAccessLogging(response, true, true, CUSTOM_FORMAT);
+	}
+
+	@Test
+	@SuppressWarnings("unchecked")
+	void accessLogCustomImplementation() {
+		Consumer<AccessLogArgProvider> argConsumer = (Consumer<AccessLogArgProvider>) Mockito.mock(Consumer.class);
+		ArgumentCaptor<AccessLogArgProvider> accessLogArgProviderArgumentCaptor = ArgumentCaptor.forClass(AccessLogArgProvider.class);
+		disposableServer =
+				server.accessLog(true, argProvider -> new CustomAccessLog(argProvider, argConsumer))
+				      .bindNow();
+
+		Tuple2<String, String> response = getHttpClientResponse(URI_1);
+		assertThat(response).isNotNull();
+		assertThat(response.getT2()).isEqualTo(FOUND);
+		Mockito.verify(argConsumer, Mockito.times(1)).accept(accessLogArgProviderArgumentCaptor.capture());
+		AccessLogArgProvider capturedArgs = accessLogArgProviderArgumentCaptor.getValue();
+		assertThat(capturedArgs.protocol()).isEqualTo("HTTP/1.1");
+		assertThat(capturedArgs.method()).isEqualTo("GET");
+		assertThat(capturedArgs.uri()).isEqualTo(URI_1);
 	}
 
 	void assertAccessLogging(
@@ -191,7 +182,6 @@ class AccessLogTest extends BaseHttpTest {
 					assertThat(relevantLog.getFormattedMessage()).doesNotContain("filtered");
 				}
 			}
-
 			else {
 				assertThat(relevantLog.getMessage()).isEqualTo(loggerFormat);
 				assertThat(relevantLog.getFormattedMessage()).isEqualTo(EXPECTED_FORMATTED_MESSAGE_2);
@@ -206,9 +196,8 @@ class AccessLogTest extends BaseHttpTest {
 		assertThat(response.getT2()).isEqualTo(enable ? FOUND : NOT_FOUND);
 	}
 
-	@Nullable
 	@SuppressWarnings("deprecation")
-	private Tuple2<String, String> getHttpClientResponse(String uri) {
+	private @Nullable Tuple2<String, String> getHttpClientResponse(String uri) {
 		return createClient(disposableServer.port())
 				.cookie(COOKIE_KEY, cookie -> cookie.setValue(COOKIE_VALUE))
 				.get()
@@ -220,7 +209,7 @@ class AccessLogTest extends BaseHttpTest {
 				.block(Duration.ofSeconds(30));
 	}
 
-	private void sleep(long ms) {
+	private static void sleep(long ms) {
 		try {
 			TimeUnit.MILLISECONDS.sleep(ms);
 		}
@@ -240,5 +229,23 @@ class AccessLogTest extends BaseHttpTest {
 			}
 		}
 		return "";
+	}
+
+	private static class CustomAccessLog extends AccessLog {
+
+		private final AccessLogArgProvider argProvider;
+		private final Consumer<AccessLogArgProvider> argConsumer;
+
+		public CustomAccessLog(AccessLogArgProvider argProvider, Consumer<AccessLogArgProvider> argConsumer) {
+			super("");
+			this.argProvider = argProvider;
+			this.argConsumer = argConsumer;
+		}
+
+		@Override
+		public void log() {
+			argConsumer.accept(argProvider);
+		}
+
 	}
 }

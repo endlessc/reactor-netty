@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,9 +24,9 @@ import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.LastHttpContent;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.server.HttpServerRequest;
-import reactor.util.annotation.Nullable;
 
 import java.util.function.Function;
 
@@ -41,9 +41,12 @@ final class AccessLogHandlerH1 extends BaseAccessLogHandler {
 	static final boolean LAST_FLUSH_WHEN_NO_READ = Boolean.parseBoolean(
 			System.getProperty("reactor.netty.http.server.lastFlushWhenNoRead", "false"));
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This is a lazy initialization
 	AccessLogArgProviderH1 accessLogArgProvider;
 
-	AccessLogHandlerH1(@Nullable Function<AccessLogArgProvider, AccessLog> accessLog) {
+	AccessLogHandlerH1(@Nullable Function<AccessLogArgProvider, @Nullable AccessLog> accessLog) {
 		super(accessLog);
 	}
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,8 @@
  */
 package reactor.netty.http.client;
 
+import org.jspecify.annotations.Nullable;
+
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.net.URI;
@@ -22,8 +24,6 @@ import java.util.function.BiFunction;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
-import reactor.util.annotation.Nullable;
 
 final class UriEndpointFactory {
 	final Supplier<? extends SocketAddress> connectAddress;
@@ -88,7 +88,7 @@ final class UriEndpointFactory {
 				cleanPathAndQuery(path + query));
 	}
 
-	UriEndpoint createUriEndpoint(UriEndpoint from, String to, Supplier<? extends SocketAddress> connectAddress) {
+	static UriEndpoint createUriEndpoint(UriEndpoint from, String to, Supplier<? extends SocketAddress> connectAddress) {
 		if (to.startsWith("/")) {
 			return new UriEndpoint(from.scheme, from.host, from.port, connectAddress, to);
 		}
@@ -97,7 +97,7 @@ final class UriEndpointFactory {
 		}
 	}
 
-	String cleanPathAndQuery(@Nullable String pathAndQuery) {
+	static String cleanPathAndQuery(@Nullable String pathAndQuery) {
 		if (pathAndQuery == null) {
 			pathAndQuery = "/";
 		}
@@ -117,7 +117,7 @@ final class UriEndpointFactory {
 		return pathAndQuery;
 	}
 
-	String cleanHostString(String host) {
+	static String cleanHostString(String host) {
 		// remove brackets around IPv6 address in host name
 		if (host.charAt(0) == '[' && host.charAt(host.length() - 1) == ']') {
 			host = host.substring(1, host.length() - 1);

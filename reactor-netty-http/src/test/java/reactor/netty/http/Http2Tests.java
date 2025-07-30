@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,18 +15,19 @@
  */
 package reactor.netty.http;
 
-import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http2.Http2Connection;
 import io.netty.handler.codec.http2.Http2FrameCodec;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mockito;
-import org.reactivestreams.Publisher;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -35,25 +36,21 @@ import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.ByteBufFlux;
-import reactor.netty.ByteBufMono;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.internal.shaded.reactor.pool.PoolAcquireTimeoutException;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.tcp.SslProvider.ProtocolSslContextSpec;
 import reactor.test.StepVerifier;
-import reactor.util.annotation.Nullable;
 import reactor.util.function.Tuple2;
 
 import java.nio.charset.Charset;
-import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.function.Predicate;
 import java.util.stream.IntStream;
@@ -80,11 +77,11 @@ class Http2Tests extends BaseHttpTest {
 			"Use the non Clear-Text H2 protocol via HttpClient#protocol or disable TLS " +
 			"via HttpClient#noSSL()";
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
-		ssc = new SelfSignedCertificate();
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	@Test
@@ -99,8 +96,8 @@ class Http2Tests extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testHttpSslH2CFails() {
-		Http2SslContextSpec serverOptions = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void testHttpSslH2CFails() throws Exception {
+		Http2SslContextSpec serverOptions = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 
 		createServer()
 		          .protocol(HttpProtocol.H2C)
@@ -228,7 +225,7 @@ class Http2Tests extends BaseHttpTest {
 
 	@SuppressWarnings("deprecation")
 	void doTestMaxActiveStreams(HttpClient baseClient, int maxActiveStreams, int concurrency, int prefetch, int expectedOnNext, int expectedOnError) throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -279,6 +276,7 @@ class Http2Tests extends BaseHttpTest {
 				onNext++;
 			}
 			else if (signal.getThrowable() instanceof PoolAcquireTimeoutException &&
+					signal.getThrowable().getMessage() != null &&
 					signal.getThrowable().getMessage().contains(msg)) {
 				onError++;
 			}
@@ -290,8 +288,8 @@ class Http2Tests extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testHttp2ForMemoryLeaks() {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void testHttp2ForMemoryLeaks() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -355,57 +353,15 @@ class Http2Tests extends BaseHttpTest {
 		AtomicBoolean channel = new AtomicBoolean();
 		StepVerifier.create(client.doOnRequest((req, conn) -> channel.set(conn.channel().parent() != null))
 		                          .get()
-		                          .uri("https://example.com/")
+		                          .uri("https://projectreactor.io/")
 		                          .responseContent()
 		                          .aggregate()
 		                          .asString())
-		            .expectNextMatches(s -> s.contains("Example Domain"))
+		            .expectNextMatches(s -> s.contains("Project Reactor"))
 		            .expectComplete()
 		            .verify(Duration.ofSeconds(30));
 
 		assertThat(channel.get()).isTrue();
-	}
-
-	@Test
-	void testMonoRequestBodySentAsFullRequest_Flux() {
-		// sends the message and then last http content
-		doTestMonoRequestBodySentAsFullRequest(ByteBufFlux.fromString(Mono.just("test")), 2);
-	}
-
-	@Test
-	void testMonoRequestBodySentAsFullRequest_Mono() {
-		// sends "full" request
-		doTestMonoRequestBodySentAsFullRequest(ByteBufMono.fromString(Mono.just("test")), 1);
-	}
-
-	@SuppressWarnings("deprecation")
-	private void doTestMonoRequestBodySentAsFullRequest(Publisher<? extends ByteBuf> body, int expectedMsg) {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
-		Http2SslContextSpec clientCtx =
-				Http2SslContextSpec.forClient()
-				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
-
-		AtomicInteger counter = new AtomicInteger();
-		disposableServer =
-				createServer()
-				          .protocol(HttpProtocol.H2)
-				          .secure(spec -> spec.sslContext(serverCtx))
-				          .handle((req, res) -> req.receiveContent()
-				                                   .doOnNext(httpContent -> counter.getAndIncrement())
-				                                   .then(res.send()))
-				          .bindNow(Duration.ofSeconds(30));
-
-		createClient(disposableServer.port())
-		          .protocol(HttpProtocol.H2)
-		          .secure(spec -> spec.sslContext(clientCtx))
-		          .post()
-		          .uri("/")
-		          .send(body)
-		          .responseContent()
-		          .aggregate()
-		          .block(Duration.ofSeconds(30));
-
-		assertThat(counter.get()).isEqualTo(expectedMsg);
 	}
 
 	@Test
@@ -508,7 +464,7 @@ class Http2Tests extends BaseHttpTest {
 		          .protocol(protocols)
 		          .wiretap(true)
 		          .get()
-		          .uri("https://example.com")
+		          .uri("https://projectreactor.io")
 		          .responseSingle((res, bytes) -> Mono.just(res.responseHeaders().get("x-http2-stream-id", "null")))
 		          .as(StepVerifier::create)
 		          .expectNextMatches(predicate)
@@ -531,7 +487,7 @@ class Http2Tests extends BaseHttpTest {
 		          .protocol(protocol)
 		          .wiretap(true)
 		          .get()
-		          .uri(scheme + "://example.com")
+		          .uri(scheme + "://projectreactor.io")
 		          .responseSingle((res, bytes) -> Mono.just(res.responseHeaders().get("x-http2-stream-id")))
 		          .as(StepVerifier::create)
 		          .expectErrorMessage(expectedMessage)
@@ -542,7 +498,7 @@ class Http2Tests extends BaseHttpTest {
 	 * https://github.com/reactor/reactor-netty/issues/1813
 	 */
 	@Test
-	void testTooManyPermitsReturned_DefaultPool() {
+	void testTooManyPermitsReturned_DefaultPool() throws Exception {
 		testTooManyPermitsReturned(createClient(() -> disposableServer.address()));
 	}
 
@@ -550,7 +506,7 @@ class Http2Tests extends BaseHttpTest {
 	 * https://github.com/reactor/reactor-netty/issues/1813
 	 */
 	@Test
-	void testTooManyPermitsReturned_CustomPool() {
+	void testTooManyPermitsReturned_CustomPool() throws Exception {
 		ConnectionProvider provider = ConnectionProvider.create("testTooManyPermitsReturned_CustomPool", 2);
 		try {
 			testTooManyPermitsReturned(createClient(provider, () -> disposableServer.address()));
@@ -562,8 +518,8 @@ class Http2Tests extends BaseHttpTest {
 	}
 
 	@SuppressWarnings("deprecation")
-	private void testTooManyPermitsReturned(HttpClient client) {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	private void testTooManyPermitsReturned(HttpClient client) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -634,7 +590,7 @@ class Http2Tests extends BaseHttpTest {
 		          .secure(sslContextSpec -> sslContextSpec.sslContext(Http2SslContextSpec.forClient()))
 		          .wiretap(true)
 		          .get()
-		          .uri("https://example.com")
+		          .uri("https://projectreactor.io")
 		          .responseSingle((res, bytes) -> Mono.just(res.responseHeaders().get("x-http2-stream-id", "null")))
 		          .as(StepVerifier::create)
 		          .expectNextMatches(predicate)
@@ -658,8 +614,8 @@ class Http2Tests extends BaseHttpTest {
 	@ParameterizedTest
 	@MethodSource("h2CompatibleCombinations")
 	@SuppressWarnings("deprecation")
-	void testMaxStreamsH2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void testMaxStreamsH2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -716,8 +672,8 @@ class Http2Tests extends BaseHttpTest {
 	@ParameterizedTest
 	@MethodSource("h2CompatibleCombinations")
 	@SuppressWarnings("deprecation")
-	void testEmptyDataFrameH2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void testEmptyDataFrameH2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -741,5 +697,111 @@ class Http2Tests extends BaseHttpTest {
 		      .expectNextMatches(buf -> expectation.equals(buf.toString(Charset.defaultCharset())))
 		      .expectComplete()
 		      .verify(Duration.ofSeconds(10));
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2cCompatibleCombinations")
+	void h2cClientSendsError(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) {
+		ConnectionProvider provider = ConnectionProvider.create("h2cClientSendsError", 1);
+		try {
+			http2ClientSendsError(createServer().protocol(serverProtocols),
+					createClient(provider, () -> disposableServer.address()).protocol(clientProtocols));
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2CompatibleCombinations")
+	@SuppressWarnings("deprecation")
+	void h2ClientSendsError(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		ConnectionProvider provider = ConnectionProvider.create("h2ClientSendsError", 1);
+		try {
+			http2ClientSendsError(createServer().protocol(serverProtocols).secure(spec -> spec.sslContext(serverCtx)),
+					createClient(provider, () -> disposableServer.address()).protocol(clientProtocols).secure(spec -> spec.sslContext(clientCtx)));
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2CompatibleCombinations")
+	@SuppressWarnings("deprecation")
+	void testTrailerHeadersPseudoHeaderNotAllowedH2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
+		Http2SslContextSpec clientCtx =
+				Http2SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+		testTrailerHeadersPseudoHeaderNotAllowed(
+				createServer().protocol(serverProtocols).secure(spec -> spec.sslContext(serverCtx)),
+				createClient(() -> disposableServer.address()).protocol(clientProtocols).secure(spec -> spec.sslContext(clientCtx)));
+	}
+
+	@ParameterizedTest
+	@MethodSource("h2cCompatibleCombinations")
+	void testTrailerHeadersPseudoHeaderNotAllowedH2C(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) {
+		testTrailerHeadersPseudoHeaderNotAllowed(
+				createServer().protocol(serverProtocols),
+				createClient(() -> disposableServer.address()).protocol(clientProtocols));
+	}
+
+	private void testTrailerHeadersPseudoHeaderNotAllowed(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.handle((req, res) ->
+				          res.header(HttpHeaderNames.TRAILER, ":protocol")
+				             .trailerHeaders(h -> h.set(":protocol", "test"))
+				             .sendString(Flux.just("testTrailerHeaders", "PseudoHeaderNotAllowed")))
+				      .bindNow();
+
+		// Trailers MUST NOT include pseudo-header fields
+		client.get()
+		      .uri("/")
+		      .responseSingle((res, bytes) -> bytes.asString().defaultIfEmpty("empty").zipWith(res.trailerHeaders()))
+		      .as(StepVerifier::create)
+		      .expectNextMatches(t -> "testTrailerHeadersPseudoHeaderNotAllowed".equals(t.getT1()) &&
+		              "empty".equals(t.getT2().get(":protocol", "empty")))
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+	}
+
+	private void http2ClientSendsError(HttpServer server, HttpClient client) {
+		disposableServer =
+				server.http2Settings(spec -> spec.maxConcurrentStreams(1))
+				      .handle((req, res) -> Mono.empty())
+				      .bindNow();
+
+		Mono<String> content =
+				client.post()
+				      .uri("/")
+				      .send(Mono.error(new RuntimeException("http2ClientSendsError")))
+				      .responseContent()
+				      .aggregate()
+				      .asString();
+
+		List<Signal<String>> result =
+				Flux.range(1, 3)
+				    .flatMapDelayError(i -> content, 256, 32)
+				    .materialize()
+				    .collectList()
+				    .block(Duration.ofSeconds(10));
+
+		assertThat(result)
+				.isNotNull()
+				.hasSize(1)
+				.allMatch(Signal::hasError);
+		Throwable error = result.get(0).getThrowable();
+		assertThat(error).isNotNull();
+		assertThat(error.getSuppressed())
+				.isNotNull()
+				.hasSize(3)
+				.allMatch(throwable -> "http2ClientSendsError".equals(throwable.getMessage()));
 	}
 }

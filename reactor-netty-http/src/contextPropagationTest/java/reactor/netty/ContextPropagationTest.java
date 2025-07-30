@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2022-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,8 @@ import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,16 +57,15 @@ class ContextPropagationTest {
 	static final ConnectionProvider provider = ConnectionProvider.create("testContextPropagation", 1);
 	static final ContextRegistry registry = ContextRegistry.getInstance();
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 
 	HttpServer baseServer;
-	DisposableServer disposableServer;
 	Http2SslContextSpec serverCtx;
 
 
 	@BeforeAll
 	static void createSelfSignedCertificate() throws Exception {
-		ssc = new SelfSignedCertificate();
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	@AfterAll
@@ -75,8 +75,8 @@ class ContextPropagationTest {
 	}
 
 	@BeforeEach
-	void setUp() {
-		serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void setUp() throws Exception {
+		serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		baseServer =
 				HttpServer.create()
 				          .wiretap(true)
@@ -91,7 +91,7 @@ class ContextPropagationTest {
 				baseServer.secure(spec -> spec.sslContext(serverCtx)).protocol(HttpProtocol.HTTP11, HttpProtocol.H2) :
 				baseServer.protocol(HttpProtocol.HTTP11, HttpProtocol.H2C);
 
-		disposableServer = server.bindNow();
+		DisposableServer disposableServer = server.bindNow();
 
 		try {
 			registry.registerThreadLocalAccessor(new TestThreadLocalAccessor());
@@ -126,7 +126,7 @@ class ContextPropagationTest {
 				baseServer.secure(spec -> spec.sslContext(serverCtx)).protocol(HttpProtocol.HTTP11, HttpProtocol.H2) :
 				baseServer.protocol(HttpProtocol.HTTP11, HttpProtocol.H2C);
 
-		disposableServer = server.bindNow();
+		DisposableServer disposableServer = server.bindNow();
 
 		try {
 			Hooks.enableAutomaticContextPropagation();

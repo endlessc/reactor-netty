@@ -97,6 +97,9 @@ include::{examples-dir}/routing/Application.java[lines=18..41]
 
 NOTE: The server routes are unique and only the first matching in order of declaration is invoked.
 
+NOTE: If websocket over HTTP/2 is configured, ensure that the HTTP/2 initial setting is enabled
+{javadoc}/reactor/netty/http/Http2SettingsSpec.Builder.html#connectProtocolEnabled-boolean-.
+
 [[sse]]
 === SSE
 
@@ -162,6 +165,28 @@ You can configure the `HTTP` server to send a compressed response, depending on 
 * `compress(int)`: The compression is performed once the response size exceeds the given value (in bytes).
 * `compress(BiPredicate<HttpServerRequest, HttpServerResponse>)`: The compression is performed if
 the predicate returns `true`.
+* `compressOptions(HttpCompressionOption... compressionOptions)`: Specifies the compression options for GZip, Deflate, and ZSTD.
++
+[NOTE]
+====
+GZip Compression Options
+
+* compression level : only the range 0 to 9 is allowed. (default: 6)
+* window bits : only the range 0 to 9 is allowed. (default: 15)
+* memory level : only the range 1 to 9 is allowed. (default: 8)
+
+Deflate Compression Options
+
+* compression level : only the range 0 to 9 is allowed. (default: 6)
+* window bits : only the range 0 to 9 is allowed. (default: 15)
+* memory level : only the range 1 to 9 is allowed. (default: 8)
+
+ZSTD Compression Options
+
+* compression level : only the range -131072 to 9 is allowed. (default: 3)
+* block size : only the positive number is allowed. (default: 65536, that is 64KB)
+* max encode size : only the positive number is allowed. (default: 33554432, that is 32MB)
+====
 
 The following example uses the `compress` method (set to `true`) to enable compression:
 
@@ -295,13 +320,13 @@ By default, the `HTTP` server is configured with the following settings:
 {http-source-link}/reactor/netty/http/HttpDecoderSpec.java
 [%unbreakable]
 ----
-include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=28..39]
+include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=28..40]
 ----
 
 {http-source-link}/reactor/netty/http/server/HttpRequestDecoderSpec.java
 [%unbreakable]
 ----
-include::{sourcedir}/reactor/netty/http/server/HttpRequestDecoderSpec.java[lines=41..46]
+include::{sourcedir}/reactor/netty/http/server/HttpRequestDecoderSpec.java[lines=42..47]
 ----
 
 When you need to change these default settings, you can configure the `HTTP` server as follows:
@@ -390,10 +415,13 @@ The following example uses a domain name containing a wildcard:
 include::{examples-dir}/sni/Application.java[lines=18..47]
 ----
 
-[[http-access-log]]
-== HTTP Access Log
+[[http-log]]
+== HTTP Log
 
-You can enable the `HTTP` access log either programmatically or by configuration. By default, it is disabled.
+You can enable the `HTTP` access or error log either programmatically or by configuration. By default, it is disabled.
+
+[[access-log]]
+=== Access Log
 
 You can use `-Dreactor.netty.http.server.accessLogEnabled=true` to enable the `HTTP` access log by configuration.
 
@@ -450,6 +478,63 @@ include::{examples-dir}/accessLog/CustomFormatAndFilterAccessLogApplication.java
 <1> Specifies the filter predicate to use
 <2> Specifies the custom format to apply
 
+[[error-log]]
+=== Error Log
+
+You can use `-Dreactor.netty.http.server.errorLogEnabled=true` to enable the `HTTP` error log by configuration.
+
+You can use the following configuration (for Logback or similar logging frameworks) to have a separate
+`HTTP` error log file:
+
+[source,xml]
+----
+<appender name="errorLog" class="ch.qos.logback.core.FileAppender">
+    <file>error_log.log</file>
+    <encoder>
+        <pattern>%msg%n</pattern>
+    </encoder>
+</appender>
+<appender name="async" class="ch.qos.logback.classic.AsyncAppender">
+    <appender-ref ref="errorLog" />
+</appender>
+
+<logger name="reactor.netty.http.server.ErrorLog" level="ERROR" additivity="false">
+    <appender-ref ref="async"/>
+</logger>
+----
+
+The following example enables it programmatically:
+
+{examples-link}/errorLog/Application.java
+----
+include::{examples-dir}/errorLog/Application.java[lines=18..32]
+----
+
+Calling this method takes precedence over the system property configuration.
+
+By default, the logging format is `[+{datetime}+] [pid +{PID}+] [client {remote address}] {exception message}`, but you can
+specify a custom one as a parameter, as in the following example:
+
+{examples-link}/errorLog/CustomLogErrorFormatApplication.java
+----
+include::{examples-dir}/errorLog/CustomLogErrorFormatApplication.java[lines=18..33]
+----
+
+You can also filter `HTTP` error logs by using the `ErrorLogFactory#createFilter` method, as in the following example:
+
+{examples-link}/errorLog/FilterLogErrorApplication.java
+----
+include::{examples-dir}/errorLog/FilterLogErrorApplication.java[lines=18..33]
+----
+
+Note that this method can take a custom format parameter too, as in this example:
+
+{examples-link}/errorLog/CustomFormatAndFilterErrorLogApplication.java.java
+----
+include::{examples-dir}/errorLog/CustomFormatAndFilterErrorLogApplication.java[lines=18..35]
+----
+<1> Specifies the filter predicate to use
+<2> Specifies the custom format to apply
 
 [[HTTP2]]
 == HTTP/2
@@ -501,14 +586,14 @@ hello
 
 {http-source-link}/reactor/netty/http/HttpProtocol.java
 ----
-include::{sourcedir}/reactor/netty/http/HttpProtocol.java[lines=24..58]
+include::{sourcedir}/reactor/netty/http/HttpProtocol.java[lines=26..61]
 ----
 
 [[HTTP3]]
 == HTTP/3
 
 By default, the `HTTP` server supports `HTTP/1.1`. If you need `HTTP/3`, you can get it through configuration.
-In addition to the protocol configuration, you need to add dependency to `io.netty.incubator:netty-incubator-codec-http3`.
+In addition to the protocol configuration, you need to add dependency to `io.netty:netty-codec-native-quic`.
 
 The following listing presents a simple `HTTP3` example:
 
@@ -618,7 +703,7 @@ include::{examples-dir}/tracing/Application.java[lines=18..91]
 
 The result in `Zipkin` looks like:
 
-image::http-server-tracing.png[]
+image::http-server-tracing.png[role="invert-dark"]
 
 [[access-current-observation]]
 === Access Current Observation
@@ -646,13 +731,14 @@ You may also need to configure the Reactor Netty `ObservationHandlers` using the
 
 [[unix-domain-sockets]]
 == Unix Domain Sockets
-The `HTTP` server supports Unix Domain Sockets (UDS) when native transport is in use.
+The `HTTP` server supports Unix Domain Sockets (UDS) when native transport is in use for all java versions
+and when NIO transport is in use for java 17 and above.
 
 The following example shows how to use UDS support:
 
 {examples-link}/uds/Application.java
 ----
-include::{examples-dir}/uds/Application.java[lines=18..33]
+include::{examples-dir}/uds/Application.java[lines=18..38]
 ----
 <1> Specifies `DomainSocketAddress` that will be used
 

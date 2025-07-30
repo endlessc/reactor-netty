@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,10 +30,10 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 
 import io.netty.handler.codec.http.HttpMethod;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Mono;
-import reactor.util.annotation.Nullable;
 
 /**
  * Server routes are unique and only the first matching in order of declaration will be invoked.
@@ -47,7 +47,7 @@ final class DefaultHttpServerRoutes implements HttpServerRoutes {
 
 	private final List<HttpRouteHandler> initialOrderHandlers = new ArrayList<>();
 
-	private Comparator<HttpRouteHandlerMetadata> comparator;
+	private @Nullable Comparator<HttpRouteHandlerMetadata> comparator;
 
 	@Override
 	public HttpServerRoutes directory(String uri, Path directory,
@@ -159,11 +159,11 @@ final class DefaultHttpServerRoutes implements HttpServerRoutes {
 		final Predicate<? super HttpServerRequest> condition;
 		final BiFunction<? super HttpServerRequest, ? super HttpServerResponse, ? extends Publisher<Void>>
 				handler;
-		final Function<? super String, Map<String, String>> resolver;
+		final @Nullable Function<? super String, Map<String, String>> resolver;
 
-		final String path;
+		final @Nullable String path;
 
-		final HttpMethod method;
+		final @Nullable HttpMethod method;
 
 		HttpRouteHandler(Predicate<? super HttpServerRequest> condition,
 				BiFunction<? super HttpServerRequest, ? super HttpServerResponse, ? extends Publisher<Void>> handler,
@@ -189,12 +189,12 @@ final class DefaultHttpServerRoutes implements HttpServerRoutes {
 		}
 
 		@Override
-		public String getPath() {
+		public @Nullable String getPath() {
 			return path;
 		}
 
 		@Override
-		public HttpMethod getMethod() {
+		public @Nullable HttpMethod getMethod() {
 			return method;
 		}
 	}

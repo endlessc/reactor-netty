@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,12 +26,12 @@ import brave.propagation.TraceContext;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.EventLoop;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.SignalType;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.http.server.HttpServer;
-import reactor.util.annotation.Nullable;
 
 import java.net.InetSocketAddress;
 import java.util.function.BiFunction;
@@ -67,7 +67,7 @@ final class TracingHttpServerDecorator {
 
 		final reactor.netty.http.server.HttpServerRequest delegate;
 		final Function<String, String> uriMapping;
-		final String path;
+		final @Nullable String path;
 
 		DelegatingHttpRequest(reactor.netty.http.server.HttpServerRequest delegate, Function<String, String> uriMapping) {
 			this.delegate = delegate;
@@ -75,8 +75,7 @@ final class TracingHttpServerDecorator {
 			this.path = initPath();
 		}
 
-		@Nullable
-		String initPath() {
+		@Nullable String initPath() {
 			try {
 				return delegate.fullPath();
 			}
@@ -86,8 +85,7 @@ final class TracingHttpServerDecorator {
 		}
 
 		@Override
-		@Nullable
-		public String header(String name) {
+		public @Nullable String header(String name) {
 			requireNonNull(name, "name");
 			return delegate.requestHeaders().get(name);
 		}
@@ -110,14 +108,12 @@ final class TracingHttpServerDecorator {
 		}
 
 		@Override
-		@Nullable
-		public String path() {
+		public @Nullable String path() {
 			return path;
 		}
 
 		@Override
-		@Nullable
-		public String route() {
+		public @Nullable String route() {
 			return path == null ? null : uriMapping.apply(path);
 		}
 
@@ -127,8 +123,7 @@ final class TracingHttpServerDecorator {
 		}
 
 		@Override
-		@Nullable
-		public String url() {
+		public @Nullable String url() {
 			InetSocketAddress hostAddress = delegate.hostAddress();
 			if (hostAddress == null) {
 				// This can happen only in case of UDS
@@ -151,8 +146,8 @@ final class TracingHttpServerDecorator {
 	static final class DelegatingHttpResponse extends HttpServerResponse {
 
 		final reactor.netty.http.server.HttpServerResponse delegate;
-		final HttpServerRequest request;
-		final Throwable error;
+		final @Nullable HttpServerRequest request;
+		final @Nullable Throwable error;
 
 		DelegatingHttpResponse(reactor.netty.http.server.HttpServerResponse delegate, @Nullable HttpServerRequest request) {
 			this(delegate, request, null);
@@ -168,14 +163,12 @@ final class TracingHttpServerDecorator {
 		}
 
 		@Override
-		@Nullable
-		public HttpServerRequest request() {
+		public @Nullable HttpServerRequest request() {
 			return request;
 		}
 
 		@Override
-		@Nullable
-		public Throwable error() {
+		public @Nullable Throwable error() {
 			return error;
 		}
 
@@ -253,7 +246,7 @@ final class TracingHttpServerDecorator {
 		final CurrentTraceContext currentTraceContext;
 		final HttpServerHandler<HttpServerRequest, HttpServerResponse> handler;
 
-		volatile Throwable throwable;
+		volatile @Nullable Throwable throwable;
 
 		TracingMapHandle(
 				CurrentTraceContext currentTraceContext,
@@ -266,6 +259,14 @@ final class TracingHttpServerDecorator {
 		public Mono<Void> apply(Mono<Void> voidMono, Connection connection) {
 			HttpServerRequest braveRequest = connection.channel().attr(REQUEST_ATTR_KEY).get();
 			Span span = connection.channel().attr(SPAN_ATTR_KEY).get();
+			connection.onTerminate()
+			          .subscribe(
+			              null,
+			              t -> cleanup(connection.channel()),
+			              () -> cleanup(connection.channel()));
+			// At the point of doFinally the connection might be disposed and there might be no event loop
+			// associated with the disposed connection
+			EventLoop eventLoop = connection.channel().eventLoop();
 			return voidMono.doFinally(sig -> {
 			                   if (braveRequest.unwrap() instanceof reactor.netty.http.server.HttpServerResponse) {
 			                       reactor.netty.http.server.HttpServerResponse response =
@@ -273,20 +274,12 @@ final class TracingHttpServerDecorator {
 			                       Span localSpan = sig == SignalType.CANCEL ? span.annotate("cancel") : span;
 			                       HttpServerResponse braveResponse =
 			                               new DelegatingHttpResponse(response, braveRequest, throwable);
-			                       response.withConnection(conn -> {
-			                               conn.onTerminate()
-			                                   .subscribe(
-			                                           null,
-			                                           t -> cleanup(connection.channel()),
-			                                           () -> cleanup(connection.channel()));
-			                               EventLoop eventLoop = conn.channel().eventLoop();
-			                               if (eventLoop.inEventLoop()) {
-			                                   handler.handleSend(braveResponse, localSpan);
-			                               }
-			                               else {
-			                                   eventLoop.execute(() -> handler.handleSend(braveResponse, localSpan));
-			                               }
-			                       });
+			                       if (eventLoop.inEventLoop()) {
+			                           handler.handleSend(braveResponse, localSpan);
+			                       }
+			                       else {
+			                           eventLoop.execute(() -> handler.handleSend(braveResponse, localSpan));
+			                       }
 			                   }
 			               })
 			               .doOnError(this::throwable)
@@ -298,7 +291,7 @@ final class TracingHttpServerDecorator {
 			this.throwable = t;
 		}
 
-		void cleanup(Channel channel) {
+		static void cleanup(Channel channel) {
 			EventLoop eventLoop = channel.eventLoop();
 			if (eventLoop.inEventLoop()) {
 				channel.attr(REQUEST_ATTR_KEY).set(null);

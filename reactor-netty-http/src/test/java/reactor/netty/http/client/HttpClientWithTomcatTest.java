@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -133,7 +133,7 @@ class HttpClientWithTomcatTest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private void doTestPostUpload(BiConsumer<? super HttpClientRequest, HttpClientForm> formCallback,
+	private static void doTestPostUpload(BiConsumer<? super HttpClientRequest, HttpClientForm> formCallback,
 			String expectedResponse) throws Exception {
 		HttpClient client =
 				HttpClient.create()
@@ -176,7 +176,7 @@ class HttpClientWithTomcatTest {
 		pool.dispose();
 	}
 
-	private void doSimpleTest404(HttpClient client) {
+	private static void doSimpleTest404(HttpClient client) {
 		Integer res = client.followRedirect(true)
 		                    .get()
 		                    .uri("/status/404")
@@ -233,7 +233,7 @@ class HttpClientWithTomcatTest {
 		assertThat(r).isNotNull();
 
 		assertThat(r.getT1()).isEqualTo(HttpResponseStatus.NOT_FOUND);
-		assertThat(headers.get().get("Content-Length")).isEqualTo("0");
+		assertThat(headers.get().get("Content-Length")).isNull();
 		assertThat(headers.get().get("Transfer-Encoding")).isNull();
 	}
 
@@ -371,11 +371,11 @@ class HttpClientWithTomcatTest {
 		}
 	}
 
-	private int getPort() {
+	private static int getPort() {
 		return tomcat.port();
 	}
 
-	private String getURL() {
+	private static String getURL() {
 		return "http://localhost:" + tomcat.port();
 	}
 

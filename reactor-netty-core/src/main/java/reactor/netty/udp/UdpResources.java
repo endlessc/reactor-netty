@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import java.util.function.Function;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.ReactorNetty;
@@ -29,7 +30,6 @@ import reactor.netty.resources.LoopResources;
 import reactor.netty.transport.NameResolverProvider;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import static java.util.Objects.requireNonNull;
 
@@ -125,7 +125,7 @@ public class UdpResources implements LoopResources {
 	}
 
 	final LoopResources                            defaultLoops;
-	final AtomicReference<AddressResolverGroup<?>> defaultResolver;
+	final AtomicReference<@Nullable AddressResolverGroup<?>> defaultResolver;
 
 	protected UdpResources(LoopResources defaultLoops) {
 		this.defaultLoops = defaultLoops;
@@ -334,7 +334,7 @@ public class UdpResources implements LoopResources {
 
 	static final Function<LoopResources, UdpResources> ON_UDP_NEW;
 
-	static final AtomicReference<UdpResources>         udpResources;
+	static final AtomicReference<@Nullable UdpResources> udpResources;
 
 	static {
 		DEFAULT_NAME_RESOLVER_PROVIDER = NameResolverProvider.builder().build();

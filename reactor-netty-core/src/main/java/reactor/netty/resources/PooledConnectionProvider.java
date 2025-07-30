@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,9 @@ import io.netty.channel.Channel;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import reactor.core.CoreSubscriber;
 import reactor.core.Disposable;
@@ -43,7 +46,6 @@ import reactor.pool.decorators.InstrumentedPoolDecorators;
 import reactor.pool.introspection.SamplingAllocationStrategy;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import java.net.InetAddress;
@@ -55,6 +57,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.StringJoiner;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
@@ -88,8 +91,10 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 	final Builder builder;
 	final String name;
 	final Duration inactivePoolDisposeInterval;
-	final Duration poolInactivity;
-	final Duration disposeTimeout;
+	final @Nullable Duration poolInactivity;
+	final @Nullable Duration disposeTimeout;
+	final int maxConnectionPools;
+	final AtomicInteger connectionPoolCount = new AtomicInteger(0);
 	final Map<SocketAddress, Integer> maxConnections = new HashMap<>();
 	Mono<Void> onDispose;
 
@@ -104,6 +109,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		this.inactivePoolDisposeInterval = builder.inactivePoolDisposeInterval;
 		this.poolInactivity = builder.poolInactivity;
 		this.disposeTimeout = builder.disposeTimeout;
+		this.maxConnectionPools = builder.maxConnectionPools;
 		this.defaultPoolFactory = new PoolFactory<>(builder, builder.disposeTimeout, clock);
 		for (Map.Entry<SocketAddress, ConnectionPoolSpec<?>> entry : builder.confPerRemoteHost.entrySet()) {
 			poolFactoryPerRemoteHost.put(entry.getKey(), new PoolFactory<>(entry.getValue(), builder.disposeTimeout));
@@ -114,6 +120,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 	}
 
 	@Override
+	@SuppressWarnings("NullAway")
 	public final Mono<? extends Connection> acquire(
 			TransportConfig config,
 			ConnectionObserver connectionObserver,
@@ -131,10 +138,19 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					log.debug("Creating a new [{}] client pool [{}] for [{}]", name, poolFactory, remoteAddress);
 				}
 
+				if (log.isWarnEnabled()) {
+					if (maxConnectionPools > Builder.MAX_CONNECTION_POOLS && connectionPoolCount.incrementAndGet() > maxConnectionPools) {
+						log.warn("Connection pool creation limit exceeded: {} pools created, maximum expected is {}", connectionPoolCount.get(),
+								maxConnectionPools);
+					}
+				}
+
 				boolean metricsEnabled = poolFactory.metricsEnabled || config.metricsRecorder() != null;
 				String id = metricsEnabled ? poolKey.hashCode() + "" : null;
 
-				InstrumentedPool<T> newPool = metricsEnabled && Metrics.isMicrometerAvailable() ?
+				InstrumentedPool<T> newPool = metricsEnabled && poolFactory.registrar == null && Metrics.isMicrometerAvailable() ?
+						// Deliberately suppress "NullAway"
+						// With metricsEnabled == true, id is not null
 						createPool(id, config, poolFactory, remoteAddress, resolverGroup) :
 						createPool(config, poolFactory, remoteAddress, resolverGroup);
 
@@ -142,12 +158,16 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 					// registrar is null when metrics are enabled on HttpClient level or
 					// with the `metrics(boolean metricsEnabled)` method on ConnectionProvider
 					if (poolFactory.registrar != null) {
-						poolFactory.registrar.get().registerMetrics(name, id, remoteAddress,
-								new DelegatingConnectionPoolMetrics(newPool.metrics()));
+						// Deliberately suppress "NullAway"
+						// With metricsEnabled == true, id is not null
+						poolFactory.registrar.get().registerMetrics(
+								name, id, remoteAddress, delegateConnectionPoolMetrics(newPool.metrics()));
 					}
 					else if (Metrics.isMicrometerAvailable()) {
 						// work directly with the pool otherwise a weak reference is needed to ConnectionPoolMetrics
 						// we don't want to keep another map with weak references
+						// Deliberately suppress "NullAway"
+						// With metricsEnabled == true, id is not null
 						registerDefaultMetrics(id, remoteAddress, newPool.metrics());
 					}
 				}
@@ -321,12 +341,16 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		return poolFactoryPerRemoteHost.getOrDefault(remoteAddress, defaultPoolFactory);
 	}
 
+	protected ConnectionPoolMetrics delegateConnectionPoolMetrics(InstrumentedPool.PoolMetrics metrics) {
+		return new DelegatingConnectionPoolMetrics(metrics);
+	}
+
 	protected void registerDefaultMetrics(String id, SocketAddress remoteAddress, InstrumentedPool.PoolMetrics metrics) {
-		MicrometerPooledConnectionProviderMeterRegistrar.INSTANCE.registerMetrics(name, id, remoteAddress, metrics);
+		MicrometerPooledConnectionProviderMeterRegistrar.registerMetrics(name, id, remoteAddress, metrics);
 	}
 
 	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
-		MicrometerPooledConnectionProviderMeterRegistrar.INSTANCE.deRegisterMetrics(name, id, remoteAddress);
+		MicrometerPooledConnectionProviderMeterRegistrar.deRegisterMetrics(name, id, remoteAddress);
 	}
 
 	Mono<Void> deRegisterDefaultMetrics(String id, PoolMetricsRecorder recorder, @Nullable Supplier<? extends MeterRegistrar> registrar, SocketAddress remoteAddress) {
@@ -343,7 +367,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		});
 	}
 
-	final boolean compareAddresses(SocketAddress origin, SocketAddress target) {
+	static boolean compareAddresses(SocketAddress origin, SocketAddress target) {
 		if (origin.equals(target)) {
 			return true;
 		}
@@ -364,13 +388,29 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 	}
 
 	protected static void logPoolState(Channel channel, InstrumentedPool<? extends Connection> pool, String msg, @Nullable Throwable t) {
+		String logMsg = msg + ", " + stringifyPoolMetrics(pool);
+		if (t == null) {
+			log.debug(format(channel, logMsg));
+			return;
+		}
+
+		log.debug(
+			format(channel, logMsg),
+			t
+		);
+	}
+
+	private static String stringifyPoolMetrics(InstrumentedPool<? extends Connection> pool) {
 		InstrumentedPool.PoolMetrics metrics = pool.metrics();
-		log.debug(format(channel, "{}, now: {} active connections, {} inactive connections and {} pending acquire requests."),
-				msg,
-				metrics.acquiredSize(),
-				metrics.idleSize(),
-				metrics.pendingAcquireSize(),
-				t == null ? "" : t);
+		return new StringJoiner(" ")
+				.add("now:")
+				.add(String.valueOf(metrics.acquiredSize()))
+				.add("active connections,")
+				.add(String.valueOf(metrics.idleSize()))
+				.add("inactive connections")
+				.add(String.valueOf(metrics.pendingAcquireSize()))
+				.add("pending acquire requests.")
+				.toString();
 	}
 
 	final void scheduleInactivePoolsDisposal() {
@@ -460,19 +500,19 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 		final boolean metricsEnabled;
 		final int pendingAcquireMaxCount;
 		final long pendingAcquireTimeout;
-		final Supplier<? extends MeterRegistrar> registrar;
-		final Clock clock;
-		final Duration disposeTimeout;
-		final BiFunction<Runnable, Duration, Disposable> pendingAcquireTimer;
-		final AllocationStrategy<?> allocationStrategy;
-		final BiPredicate<Connection, ConnectionMetadata> evictionPredicate;
+		final @Nullable Supplier<? extends MeterRegistrar> registrar;
+		final @Nullable Clock clock;
+		final @Nullable Duration disposeTimeout;
+		final @Nullable BiFunction<Runnable, Duration, Disposable> pendingAcquireTimer;
+		final @Nullable AllocationStrategy<?> allocationStrategy;
+		final @Nullable BiPredicate<Connection, ConnectionMetadata> evictionPredicate;
 
-		PoolFactory(ConnectionPoolSpec<?> conf, Duration disposeTimeout) {
+		PoolFactory(ConnectionPoolSpec<?> conf, @Nullable Duration disposeTimeout) {
 			this(conf, disposeTimeout, null);
 		}
 
 		// Used only for testing purposes
-		PoolFactory(ConnectionPoolSpec<?> conf, Duration disposeTimeout, @Nullable Clock clock) {
+		PoolFactory(ConnectionPoolSpec<?> conf, @Nullable Duration disposeTimeout, @Nullable Clock clock) {
 			this.evictionInterval = conf.evictionInterval;
 			this.leasingStrategy = conf.leasingStrategy;
 			this.maxConnections = conf.maxConnections;
@@ -492,7 +532,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 
 		public InstrumentedPool<T> newPool(
 				Publisher<T> allocator,
-				@Nullable reactor.pool.AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
+				reactor.pool.@Nullable AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
 				Function<T, Publisher<Void>> destroyHandler,
 				BiPredicate<T, PooledRefMetadata> evictionPredicate) {
 			if (disposeTimeout != null) {
@@ -516,7 +556,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 
 		public InstrumentedPool<T> newPool(
 				Publisher<T> allocator,
-				@Nullable reactor.pool.AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
+				reactor.pool.@Nullable AllocationStrategy allocationStrategy, // this is not used but kept for backwards compatibility
 				Function<T, Publisher<Void>> destroyHandler,
 				BiPredicate<T, PooledRefMetadata> defaultEvictionPredicate,
 				Function<PoolConfig<T>, InstrumentedPool<T>> poolFactory) {
@@ -607,8 +647,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 			return poolBuilder;
 		}
 
-		@Nullable
-		public AllocationStrategy<?> allocationStrategy() {
+		public @Nullable AllocationStrategy<?> allocationStrategy() {
 			return allocationStrategy;
 		}
 
@@ -709,7 +748,7 @@ public abstract class PooledConnectionProvider<T extends Connection> implements 
 	}
 
 	static final class PoolKey {
-		final String fqdn;
+		final @Nullable String fqdn;
 		final SocketAddress holder;
 		final int pipelineKey;
 

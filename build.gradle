@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,25 +23,26 @@ buildscript {
 		maven { url "https://repo.spring.io/plugins-release" }
 	}
 	dependencies {
-		classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:4.33.20' //applied in individual submodules
+		classpath 'org.jfrog.buildinfo:build-info-extractor-gradle:4.34.1' //applied in individual submodules
 	}
 }
 
 plugins {
 	id "com.diffplug.spotless" version "6.13.0"
 	id 'com.google.osdetector' version '1.7.3'
-	id 'org.gradle.test-retry' version '1.5.10'
+	id 'org.gradle.test-retry' version '1.6.2'
 	id 'io.spring.nohttp' version '0.0.11'
-	id 'com.github.johnrengelman.shadow' version '8.1.1' apply false
+	id 'com.gradleup.shadow' version '8.3.8' apply false
 	//we now need version of Artifactory gradle plugin deployed on Maven Central, see above
-	id 'me.champeau.gradle.japicmp' version '0.4.3' apply false
+	id 'me.champeau.gradle.japicmp' version '0.4.6' apply false
 	id 'de.undercouch.download' version '5.6.0' apply false
 	id 'io.spring.javadoc' version '0.0.1' apply false
 	id 'io.spring.javadoc-aggregate' version '0.0.1' apply false
 	id 'biz.aQute.bnd.builder' version '6.4.0' apply false
 	id 'org.graalvm.buildtools.native' version '0.9.25' apply false
 	id 'io.spring.antora.generate-antora-yml' version '0.0.1' apply false
-	id 'net.ltgt.errorprone' version '4.0.1' apply false
+	id 'net.ltgt.errorprone' version '4.3.0' apply false
+	id 'me.champeau.mrjar' version '0.1.1' apply false
 }
 
 description = 'Reactive Streams Netty driver'
@@ -85,9 +86,9 @@ ext {
 	}
 
 	//Metrics
-	micrometerVersion = '1.14.0-SNAPSHOT' //optional baseline
-	micrometerTracingVersion = '1.4.0-SNAPSHOT' //optional baseline
-	micrometerDocsVersion = '1.0.2' //optional baseline
+	micrometerVersion = '1.16.0-M1' //optional baseline
+	micrometerTracingVersion = '1.6.0-M1' //optional baseline
+	micrometerDocsVersion = '1.0.4' //optional baseline
 
 	contextPropagationDefaultVersion = '1.1.0' //optional baseline
 	if (!project.hasProperty("forceContextPropagationVersion")) {
@@ -98,17 +99,17 @@ ext {
 		println "Context Propagation version defined from command line: ${forceContextPropagationVersion}"
 	}
 
-	braveVersion = '6.0.3'
-	zipkinSenderVersion = '3.4.0'
+	braveVersion = '6.3.0'
+	zipkinSenderVersion = '3.5.1'
 
-	jsr305Version = '3.0.2'
+	jspecifyVersion = '1.0.0'
 
 	// Logging
 	slf4jVersion = '1.7.36'
 	logbackVersion = '1.2.13'
 
 	// Netty
-	nettyDefaultVersion = '4.1.112.Final'
+	nettyDefaultVersion = '4.2.3.Final'
 	if (!project.hasProperty("forceNettyVersion")) {
 		nettyVersion = nettyDefaultVersion
 	}
@@ -116,27 +117,26 @@ ext {
 		nettyVersion = forceNettyVersion
 		println "Netty version defined from command line: ${forceNettyVersion}"
 	}
-	nettyIoUringVersion = '0.0.25.Final'
-	nettyQuicVersion = '0.0.66.Final'
-	nettyHttp3Version = '0.0.28.Final'
+	nettyIoUringVersion = '0.0.26.Final'
 
 	// Testing
-	brotli4jVersion = '1.16.0'
-	zstdJniVersion = '1.5.6-4'
-	jacksonDatabindVersion = '2.17.2'
+	brotli4jVersion = '1.18.0'
+	zstdJniVersion = '1.5.7-4'
+	jacksonDatabindVersion = '2.19.2'
 	testAddonVersion = reactorCoreVersion
-	assertJVersion = '3.26.3'
-	awaitilityVersion = '4.2.2'
-	hoverflyJavaVersion = '0.19.0'
-	tomcatVersion = '9.0.93'
-	boringSslVersion = '2.0.65.Final'
-	junitVersion = '5.11.0'
-	junitPlatformLauncherVersion = '1.11.0'
+	assertJVersion = '3.27.3'
+	awaitilityVersion = '4.3.0'
+	hoverflyJavaVersion = '0.19.1'
+	tomcatVersion = '9.0.107'
+	boringSslVersion = '2.0.72.Final'
+	junitVersion = '5.13.4'
+	junitPlatformLauncherVersion = '1.13.4'
 	mockitoVersion = '4.11.0'
-	blockHoundVersion = '1.0.9.RELEASE'
+	blockHoundVersion = '1.0.13.RELEASE'
 	reflectionsVersion = '0.10.2'
 	errorproneCoreVersion = '2.10.0'
 	errorproneGuavaVersion = '30.0-jre'
+	bouncycastleVersion = '1.81'
 
 	// Antora
 	antoraPluginVersion = '1.0.0'
@@ -147,9 +147,8 @@ ext {
 					// javadoc: warning - Error fetching URL: https://www.reactive-streams.org/reactive-streams-1.0.4-javadoc/
 					"https://www.reactive-streams.org/reactive-streams-1.0.3-javadoc/",
 					"https://projectreactor.io/docs/core/release/api/",
-					"https://netty.io/4.1/api/",
-					"https://projectreactor.io/docs/netty/release/api/",
-					"https://javadoc.io/doc/io.netty.incubator/netty-incubator-codec-classes-quic/latest/"] as String[]
+					"https://netty.io/4.2/api/",
+					"https://projectreactor.io/docs/netty/release/api/"] as String[]
 }
 
 nohttp {
@@ -187,7 +186,7 @@ spotless {
 		// find start of gradle files by looking for either `import`, `apply`
 		// or start of blocks like `javadoc {` or `configure(rootProject) {`...
 		licenseHeaderFile('codequality/spotless/licenseSlashstarStyle.txt',
-				"^\\w+(\\(\\w+\\))?\\s?\\{?|import|apply")
+				"^\\w+(\\(\\w+\\))?\\s?\\{?|import|apply|/\\*\\*")
 	}
 }
 
@@ -201,6 +200,7 @@ subprojects {
 	apply from: "${rootDir}/gradle/setup.gradle"
 	apply from: "${rootDir}/gradle/javadoc.gradle"
 	apply from: "${rootDir}/gradle/errorprone.gradle"
+	apply from: "${rootDir}/gradle/toolchains.gradle"
 
 
 	java {
@@ -308,7 +308,6 @@ subprojects {
 	repositories {
 		mavenCentral()
 		maven { url "https://oss.sonatype.org/content/repositories/releases/" }
-		maven { url 'https://repo.spring.io/milestone' }
 		if (version.endsWith('-SNAPSHOT') || version.contains('-SNAPSHOT-')) { //classic or customized snapshots
 			if (System.getenv()["GITHUB_ACTION"] == null) {
 				mavenLocal()
@@ -317,6 +316,7 @@ subprojects {
 				println 'GitHub Action detected, avoiding use of mavenLocal()'
 			}
 			maven { url 'https://repo.spring.io/snapshot' }
+			maven { url 'https://central.sonatype.com/repository/maven-snapshots' }
 			maven { url 'https://oss.sonatype.org/content/repositories/snapshots' }
 		}
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,9 +15,8 @@
  */
 package reactor.netty.http;
 
-import io.netty.incubator.codec.quic.QuicTokenHandler;
-import reactor.util.annotation.Incubating;
-import reactor.util.annotation.Nullable;
+import io.netty.handler.codec.quic.QuicTokenHandler;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -28,7 +27,6 @@ import java.util.Objects;
  * @author Violeta Georgieva
  * @since 1.2.0
  */
-@Incubating
 public final class Http3SettingsSpec {
 
 	public interface Builder {
@@ -123,8 +121,7 @@ public final class Http3SettingsSpec {
 	 *
 	 * @return the configured maximum idle timeout or null
 	 */
-	@Nullable
-	public Duration idleTimeout() {
+	public @Nullable Duration idleTimeout() {
 		return idleTimeout;
 	}
 
@@ -169,13 +166,12 @@ public final class Http3SettingsSpec {
 	 *
 	 * @return the configured {@link QuicTokenHandler} or null
 	 */
-	@Nullable
-	public QuicTokenHandler tokenHandler() {
+	public @Nullable QuicTokenHandler tokenHandler() {
 		return tokenHandler;
 	}
 
 	@Override
-	public boolean equals(Object o) {
+	public boolean equals(@Nullable Object o) {
 		if (this == o) {
 			return true;
 		}
@@ -203,12 +199,12 @@ public final class Http3SettingsSpec {
 		return result;
 	}
 
-	final Duration idleTimeout;
+	final @Nullable Duration idleTimeout;
 	final long maxData;
 	final long maxStreamDataBidirectionalLocal;
 	final long maxStreamDataBidirectionalRemote;
 	final long maxStreamsBidirectional;
-	final QuicTokenHandler tokenHandler;
+	final @Nullable QuicTokenHandler tokenHandler;
 
 	Http3SettingsSpec(Build build) {
 		this.idleTimeout = build.idleTimeout;
@@ -225,12 +221,12 @@ public final class Http3SettingsSpec {
 		static final long DEFAULT_MAX_STREAM_DATA_BIDIRECTIONAL_REMOTE = 0L;
 		static final long DEFAULT_MAX_STREAMS_BIDIRECTIONAL = 0L;
 
-		Duration idleTimeout;
+		@Nullable Duration idleTimeout;
 		long maxData = DEFAULT_MAX_DATA;
 		long maxStreamDataBidirectionalLocal = DEFAULT_MAX_STREAM_DATA_BIDIRECTIONAL_LOCAL;
 		long maxStreamDataBidirectionalRemote = DEFAULT_MAX_STREAM_DATA_BIDIRECTIONAL_REMOTE;
 		long maxStreamsBidirectional = DEFAULT_MAX_STREAMS_BIDIRECTIONAL;
-		QuicTokenHandler tokenHandler;
+		@Nullable QuicTokenHandler tokenHandler;
 
 		@Override
 		public Http3SettingsSpec build() {

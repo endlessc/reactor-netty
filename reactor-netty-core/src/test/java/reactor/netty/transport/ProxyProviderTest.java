@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -111,7 +111,7 @@ class ProxyProviderTest {
 		assertThat(provider.connectTimeoutMillis).isEqualTo(10000);
 	}
 
-	private SocketAddress someAddress(String host) {
+	private static SocketAddress someAddress(String host) {
 		return new InetSocketAddress(host, 8080);
 	}
 
@@ -155,13 +155,17 @@ class ProxyProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void nonProxyHosts_null_1() {
+		// Deliberately suppress "NullAway" for testing purposes
 		ProxyProvider.RegexShouldProxyPredicate pred = ProxyProvider.RegexShouldProxyPredicate.fromWildcardedPattern(null);
 		assertThat(pred.test(someAddress("foo.com"))).as("Should proxy when nonProxyHosts is blanked out").isFalse();
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void nonProxyHosts_null_2() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThat(createNonProxyHostsProxy(null).nonProxyHostPredicate.test(someAddress(NON_PROXY_HOSTS)))
 				.as("Should proxy when nonProxyHosts is blanked out")
 				.isFalse();
@@ -584,7 +588,7 @@ class ProxyProviderTest {
 				.withMessage("only socks versions 4 and 5 supported but got 42");
 	}
 
-	private ProxyProvider createProxy(InetSocketAddress address, Function<String, String> passwordFunc) {
+	private static ProxyProvider createProxy(InetSocketAddress address, Function<String, String> passwordFunc) {
 		return ProxyProvider.builder()
 		                    .type(ProxyProvider.Proxy.SOCKS5)
 		                    .socketAddress(address)
@@ -594,7 +598,7 @@ class ProxyProviderTest {
 		                    .build();
 	}
 
-	private ProxyProvider createNoAuthProxy(InetSocketAddress address) {
+	private static ProxyProvider createNoAuthProxy(InetSocketAddress address) {
 		return ProxyProvider.builder()
 		                    .type(ProxyProvider.Proxy.SOCKS5)
 		                    .socketAddress(address)
@@ -602,7 +606,7 @@ class ProxyProviderTest {
 		                    .build();
 	}
 
-	private ProxyProvider createHeaderProxy(InetSocketAddress address, Consumer<HttpHeaders> authHeader) {
+	private static ProxyProvider createHeaderProxy(InetSocketAddress address, Consumer<HttpHeaders> authHeader) {
 		return ProxyProvider.builder()
 		                    .type(ProxyProvider.Proxy.HTTP)
 		                    .socketAddress(address)
@@ -610,7 +614,7 @@ class ProxyProviderTest {
 		                    .build();
 	}
 
-	private ProxyProvider createConnectTimeoutProxy(long connectTimeoutMillis) {
+	private static ProxyProvider createConnectTimeoutProxy(long connectTimeoutMillis) {
 		return ProxyProvider.builder()
 		                    .type(ProxyProvider.Proxy.SOCKS5)
 		                    .socketAddress(ADDRESS_1)
@@ -618,7 +622,7 @@ class ProxyProviderTest {
 		                    .build();
 	}
 
-	private ProxyProvider createNonProxyHostsProxy(String nonProxyHosts) {
+	private static ProxyProvider createNonProxyHostsProxy(String nonProxyHosts) {
 		return ProxyProvider.builder()
 		                    .type(ProxyProvider.Proxy.HTTP)
 		                    .socketAddress(ADDRESS_1)

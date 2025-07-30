@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,13 +41,14 @@ import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
 import io.netty.handler.codec.http2.Http2StreamFrameToHttpObjectCodec;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.util.ReferenceCountUtil;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.ReactorNetty;
 import reactor.netty.http.logging.HttpMessageArgProviderFactory;
 import reactor.netty.http.logging.HttpMessageLogFactory;
-import reactor.util.annotation.Nullable;
+import reactor.netty.http.server.compression.HttpCompressionOptionsSpec;
 
 import static io.netty.handler.codec.http.LastHttpContent.EMPTY_LAST_CONTENT;
 import static reactor.netty.ReactorNetty.format;
@@ -61,20 +62,27 @@ import static reactor.netty.ReactorNetty.format;
  */
 final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler {
 
-	final BiPredicate<HttpServerRequest, HttpServerResponse>      compress;
-	final ServerCookieDecoder                                     cookieDecoder;
-	final ServerCookieEncoder                                     cookieEncoder;
-	final HttpServerFormDecoderProvider                           formDecoderProvider;
-	final BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
-	final HttpMessageLogFactory                                   httpMessageLogFactory;
-	final ConnectionObserver                                      listener;
-	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
-	                                                              mapHandle;
-	final Duration                                                readTimeout;
-	final Duration                                                requestTimeout;
+	final @Nullable BiPredicate<HttpServerRequest, HttpServerResponse>      compress;
+	final @Nullable HttpCompressionOptionsSpec                              compressionOptions;
+	final ServerCookieDecoder                                               cookieDecoder;
+	final ServerCookieEncoder                                               cookieEncoder;
+	final HttpServerFormDecoderProvider                                     formDecoderProvider;
+	final @Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
+	final HttpMessageLogFactory                                             httpMessageLogFactory;
+	final ConnectionObserver                                                listener;
+	final @Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
+	                                                                        mapHandle;
+	final @Nullable Duration                                                readTimeout;
+	final @Nullable Duration                                                requestTimeout;
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This is a lazy initialization
 	SocketAddress remoteAddress;
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This is a lazy initialization
 	Boolean secured;
 
 	/**
@@ -84,6 +92,7 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler {
 
 	Http2StreamBridgeServerHandler(
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compress,
+			@Nullable HttpCompressionOptionsSpec compressionOptions,
 			ServerCookieDecoder decoder,
 			ServerCookieEncoder encoder,
 			HttpServerFormDecoderProvider formDecoderProvider,
@@ -94,6 +103,7 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler {
 			@Nullable Duration readTimeout,
 			@Nullable Duration requestTimeout) {
 		this.compress = compress;
+		this.compressionOptions = compressionOptions;
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
 		this.formDecoderProvider = formDecoderProvider;
@@ -139,6 +149,7 @@ final class Http2StreamBridgeServerHandler extends ChannelDuplexHandler {
 				ops = new HttpServerOperations(Connection.from(ctx.channel()),
 						listener,
 						request,
+						compressionOptions,
 						compress,
 						connectionInfo,
 						cookieDecoder,

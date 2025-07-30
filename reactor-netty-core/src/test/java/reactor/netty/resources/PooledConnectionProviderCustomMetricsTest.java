@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,17 +27,18 @@ import java.util.function.Supplier;
 
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.DefaultAddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.transport.ClientTransportConfig;
-import reactor.util.annotation.Nullable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -48,6 +49,8 @@ class PooledConnectionProviderCustomMetricsTest {
 
 	private EventLoopGroup group;
 
+	@SuppressWarnings("NullAway")
+	// pool is lazy initialized
 	private ConnectionProvider pool;
 
 	private static final int MAX_ALLOC_SIZE = 100;
@@ -57,7 +60,7 @@ class PooledConnectionProviderCustomMetricsTest {
 	@BeforeEach
 	void setUp() {
 		remoteAddress = () -> InetSocketAddress.createUnresolved("localhost", 0);
-		group = new NioEventLoopGroup(2);
+		group = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
 	}
 
 	@AfterEach
@@ -131,9 +134,9 @@ class PooledConnectionProviderCustomMetricsTest {
 	}
 
 	static final class MeterRegistrarImpl implements ConnectionProvider.MeterRegistrar {
-		AtomicBoolean registered;
-		AtomicBoolean deRegistered;
-		AtomicInteger customMetric;
+		@Nullable AtomicBoolean registered;
+		@Nullable AtomicBoolean deRegistered;
+		@Nullable AtomicInteger customMetric;
 
 		MeterRegistrarImpl(
 				@Nullable AtomicBoolean registered,
@@ -173,7 +176,9 @@ class PooledConnectionProviderCustomMetricsTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected LoggingHandler defaultLoggingHandler() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -183,7 +188,9 @@ class PooledConnectionProviderCustomMetricsTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected ChannelMetricsRecorder defaultMetricsRecorder() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 

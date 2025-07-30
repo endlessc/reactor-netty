@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,11 +21,13 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
+import io.netty.channel.socket.SocketProtocolFamily;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.unix.DomainDatagramChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.resolver.AddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.channel.MicrometerChannelMetricsRecorder;
@@ -33,7 +35,6 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.transport.ClientTransportConfig;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
@@ -57,16 +58,29 @@ public final class UdpClientConfig extends ClientTransportConfig<UdpClientConfig
 	 * Return the configured {@link InternetProtocolFamily} to run with or null.
 	 *
 	 * @return the configured {@link InternetProtocolFamily} to run with or null
+	 * @deprecated as of 1.3.0. Prefer {@link #socketFamily()}. This method will be removed in version 1.4.0.
 	 */
-	@Nullable
-	public final InternetProtocolFamily family() {
+	@Deprecated
+	public final @Nullable InternetProtocolFamily family() {
 		return family;
+	}
+
+	/**
+	 * Return the configured {@link SocketProtocolFamily} to run with or null.
+	 *
+	 * @return the configured {@link SocketProtocolFamily} to run with or null
+	 * @since 1.3.0
+	 */
+	public final @Nullable SocketProtocolFamily socketFamily() {
+		return socketFamily;
 	}
 
 
 	// Protected/Package private write API
 
-	InternetProtocolFamily family;
+	@SuppressWarnings("deprecation")
+	@Nullable InternetProtocolFamily family;
+	@Nullable SocketProtocolFamily socketFamily;
 
 	UdpClientConfig(ConnectionProvider connectionProvider, Map<ChannelOption<?>, ?> options,
 			Supplier<? extends SocketAddress> remoteAddress) {
@@ -76,6 +90,7 @@ public final class UdpClientConfig extends ClientTransportConfig<UdpClientConfig
 	UdpClientConfig(UdpClientConfig parent) {
 		super(parent);
 		this.family = parent.family;
+		this.socketFamily = parent.socketFamily;
 	}
 
 	@Override
@@ -89,7 +104,7 @@ public final class UdpClientConfig extends ClientTransportConfig<UdpClientConfig
 			return super.connectionFactory(elg, isDomainSocket);
 		}
 		else {
-			return () -> new NioDatagramChannel(family());
+			return () -> new NioDatagramChannel(socketFamily());
 		}
 	}
 

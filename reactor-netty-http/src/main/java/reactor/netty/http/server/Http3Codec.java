@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,10 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
-import io.netty.incubator.codec.http3.Http3FrameToHttpObjectCodec;
-import io.netty.incubator.codec.http3.Http3ServerConnectionHandler;
-import io.netty.incubator.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.http3.Http3FrameToHttpObjectCodec;
+import io.netty.handler.codec.http3.Http3ServerConnectionHandler;
+import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
@@ -31,12 +32,15 @@ import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.logging.HttpMessageLogFactory;
+import reactor.netty.http.server.compression.HttpCompressionOptionsSpec;
 import reactor.netty.http.server.logging.AccessLog;
 import reactor.netty.http.server.logging.AccessLogArgProvider;
 import reactor.netty.http.server.logging.AccessLogHandlerFactory;
+import reactor.netty.http.server.logging.error.DefaultErrorLogHandler;
+import reactor.netty.http.server.logging.error.ErrorLog;
+import reactor.netty.http.server.logging.error.ErrorLogArgProvider;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.function.BiFunction;
@@ -49,32 +53,38 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 
 	static final Logger log = Loggers.getLogger(Http3Codec.class);
 
-	final boolean                                                 accessLogEnabled;
-	final Function<AccessLogArgProvider, AccessLog>               accessLog;
-	final BiPredicate<HttpServerRequest, HttpServerResponse>      compressPredicate;
-	final ServerCookieDecoder                                     cookieDecoder;
-	final ServerCookieEncoder                                     cookieEncoder;
-	final HttpServerFormDecoderProvider                           formDecoderProvider;
-	final BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
-	final HttpMessageLogFactory                                   httpMessageLogFactory;
-	final ConnectionObserver                                      listener;
-	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
-	                                                              mapHandle;
-	final Function<String, String>                                methodTagValue;
-	final ChannelMetricsRecorder                                  metricsRecorder;
-	final int                                                     minCompressionSize;
-	final ChannelOperations.OnSetup                               opsFactory;
-	final Duration                                                readTimeout;
-	final Duration                                                requestTimeout;
-	final Function<String, String>                                uriTagValue;
-	final boolean                                                 validate;
+	final boolean                                                           accessLogEnabled;
+	final @Nullable Function<AccessLogArgProvider, @Nullable AccessLog>     accessLog;
+	final @Nullable HttpCompressionOptionsSpec                              compressionOptions;
+	final @Nullable BiPredicate<HttpServerRequest, HttpServerResponse>      compressPredicate;
+	final ServerCookieDecoder                                               cookieDecoder;
+	final ServerCookieEncoder                                               cookieEncoder;
+	final boolean                                                           errorLogEnabled;
+	final @Nullable Function<ErrorLogArgProvider, @Nullable ErrorLog>       errorLog;
+	final HttpServerFormDecoderProvider                                     formDecoderProvider;
+	final @Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler;
+	final HttpMessageLogFactory                                             httpMessageLogFactory;
+	final ConnectionObserver                                                listener;
+	final @Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>>
+	                                                                        mapHandle;
+	final @Nullable Function<String, String>                                methodTagValue;
+	final @Nullable ChannelMetricsRecorder                                  metricsRecorder;
+	final int                                                               minCompressionSize;
+	final ChannelOperations.OnSetup                                         opsFactory;
+	final @Nullable Duration                                                readTimeout;
+	final @Nullable Duration                                                requestTimeout;
+	final @Nullable Function<String, String>                                uriTagValue;
+	final boolean                                                           validate;
 
 	Http3Codec(
 			boolean accessLogEnabled,
-			@Nullable Function<AccessLogArgProvider, AccessLog> accessLog,
+			@Nullable Function<AccessLogArgProvider, @Nullable AccessLog> accessLog,
+			@Nullable HttpCompressionOptionsSpec compressionOptions,
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compressPredicate,
 			ServerCookieDecoder decoder,
 			ServerCookieEncoder encoder,
+			boolean errorLogEnabled,
+			@Nullable Function<ErrorLogArgProvider, @Nullable ErrorLog> errorLog,
 			HttpServerFormDecoderProvider formDecoderProvider,
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
 			HttpMessageLogFactory httpMessageLogFactory,
@@ -90,9 +100,12 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 			boolean validate) {
 		this.accessLogEnabled = accessLogEnabled;
 		this.accessLog = accessLog;
+		this.compressionOptions = compressionOptions;
 		this.compressPredicate = compressPredicate;
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
+		this.errorLogEnabled = errorLogEnabled;
+		this.errorLog = errorLog;
 		this.formDecoderProvider = formDecoderProvider;
 		this.forwardedHeaderHandler = forwardedHeaderHandler;
 		this.httpMessageLogFactory = httpMessageLogFactory;
@@ -118,13 +131,13 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 
 		p.addLast(NettyPipeline.H3ToHttp11Codec, new Http3FrameToHttpObjectCodec(true, validate))
 		 .addLast(NettyPipeline.HttpTrafficHandler,
-		         new Http3StreamBridgeServerHandler(compressPredicate, cookieDecoder, cookieEncoder, formDecoderProvider,
+		         new Http3StreamBridgeServerHandler(compressPredicate, compressionOptions, cookieDecoder, cookieEncoder, formDecoderProvider,
 		                 forwardedHeaderHandler, httpMessageLogFactory, listener, mapHandle, readTimeout, requestTimeout));
 
 		boolean alwaysCompress = compressPredicate == null && minCompressionSize == 0;
 
 		if (alwaysCompress) {
-			p.addLast(NettyPipeline.CompressionHandler, new SimpleCompressionHandler());
+			p.addLast(NettyPipeline.CompressionHandler, SimpleCompressionHandler.create(compressionOptions));
 		}
 
 		ChannelOperations.addReactiveBridge(channel, opsFactory, listener);
@@ -145,6 +158,10 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 			}
 		}
 
+		if (errorLogEnabled) {
+			p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.ErrorLogHandler, new DefaultErrorLogHandler(errorLog));
+		}
+
 		channel.pipeline().remove(this);
 
 		if (log.isDebugEnabled()) {
@@ -154,10 +171,13 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 
 	static ChannelHandler newHttp3ServerConnectionHandler(
 			boolean accessLogEnabled,
-			@Nullable Function<AccessLogArgProvider, AccessLog> accessLog,
+			@Nullable Function<AccessLogArgProvider, @Nullable AccessLog> accessLog,
+			@Nullable HttpCompressionOptionsSpec compressionOptions,
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compressPredicate,
 			ServerCookieDecoder decoder,
 			ServerCookieEncoder encoder,
+			boolean errorLogEnabled,
+			@Nullable Function<ErrorLogArgProvider, @Nullable ErrorLog> errorLog,
 			HttpServerFormDecoderProvider formDecoderProvider,
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler,
 			HttpMessageLogFactory httpMessageLogFactory,
@@ -172,8 +192,8 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 			@Nullable Function<String, String> uriTagValue,
 			boolean validate) {
 		return new Http3ServerConnectionHandler(
-				new Http3Codec(accessLogEnabled, accessLog, compressPredicate, decoder, encoder, formDecoderProvider, forwardedHeaderHandler,
-						httpMessageLogFactory, listener, mapHandle, methodTagValue, metricsRecorder, minCompressionSize,
-						opsFactory, readTimeout, requestTimeout, uriTagValue, validate));
+				new Http3Codec(accessLogEnabled, accessLog, compressionOptions, compressPredicate, decoder, encoder, errorLogEnabled, errorLog,
+						formDecoderProvider, forwardedHeaderHandler, httpMessageLogFactory, listener, mapHandle, methodTagValue, metricsRecorder,
+						minCompressionSize, opsFactory, readTimeout, requestTimeout, uriTagValue, validate));
 	}
 }

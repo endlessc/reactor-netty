@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,12 +17,14 @@ package reactor.netty.transport;
 
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.embedded.EmbeddedChannel;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.HostsFileEntriesProvider;
 import io.netty.resolver.NoopAddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledOnOs;
 import reactor.core.publisher.Mono;
@@ -30,7 +32,6 @@ import reactor.netty.Connection;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
-import reactor.util.annotation.Nullable;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -90,7 +91,7 @@ class ClientTransportTest {
 	@Test
 	void testDefaultResolverWithCustomEventLoop() throws Exception {
 		final LoopResources loop1 = LoopResources.create("test", 1, true);
-		final EventLoopGroup loop2 = new NioEventLoopGroup(1);
+		final EventLoopGroup loop2 = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 		final ConnectionProvider provider = ConnectionProvider.create("test");
 		final TestClientTransportConfig config =
 				new TestClientTransportConfig(provider, Collections.emptyMap(), () -> null);
@@ -105,7 +106,9 @@ class ClientTransportTest {
 			      .addListener(f -> assertThat(Thread.currentThread().getName()).startsWith("test-"));
 		}
 		finally {
-			config.defaultResolver.get().close();
+			AddressResolverGroup<?> resolverGroup = config.defaultResolver.get();
+			assertThat(resolverGroup).isNotNull();
+			resolverGroup.close();
 			loop1.disposeLater()
 			     .block(Duration.ofSeconds(10));
 			provider.disposeLater()
@@ -136,7 +139,9 @@ class ClientTransportTest {
 			assertThat(transport.configuration().defaultResolver.get()).isNotNull();
 		}
 		finally {
-			config.defaultResolver.get().close();
+			AddressResolverGroup<?> resolverGroup = config.defaultResolver.get();
+			assertThat(resolverGroup).isNotNull();
+			resolverGroup.close();
 			loop.disposeLater()
 			    .block(Duration.ofSeconds(5));
 			provider.disposeLater()
@@ -153,8 +158,9 @@ class ClientTransportTest {
 				.proxyWithSystemProperties(properties);
 
 		TestClientTransportConfig config = transport.configuration();
-		assertThat(config.proxyProvider()).isNotNull();
-		assertThat(config.proxyProvider().getType()).isEqualTo(ProxyProvider.Proxy.HTTP);
+		ProxyProvider proxyProvider = config.proxyProvider();
+		assertThat(proxyProvider).isNotNull();
+		assertThat(proxyProvider.getType()).isEqualTo(ProxyProvider.Proxy.HTTP);
 		assertThat(config.resolver()).isSameAs(NoopAddressResolverGroup.INSTANCE);
 	}
 
@@ -167,8 +173,9 @@ class ClientTransportTest {
 				.proxyWithSystemProperties(properties);
 
 		TestClientTransportConfig config = transport.configuration();
-		assertThat(config.proxyProvider()).isNotNull();
-		assertThat(config.proxyProvider().getType()).isEqualTo(ProxyProvider.Proxy.HTTP);
+		ProxyProvider proxyProvider = config.proxyProvider();
+		assertThat(proxyProvider).isNotNull();
+		assertThat(proxyProvider.getType()).isEqualTo(ProxyProvider.Proxy.HTTP);
 		assertThat(config.resolver()).isSameAs(NoopAddressResolverGroup.INSTANCE);
 	}
 
@@ -181,8 +188,9 @@ class ClientTransportTest {
 				.proxyWithSystemProperties(properties);
 
 		TestClientTransportConfig config = transport.configuration();
-		assertThat(config.proxyProvider()).isNotNull();
-		assertThat(config.proxyProvider().getType()).isEqualTo(ProxyProvider.Proxy.SOCKS5);
+		ProxyProvider proxyProvider = config.proxyProvider();
+		assertThat(proxyProvider).isNotNull();
+		assertThat(proxyProvider.getType()).isEqualTo(ProxyProvider.Proxy.SOCKS5);
 		assertThat(config.resolver()).isSameAs(NoopAddressResolverGroup.INSTANCE);
 	}
 
@@ -196,8 +204,9 @@ class ClientTransportTest {
 				.proxyWithSystemProperties(properties);
 
 		TestClientTransportConfig config = transport.configuration();
-		assertThat(config.proxyProvider()).isNotNull();
-		assertThat(config.proxyProvider().getType()).isEqualTo(ProxyProvider.Proxy.SOCKS4);
+		ProxyProvider proxyProvider = config.proxyProvider();
+		assertThat(proxyProvider).isNotNull();
+		assertThat(proxyProvider.getType()).isEqualTo(ProxyProvider.Proxy.SOCKS4);
 		assertThat(config.resolver()).isSameAs(NoopAddressResolverGroup.INSTANCE);
 	}
 
@@ -213,23 +222,31 @@ class ClientTransportTest {
 	void proxyOverriddenWithNullIfSystemPropertiesHaveNoProxySet() {
 		TestClientTransport transport = createTestTransportForProxy();
 		transport.proxy(spec -> spec.type(ProxyProvider.Proxy.HTTP).host("proxy").port(8080));
-		assertThat(transport.configuration().proxyProvider).isNotNull();
-		assertThat(transport.configuration().resolver()).isSameAs(NoopAddressResolverGroup.INSTANCE);
+		TestClientTransportConfig configuration1 = transport.configuration();
+		assertThat(configuration1.proxyProvider).isNull();
+		assertThat(configuration1.proxyProviderSupplier).isNotNull();
+		assertThat(configuration1.resolver()).isSameAs(NoopAddressResolverGroup.INSTANCE);
 
 		transport.proxyWithSystemProperties(new Properties());
-		assertThat(transport.configuration().proxyProvider).isNull();
-		assertThat(transport.configuration().resolver()).isNull();
+		TestClientTransportConfig configuration2 = transport.configuration();
+		assertThat(configuration2.proxyProvider).isNull();
+		assertThat(configuration2.proxyProviderSupplier).isNull();
+		assertThat(configuration2.resolver()).isNull();
 	}
 
 	@Test
 	void noProxyIfSystemPropertiesHaveNoProxySet() {
 		TestClientTransport transport = createTestTransportForProxy();
-		assertThat(transport.configuration().proxyProvider).isNull();
-		assertThat(transport.configuration().resolver()).isNull();
+		TestClientTransportConfig configuration1 = transport.configuration();
+		assertThat(configuration1.proxyProvider).isNull();
+		assertThat(configuration1.proxyProviderSupplier).isNull();
+		assertThat(configuration1.resolver()).isNull();
 
 		transport.proxyWithSystemProperties(new Properties());
-		assertThat(transport.configuration().proxyProvider).isNull();
-		assertThat(transport.configuration().resolver()).isNull();
+		TestClientTransportConfig configuration2 = transport.configuration();
+		assertThat(configuration2.proxyProvider).isNull();
+		assertThat(configuration2.proxyProviderSupplier).isNull();
+		assertThat(configuration2.resolver()).isNull();
 	}
 
 	static TestClientTransport createTestTransportForProxy() {
@@ -258,9 +275,9 @@ class ClientTransportTest {
 	}
 
 	@SuppressWarnings("unchecked")
-	private void doTestHostsFileEntriesResolver(boolean customResolver) throws Exception {
+	private static void doTestHostsFileEntriesResolver(boolean customResolver) throws Exception {
 		LoopResources loop1 = LoopResources.create("test", 1, true);
-		EventLoopGroup loop2 = new NioEventLoopGroup(1);
+		EventLoopGroup loop2 = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 		ConnectionProvider provider = ConnectionProvider.create("test");
 		TestClientTransportConfig config =
 				new TestClientTransportConfig(provider, Collections.emptyMap(), () -> null);
@@ -293,18 +310,21 @@ class ClientTransportTest {
 
 			assertThat(latch.await(5, TimeUnit.SECONDS)).as("latch await").isTrue();
 
-			assertThat(resolved.get()).isNotNull();
+			List<InetAddress> actual = resolved.get();
+			assertThat(actual).isNotNull();
 			if (customResolver) {
-				assertThat(resolved.get()).hasSize(1);
-				assertThat(resolved.get().get(0)).isEqualTo(addresses.get(0));
+				assertThat(actual).hasSize(1);
+				assertThat(actual.get(0)).isEqualTo(addresses.get(0));
 			}
 			else {
-				assertThat(resolved.get()).hasSize(addresses.size());
-				assertThat(resolved.get()).isEqualTo(addresses);
+				assertThat(actual).hasSize(addresses.size());
+				assertThat(actual).isEqualTo(addresses);
 			}
 		}
 		finally {
-			config.defaultResolver.get().close();
+			AddressResolverGroup<?> resolverGroup = config.defaultResolver.get();
+			assertThat(resolverGroup).isNotNull();
+			resolverGroup.close();
 			loop1.disposeLater()
 			     .block(Duration.ofSeconds(10));
 			provider.disposeLater()
@@ -317,7 +337,7 @@ class ClientTransportTest {
 	static final class TestClientTransport extends ClientTransport<TestClientTransport, TestClientTransportConfig> {
 
 		final Mono<? extends Connection> connect;
-		final TestClientTransportConfig config;
+		final @Nullable TestClientTransportConfig config;
 
 		TestClientTransport(Mono<? extends Connection> connect) {
 			this(connect, null);
@@ -329,7 +349,9 @@ class ClientTransportTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public TestClientTransportConfig configuration() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return config;
 		}
 
@@ -354,28 +376,40 @@ class ClientTransportTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected AddressResolverGroup<?> defaultAddressResolverGroup() {
+			// Deliberately suppress "NullAway" for testing purposes
+			// loopResources is lazy initialized
 			return NameResolverProvider.builder().build().newNameResolverGroup(loopResources, true);
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected LoggingHandler defaultLoggingHandler() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected LoopResources defaultLoopResources() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected ChannelMetricsRecorder defaultMetricsRecorder() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected AddressResolverGroup<?> resolverInternal() {
 			defaultResolver.compareAndSet(null, defaultAddressResolverGroup());
+			// Deliberately suppress "NullAway"
+			// defaultResolver is initialized on the previous row
 			return defaultResolver.get();
 		}
 	}

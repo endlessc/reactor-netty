@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,9 +21,9 @@ import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http2.Http2DataFrame;
 import io.netty.handler.codec.http2.Http2HeadersFrame;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.server.HttpServerInfos;
-import reactor.util.annotation.Nullable;
 
 import java.util.function.Function;
 
@@ -35,9 +35,12 @@ import java.util.function.Function;
  */
 final class AccessLogHandlerH2 extends BaseAccessLogHandler {
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This is a lazy initialization
 	AccessLogArgProviderH2 accessLogArgProvider;
 
-	AccessLogHandlerH2(@Nullable Function<AccessLogArgProvider, AccessLog> accessLog) {
+	AccessLogHandlerH2(@Nullable Function<AccessLogArgProvider, @Nullable AccessLog> accessLog) {
 		super(accessLog);
 	}
 
@@ -74,7 +77,7 @@ final class AccessLogHandlerH2 extends BaseAccessLogHandler {
 
 			ChannelOperations<?, ?> ops = ChannelOperations.get(ctx.channel());
 			if (ops instanceof HttpServerInfos) {
-				super.applyServerInfos(accessLogArgProvider, (HttpServerInfos) ops);
+				applyServerInfos(accessLogArgProvider, (HttpServerInfos) ops);
 			}
 		}
 		if (msg instanceof Http2DataFrame) {

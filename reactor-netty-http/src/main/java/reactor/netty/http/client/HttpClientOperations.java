@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,7 +40,8 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.compression.ZlibCodecFactory;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.unix.DomainSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
@@ -49,7 +50,6 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMessage;
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.HttpResponseStatus;
@@ -62,13 +62,11 @@ import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.codec.http.multipart.DefaultHttpDataFactory;
 import io.netty.handler.codec.http.multipart.HttpDataFactory;
 import io.netty.handler.codec.http.multipart.HttpPostRequestEncoder;
-import io.netty.handler.codec.http.websocketx.extensions.WebSocketClientExtensionHandler;
-import io.netty.handler.codec.http.websocketx.extensions.compression.DeflateFrameClientExtensionHandshaker;
-import io.netty.handler.codec.http.websocketx.extensions.compression.PerMessageDeflateClientExtensionHandshaker;
 import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.ReferenceCountUtil;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -92,10 +90,8 @@ import reactor.netty.http.logging.HttpMessageArgProviderFactory;
 import reactor.netty.http.logging.HttpMessageLogFactory;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.ContextView;
 
-import static io.netty.handler.codec.http.websocketx.extensions.compression.PerMessageDeflateServerExtensionHandshaker.MAX_WINDOW_SIZE;
 import static reactor.netty.ReactorNetty.format;
 
 /**
@@ -114,24 +110,25 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	final ClientCookieDecoder    cookieDecoder;
 	final List<Cookie>           cookieList;
 	final Sinks.One<HttpHeaders> trailerHeaders;
+	final HttpVersion            version;
 
-	Supplier<String>[]          redirectedFrom = EMPTY_REDIRECTIONS;
-	String                      resourceUrl;
-	String                      path;
-	Duration                    responseTimeout;
+	Supplier<String>[]           redirectedFrom = EMPTY_REDIRECTIONS;
+	@Nullable String             resourceUrl;
+	@Nullable String             path;
+	@Nullable Duration           responseTimeout;
 
-	volatile ResponseState responseState;
+	volatile @Nullable ResponseState responseState;
 
 	boolean started;
 	boolean retrying;
 	boolean is100Continue;
-	RedirectClientException redirecting;
+	@Nullable RedirectClientException redirecting;
 
-	BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate;
-	Consumer<HttpClientRequest> redirectRequestConsumer;
-	HttpHeaders previousRequestHeaders;
-	BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer;
-	volatile Throwable unprocessedOutboundError;
+	@Nullable BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate;
+	@Nullable Consumer<HttpClientRequest> redirectRequestConsumer;
+	@Nullable HttpHeaders previousRequestHeaders;
+	@Nullable BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer;
+	volatile @Nullable Throwable unprocessedOutboundError;
 
 	static final String INBOUND_CANCEL_LOG = "Http client inbound receiver cancelled, closing channel.";
 
@@ -157,6 +154,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.responseTimeout = replaced.responseTimeout;
 		this.is100Continue = replaced.is100Continue;
 		this.trailerHeaders = replaced.trailerHeaders;
+		this.version = replaced.version;
 		// No need to copy the unprocessedOutboundError field from the replaced instance. The reason for this is that the
 		// "unprocessedOutboundError" field contains an error that occurs when the connection of the HttpClientOperations
 		// is already closed. In essence, this error represents the final state for the HttpClientOperations, and there's
@@ -174,6 +172,24 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		this.cookieDecoder = decoder;
 		this.cookieEncoder = encoder;
 		this.cookieList = new ArrayList<>();
+		if (c.channel() instanceof Http2StreamChannel) {
+			this.version = H2;
+		}
+		else if (c.channel() instanceof SocketChannel || c.channel() instanceof DomainSocketChannel) {
+			HttpVersion version = this.nettyRequest.protocolVersion();
+			if (version.equals(HttpVersion.HTTP_1_0)) {
+				this.version = HttpVersion.HTTP_1_0;
+			}
+			else if (version.equals(HttpVersion.HTTP_1_1)) {
+				this.version = HttpVersion.HTTP_1_1;
+			}
+			else {
+				throw new IllegalStateException(version.protocolName() + " not supported");
+			}
+		}
+		else {
+			this.version = H3;
+		}
 		this.trailerHeaders = Sinks.unsafe().one();
 	}
 
@@ -278,7 +294,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		return Collections.emptyMap();
 	}
 
-	void followRedirectPredicate(BiPredicate<HttpClientRequest, HttpClientResponse> predicate) {
+	void followRedirectPredicate(@Nullable BiPredicate<HttpClientRequest, HttpClientResponse> predicate) {
 		this.followRedirectPredicate = predicate;
 	}
 
@@ -296,6 +312,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		if (log.isDebugEnabled()) {
 			log.debug(format(channel(), INBOUND_CANCEL_LOG));
 		}
+		// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+		// Whether there are subscribers or the subscriber cancels is not of interest
+		// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+		// FAIL_ZERO_SUBSCRIBER
+		trailerHeaders.tryEmitEmpty();
 		channel().close();
 	}
 
@@ -310,6 +331,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			listener().onStateChange(this, ConnectionObserver.State.DISCONNECTING);
 			return;
 		}
+		// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+		// Whether there are subscribers or the subscriber cancels is not of interest
+		// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+		// FAIL_ZERO_SUBSCRIBER
+		trailerHeaders.tryEmitEmpty();
 		listener().onStateChange(this, HttpClientState.RESPONSE_INCOMPLETE);
 		if (responseState == null) {
 			Throwable exception;
@@ -391,7 +417,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	@Override
 	public boolean isWebsocket() {
 		ChannelOperations<?, ?> ops = get(channel());
-		return ops != null && ops.getClass().equals(WebsocketClientOperations.class);
+		return ops != null &&
+				(ops.getClass().equals(WebsocketClientOperations.class) ||
+				ops.getClass().equals(Http2WebsocketClientOperations.class));
 	}
 
 	@Override
@@ -442,7 +470,9 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		if (source instanceof Mono) {
 			return super.send(source);
 		}
-		if (Objects.equals(method(), HttpMethod.GET) || Objects.equals(method(), HttpMethod.HEAD)) {
+		if (Objects.equals(method(), HttpMethod.GET) ||
+				Objects.equals(method(), HttpMethod.HEAD) ||
+				Objects.equals(method(), HttpMethod.DELETE)) {
 
 			ByteBufAllocator alloc = channel().alloc();
 			return new PostHeadersNettyOutbound(Flux.from(source)
@@ -451,7 +481,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			                .flatMap(list -> {
 				                if (markSentHeaderAndBody(list.toArray())) {
 					                if (list.isEmpty()) {
-						                return FutureMono.from(channel().writeAndFlush(newFullBodyMessage(Unpooled.EMPTY_BUFFER)));
+						                return FutureMono.from(channel().writeAndFlush(newFullBodyMessage()));
 					                }
 
 					                ByteBuf output;
@@ -473,11 +503,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 						                return FutureMono.from(channel().writeAndFlush(newFullBodyMessage(output)));
 					                }
 					                output.release();
-					                return FutureMono.from(channel().writeAndFlush(newFullBodyMessage(Unpooled.EMPTY_BUFFER)));
+					                return FutureMono.from(channel().writeAndFlush(newFullBodyMessage()));
 				                }
 				                for (ByteBuf bb : list) {
 				                	if (log.isDebugEnabled()) {
-						                log.debug(format(channel(), "Ignoring accumulated bytebuf on http GET {}"), bb);
+						                log.debug(format(channel(), "Ignoring accumulated bytebuf on http {} {}"), method(), bb);
 					                }
 				                	bb.release();
 				                }
@@ -535,20 +565,13 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 	}
 
 	@Override
-	public String resourceUrl() {
+	public @Nullable String resourceUrl() {
 		return resourceUrl;
 	}
 
 	@Override
 	public final HttpVersion version() {
-		HttpVersion version = this.nettyRequest.protocolVersion();
-		if (version.equals(HttpVersion.HTTP_1_0)) {
-			return HttpVersion.HTTP_1_0;
-		}
-		else if (version.equals(HttpVersion.HTTP_1_1)) {
-			return HttpVersion.HTTP_1_1;
-		}
-		throw new IllegalStateException(version.protocolName() + " not supported");
+		return version;
 	}
 
 	/**
@@ -638,7 +661,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 						"zero-length header"));
 			}
 			//"FutureReturnValueIgnored" this is deliberate
-			channel().writeAndFlush(newFullBodyMessage(Unpooled.EMPTY_BUFFER));
+			HttpMessage msg = Objects.equals(method(), HttpMethod.GET) ||
+					Objects.equals(method(), HttpMethod.HEAD) ||
+					Objects.equals(method(), HttpMethod.DELETE) ?
+					newFullBodyMessage() : newFullBodyMessage(Unpooled.EMPTY_BUFFER);
+			channel().writeAndFlush(msg);
 		}
 		else if (markSentBody()) {
 			//"FutureReturnValueIgnored" this is deliberate
@@ -689,6 +716,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			if (response.decoderResult().isFailure()) {
 				onInboundError(response.decoderResult().cause());
 				ReferenceCountUtil.release(msg);
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitEmpty();
 				terminate();
 				return;
 			}
@@ -746,6 +778,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 				else {
 					request.release();
 				}
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitValue(request.trailingHeaders());
 				terminate();
 			}
 			return;
@@ -756,6 +793,11 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 			if (lastHttpContent.decoderResult().isFailure()) {
 				onInboundError(lastHttpContent.decoderResult().cause());
 				lastHttpContent.release();
+				// EmitResult is ignored as it is guaranteed that there will be only one emission of LastHttpContent
+				// Whether there are subscribers or the subscriber cancels is not of interest
+				// Evaluated EmitResult: FAIL_TERMINATED, FAIL_OVERFLOW, FAIL_CANCELLED, FAIL_NON_SERIALIZED
+				// FAIL_ZERO_SUBSCRIBER
+				trailerHeaders.tryEmitValue(lastHttpContent.trailingHeaders());
 				terminate();
 				return;
 			}
@@ -830,7 +872,10 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		return nettyRequest;
 	}
 
+	@SuppressWarnings("NullAway")
 	final boolean notRedirected(HttpResponse response) {
+		// Deliberately suppress "NullAway"
+		// followRedirectPredicate is checked for null in isFollowRedirect()
 		if (isFollowRedirect() && followRedirectPredicate.test(this, this)) {
 			try {
 				redirecting = new RedirectClientException(response.headers(), response.status());
@@ -862,6 +907,15 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		return request;
 	}
 
+	HttpMessage newFullBodyMessage() {
+		HttpRequest request = new DefaultFullHttpRequest(version(), method(), uri(), Unpooled.EMPTY_BUFFER);
+
+		requestHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING);
+
+		request.headers().set(requestHeaders);
+		return request;
+	}
+
 	@Override
 	protected Throwable wrapInboundError(Throwable err) {
 		if (err instanceof ClosedChannelException) {
@@ -878,9 +932,18 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		if (!channel().isActive()) {
 			return Mono.error(AbortedException.beforeSend());
 		}
-		return FutureMono.deferFuture(() -> markSentHeaderAndBody() ?
-				channel().writeAndFlush(newFullBodyMessage(Unpooled.EMPTY_BUFFER)) :
-				channel().newSucceededFuture());
+		return FutureMono.deferFuture(() -> {
+			if (markSentHeaderAndBody()) {
+				HttpMessage msg = Objects.equals(method(), HttpMethod.GET) ||
+						Objects.equals(method(), HttpMethod.HEAD) ||
+						Objects.equals(method(), HttpMethod.DELETE) ?
+						newFullBodyMessage() : newFullBodyMessage(Unpooled.EMPTY_BUFFER);
+				return channel().writeAndFlush(msg);
+			}
+			else {
+				return channel().newSucceededFuture();
+			}
+		});
 	}
 
 	final void setNettyResponse(HttpResponse nettyResponse) {
@@ -891,39 +954,39 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		}
 	}
 
-	@SuppressWarnings("FutureReturnValueIgnored")
-	final void withWebsocketSupport(WebsocketClientSpec websocketClientSpec, boolean compress) {
+	@SuppressWarnings("ReferenceEquality")
+	final void withWebsocketSupport(WebsocketClientSpec websocketClientSpec) {
 		URI url = websocketUri();
 		//prevent further header to be sent for handshaking
 		if (markSentHeaders()) {
-			// Returned value is deliberately ignored
-			addHandlerFirst(NettyPipeline.HttpAggregator, new HttpObjectAggregator(8192));
-			removeHandler(NettyPipeline.HttpMetricsHandler);
-
-			if (websocketClientSpec.compress()) {
-				requestHeaders().remove(HttpHeaderNames.ACCEPT_ENCODING);
-				// Returned value is deliberately ignored
-				removeHandler(NettyPipeline.HttpDecompressor);
-				// Returned value is deliberately ignored
-				PerMessageDeflateClientExtensionHandshaker perMessageDeflateClientExtensionHandshaker =
-						new PerMessageDeflateClientExtensionHandshaker(6, ZlibCodecFactory.isSupportingWindowSizeAndMemLevel(),
-								MAX_WINDOW_SIZE, websocketClientSpec.compressionAllowClientNoContext(),
-								websocketClientSpec.compressionRequestedServerNoContext());
-				addHandlerFirst(NettyPipeline.WsCompressionHandler,
-						new WebSocketClientExtensionHandler(
-								perMessageDeflateClientExtensionHandshaker,
-								new DeflateFrameClientExtensionHandshaker(false),
-								new DeflateFrameClientExtensionHandshaker(true)));
-			}
-
 			if (log.isDebugEnabled()) {
 				log.debug(format(channel(), "Attempting to perform websocket handshake with {}"), url);
 			}
-			WebsocketClientOperations ops = new WebsocketClientOperations(url, websocketClientSpec, this);
+			WebsocketClientOperations ops;
+			// ReferenceEquality is deliberate
+			if (version == H2) {
+				ops = new Http2WebsocketClientOperations(url, websocketClientSpec, this);
+			}
+			else {
+				ops = new WebsocketClientOperations(url, websocketClientSpec, this);
+			}
 
 			if (!rebind(ops)) {
 				log.error(format(channel(), "Error while rebinding websocket in channel attribute: " +
 						get(channel()) + " to " + ops));
+			}
+		}
+	}
+
+	static void copyState(HttpClientOperations streamOps) {
+		ChannelOperations<?, ?> ops = ChannelOperations.get(streamOps.channel().parent());
+		if (ops instanceof HttpClientOperations) {
+			HttpClientOperations parentOps = (HttpClientOperations) ops;
+			if (parentOps.hasSentBody()) {
+				streamOps.markSentHeaderAndBody();
+			}
+			else if (parentOps.hasSentHeaders()) {
+				streamOps.markSentHeaders();
 			}
 		}
 	}
@@ -955,7 +1018,7 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 
 		final HttpClientOperations                                  parent;
 		final BiConsumer<? super HttpClientRequest, HttpClientForm> formCallback;
-		final Consumer<Flux<Long>>                                  progressCallback;
+		final @Nullable Consumer<Flux<Long>>                        progressCallback;
 
 		SendForm(HttpClientOperations parent,
 				BiConsumer<? super HttpClientRequest, HttpClientForm>  formCallback,
@@ -1068,6 +1131,8 @@ class HttpClientOperations extends HttpOperations<NettyInbound, NettyOutbound>
 		}
 	}
 
+	static final HttpVersion            H2 = HttpVersion.valueOf("HTTP/2.0");
+	static final HttpVersion            H3 = HttpVersion.valueOf("HTTP/3.0");
 	static final int                    MAX_REDIRECTS      = 50;
 	@SuppressWarnings({"unchecked", "rawtypes"})
 	static final Supplier<String>[]     EMPTY_REDIRECTIONS = (Supplier<String>[]) new Supplier[0];

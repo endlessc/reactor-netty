@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,8 @@ import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpUtil;
 import io.netty.handler.codec.http.LastHttpContent;
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -39,13 +41,13 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Signal;
 import reactor.netty.BaseHttpTest;
 import reactor.netty.Connection;
+import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableServer;
 import reactor.netty.LogTracker;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.tcp.TcpClient;
 import reactor.test.StepVerifier;
-import reactor.util.annotation.Nullable;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
@@ -266,30 +268,30 @@ class HttpServerOutboundCompleteTest extends BaseHttpTest {
 
 			Connection client =
 					TcpClient.create()
-							.port(disposableServer.port())
-							.wiretap(true)
-							.connectNow();
+					         .port(disposableServer.port())
+					         .wiretap(true)
+					         .connectNow();
 
 			int port = disposableServer.port();
 			String address = HttpUtil.formatHostnameForHttp((InetSocketAddress) disposableServer.address()) + ":" + port;
 			String request = repeatString("GET /%s HTTP/1.1\r\nHost: " + address + "\r\n\r\n");
 			client.outbound()
-					.sendObject(Unpooled.wrappedBuffer(request.getBytes(Charset.defaultCharset())))
-					.then()
-					.subscribe();
+			      .sendObject(Unpooled.wrappedBuffer(request.getBytes(Charset.defaultCharset())))
+			      .then()
+			      .subscribe();
 
 			CountDownLatch responses = new CountDownLatch(16);
 			client.inbound()
-					.receive()
-					.asString()
-					.doOnNext(s -> {
-						int ind = 0;
-						while ((ind = s.indexOf("200", ind)) != -1) {
-							responses.countDown();
-							ind += 3;
-						}
-					})
-					.subscribe();
+			      .receive()
+			      .asString()
+			      .doOnNext(s -> {
+			          int ind = 0;
+			          while ((ind = s.indexOf("200", ind)) != -1) {
+			              responses.countDown();
+			              ind += 3;
+			          }
+			      })
+			      .subscribe();
 
 			assertThat(responses.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -302,14 +304,13 @@ class HttpServerOutboundCompleteTest extends BaseHttpTest {
 			if (enableMetricsAndAccessLog) {
 				assertThat(logTracker.latch.await(5, TimeUnit.SECONDS)).isTrue();
 				assertThat(logTracker.actualMessages).hasSize(16);
+				for (int i = 0; i < 16; i++) {
+					assertTimer(registry, HTTP_SERVER_PREFIX + RESPONSE_TIME, METHOD, "GET", STATUS, "200", URI, "/" + i).isNotNull();
+				}
 			}
 		}
 		finally {
 			if (registry != null) {
-				for (int i = 0; i < 16; i++) {
-					assertTimer(registry, HTTP_SERVER_PREFIX + RESPONSE_TIME, METHOD, "GET", STATUS, "200", URI, "/" + i).isNotNull();
-				}
-
 				Metrics.removeRegistry(registry);
 				registry.clear();
 				registry.close();
@@ -340,30 +341,30 @@ class HttpServerOutboundCompleteTest extends BaseHttpTest {
 
 			Connection client =
 					TcpClient.create()
-							.port(disposableServer.port())
-							.wiretap(true)
-							.connectNow();
+					         .port(disposableServer.port())
+					         .wiretap(true)
+					         .connectNow();
 
 			int port = disposableServer.port();
 			String address = HttpUtil.formatHostnameForHttp((InetSocketAddress) disposableServer.address()) + ":" + port;
 			String request = repeatString("GET /%s HTTP/1.1\r\nHost: " + address + "\r\n\r\n");
 			client.outbound()
-					.sendObject(Unpooled.wrappedBuffer(request.getBytes(Charset.defaultCharset())))
-					.then()
-					.subscribe();
+			      .sendObject(Unpooled.wrappedBuffer(request.getBytes(Charset.defaultCharset())))
+			      .then()
+			      .subscribe();
 
 			CountDownLatch responses = new CountDownLatch(16);
 			client.inbound()
-					.receive()
-					.asString()
-					.doOnNext(s -> {
-						int ind = 0;
-						while ((ind = s.indexOf("200", ind)) != -1) {
-							responses.countDown();
-							ind += 3;
-						}
-					})
-					.subscribe();
+			      .receive()
+			      .asString()
+			      .doOnNext(s -> {
+			          int ind = 0;
+			          while ((ind = s.indexOf("200", ind)) != -1) {
+			              responses.countDown();
+			              ind += 3;
+			          }
+			      })
+			      .subscribe();
 
 			assertThat(responses.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -376,14 +377,13 @@ class HttpServerOutboundCompleteTest extends BaseHttpTest {
 			if (enableMetricsAndAccessLog) {
 				assertThat(logTracker.latch.await(5, TimeUnit.SECONDS)).isTrue();
 				assertThat(logTracker.actualMessages).hasSize(16);
+				for (int i = 0; i < 16; i++) {
+					assertTimer(registry, HTTP_SERVER_PREFIX + RESPONSE_TIME, METHOD, "GET", STATUS, "200", URI, "/" + i).isNotNull();
+				}
 			}
 		}
 		finally {
 			if (registry != null) {
-				for (int i = 0; i < 16; i++) {
-					assertTimer(registry, HTTP_SERVER_PREFIX + RESPONSE_TIME, METHOD, "GET", STATUS, "200", URI, "/" + i).isNotNull();
-				}
-
 				Metrics.removeRegistry(registry);
 				registry.clear();
 				registry.close();
@@ -416,6 +416,7 @@ class HttpServerOutboundCompleteTest extends BaseHttpTest {
 
 	@ParameterizedTest
 	@EnumSource(value = HttpProtocol.class, names = {"HTTP11", "H2C"})
+	@Disabled
 	void httpPostRespondsSendFlux(HttpProtocol protocol) throws Exception {
 		CountDownLatch latch = new CountDownLatch(5);
 		EventsRecorder recorder = new EventsRecorder(latch);
@@ -538,9 +539,9 @@ class HttpServerOutboundCompleteTest extends BaseHttpTest {
 						ch.pipeline().addBefore(HttpTrafficHandler, "eventsRecorderHandler", new EventsRecorderHandler(recorder));
 					}
 				})
-				.doOnConnection(conn -> {
-					conn.onTerminate().subscribe(null, null, recorder::recordOnTerminateIsReceived);
-					if (protocol == HttpProtocol.H2C) {
+				.doOnConnection(conn -> conn.onTerminate().subscribe(null, null, recorder::recordOnTerminateIsReceived))
+				.childObserve((conn, state) -> {
+					if (state == ConnectionObserver.State.CONNECTED && protocol == HttpProtocol.H2C) {
 						conn.channel().pipeline().addBefore(HttpTrafficHandler, "eventsRecorderHandler", new EventsRecorderHandler(recorder));
 					}
 				})

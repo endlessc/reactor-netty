@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,8 +25,10 @@ import java.util.function.Supplier;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.socket.InternetProtocolFamily;
+import io.netty.channel.socket.SocketProtocolFamily;
 import io.netty.handler.logging.LogLevel;
 import io.netty.util.AttributeKey;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
@@ -37,7 +39,6 @@ import reactor.netty.transport.AddressUtils;
 import reactor.netty.transport.Transport;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import static reactor.netty.ReactorNetty.format;
 
@@ -120,7 +121,8 @@ public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 			return Objects.requireNonNull(bind().block(timeout), "aborted");
 		}
 		catch (IllegalStateException e) {
-			if (e.getMessage().contains("blocking read")) {
+			String message = e.getMessage();
+			if (message != null && message.contains("blocking read")) {
 				throw new IllegalStateException("UdpServer couldn't be started within " + timeout.toMillis() + "ms");
 			}
 			throw e;
@@ -241,7 +243,7 @@ public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 	 * Run IO loops on a supplied {@link EventLoopGroup} from the {@link LoopResources} container.
 	 *
 	 * @param loopResources a new loop resources
-	 * @param preferNative should prefer running on epoll, kqueue or similar instead of java NIO
+	 * @param preferNative should prefer running on epoll, io_uring, kqueue or similar instead of java NIO
 	 * @return a new {@link UdpServer} reference
 	 */
 	@Override
@@ -249,6 +251,7 @@ public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 		Objects.requireNonNull(loopResources, "loopResources");
 		UdpServer dup = super.runOn(loopResources, preferNative);
 		dup.configuration().family = null;
+		dup.configuration().socketFamily = null;
 		return dup;
 	}
 
@@ -258,12 +261,33 @@ public abstract class UdpServer extends Transport<UdpServer, UdpServerConfig> {
 	 * @param loopResources a new loop resources
 	 * @param family a specific {@link InternetProtocolFamily} to run with
 	 * @return a new {@link UdpServer} reference
+	 * @deprecated as of 1.3.0. Prefer {@link #runOn(LoopResources, SocketProtocolFamily)}.
+	 * This method will be removed in version 1.4.0.
 	 */
+	@Deprecated
 	public final UdpServer runOn(LoopResources loopResources, InternetProtocolFamily family) {
 		Objects.requireNonNull(loopResources, "loopResources");
 		Objects.requireNonNull(family, "family");
 		UdpServer dup = super.runOn(loopResources, false);
 		dup.configuration().family = family;
+		dup.configuration().socketFamily = family.toSocketProtocolFamily();
+		return dup;
+	}
+
+	/**
+	 * Run IO loops on a supplied {@link EventLoopGroup} from the {@link LoopResources} container.
+	 *
+	 * @param loopResources a new loop resources
+	 * @param family a specific {@link SocketProtocolFamily} to run with
+	 * @return a new {@link UdpServer} reference
+	 * @since 1.3.0
+	 */
+	public final UdpServer runOn(LoopResources loopResources, SocketProtocolFamily family) {
+		Objects.requireNonNull(loopResources, "loopResources");
+		Objects.requireNonNull(family, "family");
+		UdpServer dup = super.runOn(loopResources, false);
+		dup.configuration().family = null;
+		dup.configuration().socketFamily = family;
 		return dup;
 	}
 

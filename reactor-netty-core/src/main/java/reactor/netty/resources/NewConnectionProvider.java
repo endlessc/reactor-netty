@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import java.util.function.Supplier;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.resolver.AddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
 import reactor.core.Disposable;
@@ -41,10 +41,10 @@ import reactor.netty.transport.TransportConfig;
 import reactor.netty.transport.TransportConnector;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.transport.DomainSocketAddressUtils.isDomainSocketAddress;
 
 /**
  * {@link ConnectionProvider} that always establishes a new connection.
@@ -96,7 +96,7 @@ final class NewConnectionProvider implements ConnectionProvider {
 				ConnectionObserver connectionObserver = new NewConnectionObserver(sink, observer);
 				ChannelInitializer<Channel> channelInitializer = config.channelInitializer(connectionObserver, null, true);
 				DisposableConnect disposableConnect = new DisposableConnect(sink, config.bindAddress());
-				TransportConnector.bind(config, channelInitializer, local, local instanceof DomainSocketAddress)
+				TransportConnector.bind(config, channelInitializer, local, isDomainSocketAddress(local))
 				                  .subscribe(disposableConnect);
 			}
 		});
@@ -115,8 +115,12 @@ final class NewConnectionProvider implements ConnectionProvider {
 	static final class DisposableConnect implements CoreSubscriber<Channel>, Disposable {
 		final MonoSink<Connection> sink;
 		final Context currentContext;
-		final Supplier<? extends SocketAddress> bindAddress;
+		final @Nullable Supplier<? extends SocketAddress> bindAddress;
 
+		// Never null when accessed - only via dispose()
+		// which is registered into sink.onCancel() callback.
+		// See onSubscribe(Subscription).
+		@SuppressWarnings("NullAway")
 		Subscription subscription;
 
 		DisposableConnect(MonoSink<Connection> sink, @Nullable Supplier<? extends SocketAddress> bindAddress) {
@@ -136,6 +140,7 @@ final class NewConnectionProvider implements ConnectionProvider {
 
 		@Override
 		public void dispose() {
+			// sink.onCancel() registration happens in onSubscribe()
 			subscription.cancel();
 		}
 

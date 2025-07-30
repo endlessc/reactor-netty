@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -43,6 +43,7 @@ import io.netty.util.IllegalReferenceCountException;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -50,7 +51,6 @@ import reactor.core.Exceptions;
 import reactor.core.Fuseable;
 import reactor.core.Scannable;
 import reactor.core.publisher.Operators;
-import reactor.util.annotation.Nullable;
 import reactor.util.concurrent.Queues;
 import reactor.util.context.Context;
 
@@ -103,9 +103,8 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 	}
 
 	@Override
-	@Nullable
 	@SuppressWarnings("rawtypes")
-	public Object scanUnsafe(Attr key) {
+	public @Nullable Object scanUnsafe(Attr key) {
 		if (key == Attr.PREFETCH) {
 			return MAX_SIZE;
 		}
@@ -127,18 +126,23 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 		final Runnable                     asyncFlush;
 
 
-		@SuppressWarnings("unused")
+		@SuppressWarnings({"unused", "NullAway"})
+		// Deliberately suppress "NullAway"
+		// This is a lazy initialization
 		volatile Subscription s;
 
 		@SuppressWarnings("unused")
 		volatile int          wip;
 
+		@SuppressWarnings("NullAway")
+		// Deliberately suppress "NullAway"
+		// This is a lazy initialization
 		Queue<I> queue;
 		int      pending;
 		int      requested;
 		int      sourceMode;
 		boolean  needFlush;
-		Throwable terminalSignal;
+		@Nullable Throwable terminalSignal;
 
 		int nextRequest;
 
@@ -446,7 +450,7 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 
 		@Override
 		@SuppressWarnings("rawtypes")
-		public Object scanUnsafe(Attr key) {
+		public @Nullable Object scanUnsafe(Attr key) {
 			if (key == Attr.PARENT) {
 				return s;
 			}
@@ -636,8 +640,10 @@ final class MonoSendMany<I, O> extends MonoSend<I, O> implements Scannable {
 		}
 
 		@Override
-		@Nullable
+		@SuppressWarnings("NullAway")
 		public Throwable cause() {
+			// Deliberately suppress "NullAway"
+			// The super method is not annotated
 			return null;
 		}
 

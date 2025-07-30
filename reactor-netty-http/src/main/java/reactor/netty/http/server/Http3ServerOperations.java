@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,14 +16,16 @@
 package reactor.netty.http.server;
 
 import io.netty.handler.codec.http.HttpRequest;
+import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
-import io.netty.incubator.codec.quic.QuicChannel;
+import io.netty.handler.codec.quic.QuicChannel;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.http.logging.HttpMessageLogFactory;
-import reactor.util.annotation.Nullable;
+import reactor.netty.http.server.compression.HttpCompressionOptionsSpec;
 
 import java.net.SocketAddress;
 import java.time.Duration;
@@ -41,6 +43,7 @@ final class Http3ServerOperations extends HttpServerOperations {
 			Connection c,
 			ConnectionObserver listener,
 			HttpRequest nettyRequest,
+			@Nullable HttpCompressionOptionsSpec compressionOptions,
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compressionPredicate,
 			ConnectionInfo connectionInfo,
 			ServerCookieDecoder decoder,
@@ -53,17 +56,32 @@ final class Http3ServerOperations extends HttpServerOperations {
 			@Nullable Duration requestTimeout,
 			boolean secured,
 			ZonedDateTime timestamp) {
-		super(c, listener, nettyRequest, compressionPredicate, connectionInfo, decoder, encoder, formDecoderProvider,
+		super(c, listener, nettyRequest, compressionOptions, compressionPredicate, connectionInfo, decoder, encoder, formDecoderProvider,
 				httpMessageLogFactory, isHttp2, mapHandle, readTimeout, requestTimeout, secured, timestamp, true);
 	}
 
 	@Override
-	public SocketAddress connectionHostAddress() {
+	public @Nullable SocketAddress connectionHostAddress() {
 		return ((QuicChannel) channel().parent()).localSocketAddress();
 	}
 
 	@Override
-	public SocketAddress connectionRemoteAddress() {
+	public @Nullable SocketAddress connectionRemoteAddress() {
 		return ((QuicChannel) channel().parent()).remoteSocketAddress();
 	}
+
+	@Override
+	public String protocol() {
+		return H3.text();
+	}
+
+	@Override
+	public HttpVersion version() {
+		if (nettyRequest != null) {
+			return H3;
+		}
+		throw new IllegalStateException("request not parsed");
+	}
+
+	static final HttpVersion H3 = HttpVersion.valueOf("HTTP/3.0");
 }

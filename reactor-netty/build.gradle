@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,16 +21,14 @@ dependencies {
 	api project(':reactor-netty-core')
 	api project(':reactor-netty-http')
 
-	// JSR-305 annotations
-	compileOnly "com.google.code.findbugs:jsr305:$jsr305Version"
-
 	compileOnly "io.micrometer:micrometer-core:$micrometerVersion"
 	compileOnly "io.micrometer:micrometer-tracing:$micrometerTracingVersion"
 	compileOnly "io.micrometer:context-propagation:$contextPropagationVersion"
 	compileOnly "io.netty:netty-codec-haproxy:$nettyVersion"
 	compileOnly "io.netty:netty-transport-native-kqueue:$nettyVersion"
 	compileOnly "io.netty.incubator:netty-incubator-transport-native-io_uring:$nettyIoUringVersion"
-	compileOnly "io.netty.incubator:netty-incubator-codec-http3:$nettyHttp3Version"
+	compileOnly "io.netty:netty-transport-native-io_uring:$nettyVersion"
+	compileOnly "io.netty:netty-codec-http3:$nettyVersion"
 	compileOnly "io.projectreactor.addons:reactor-pool:$reactorPoolVersion"
 }
 

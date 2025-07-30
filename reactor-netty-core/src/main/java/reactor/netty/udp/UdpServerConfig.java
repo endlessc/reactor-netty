@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,10 +22,12 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
+import io.netty.channel.socket.SocketProtocolFamily;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.unix.DomainDatagramChannel;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
@@ -35,7 +37,6 @@ import reactor.netty.channel.MicrometerChannelMetricsRecorder;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.transport.TransportConfig;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.nio.charset.Charset;
@@ -61,8 +62,7 @@ public final class UdpServerConfig extends TransportConfig {
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super UdpServerConfig> doOnBind() {
+	public final @Nullable Consumer<? super UdpServerConfig> doOnBind() {
 		return doOnBind;
 	}
 
@@ -71,8 +71,7 @@ public final class UdpServerConfig extends TransportConfig {
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super Connection> doOnBound() {
+	public final @Nullable Consumer<? super Connection> doOnBound() {
 		return doOnBound;
 	}
 
@@ -81,8 +80,7 @@ public final class UdpServerConfig extends TransportConfig {
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super Connection> doOnUnbound() {
+	public final @Nullable Consumer<? super Connection> doOnUnbound() {
 		return doOnUnbound;
 	}
 
@@ -90,19 +88,32 @@ public final class UdpServerConfig extends TransportConfig {
 	 * Return the configured {@link InternetProtocolFamily} to run with or null.
 	 *
 	 * @return the configured {@link InternetProtocolFamily} to run with or null
+	 * @deprecated as of 1.3.0. Prefer {@link #socketFamily()}. This method will be removed in version 1.4.0.
 	 */
-	@Nullable
-	public final InternetProtocolFamily family() {
+	@Deprecated
+	public final @Nullable InternetProtocolFamily family() {
 		return family;
+	}
+
+	/**
+	 * Return the configured {@link SocketProtocolFamily} to run with or null.
+	 *
+	 * @return the configured {@link SocketProtocolFamily} to run with or null
+	 * @since 1.3.0
+	 */
+	public final @Nullable SocketProtocolFamily socketFamily() {
+		return socketFamily;
 	}
 
 
 	// Protected/Package private write API
 
-	Consumer<? super UdpServerConfig> doOnBind;
-	Consumer<? super Connection>      doOnBound;
-	Consumer<? super Connection>      doOnUnbound;
-	InternetProtocolFamily            family;
+	@Nullable Consumer<? super UdpServerConfig> doOnBind;
+	@Nullable Consumer<? super Connection>      doOnBound;
+	@Nullable Consumer<? super Connection>      doOnUnbound;
+	@SuppressWarnings("deprecation")
+	@Nullable InternetProtocolFamily            family;
+	@Nullable SocketProtocolFamily              socketFamily;
 
 	UdpServerConfig(Map<ChannelOption<?>, ?> options, Supplier<? extends SocketAddress> bindAddress) {
 		super(options, bindAddress);
@@ -114,6 +125,7 @@ public final class UdpServerConfig extends TransportConfig {
 		this.doOnBound = parent.doOnBound;
 		this.doOnUnbound = parent.doOnUnbound;
 		this.family = parent.family;
+		this.socketFamily = parent.socketFamily;
 	}
 
 	@Override
@@ -127,7 +139,7 @@ public final class UdpServerConfig extends TransportConfig {
 			return super.connectionFactory(elg, isDomainSocket);
 		}
 		else {
-			return () -> new NioDatagramChannel(family());
+			return () -> new NioDatagramChannel(socketFamily());
 		}
 	}
 
@@ -181,9 +193,9 @@ public final class UdpServerConfig extends TransportConfig {
 
 	static final class UdpServerDoOn implements ConnectionObserver {
 
-		final ChannelGroup                 channelGroup;
-		final Consumer<? super Connection> doOnBound;
-		final Consumer<? super Connection> doOnUnbound;
+		final @Nullable ChannelGroup                 channelGroup;
+		final @Nullable Consumer<? super Connection> doOnBound;
+		final @Nullable Consumer<? super Connection> doOnUnbound;
 
 		UdpServerDoOn(@Nullable ChannelGroup channelGroup,
 				@Nullable Consumer<? super Connection> doOnBound,

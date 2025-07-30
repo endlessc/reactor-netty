@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ import java.util.function.Supplier;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
 import io.netty.resolver.AddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
@@ -34,7 +35,6 @@ import reactor.netty.transport.NameResolverProvider;
 import reactor.netty.transport.TransportConfig;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import static java.util.Objects.requireNonNull;
 
@@ -143,7 +143,7 @@ public class TcpResources implements ConnectionProvider, LoopResources {
 
 	final LoopResources                            defaultLoops;
 	final ConnectionProvider                       defaultProvider;
-	final AtomicReference<AddressResolverGroup<?>> defaultResolver;
+	final AtomicReference<@Nullable AddressResolverGroup<?>> defaultResolver;
 
 	protected TcpResources(LoopResources defaultLoops, ConnectionProvider defaultProvider) {
 		this.defaultLoops = defaultLoops;
@@ -230,17 +230,17 @@ public class TcpResources implements ConnectionProvider, LoopResources {
 	}
 
 	@Override
-	public Map<SocketAddress, Integer> maxConnectionsPerHost() {
+	public @Nullable Map<SocketAddress, Integer> maxConnectionsPerHost() {
 		return defaultProvider.maxConnectionsPerHost();
 	}
 
 	@Override
-	public Builder mutate() {
+	public @Nullable Builder mutate() {
 		return defaultProvider.mutate();
 	}
 
 	@Override
-	public String name() {
+	public @Nullable String name() {
 		return defaultProvider.name();
 	}
 
@@ -349,7 +349,7 @@ public class TcpResources implements ConnectionProvider, LoopResources {
 	 * @param <T> the reified type of {@link TcpResources}
 	 * @return an existing or new {@link TcpResources}
 	 */
-	protected static <T extends TcpResources> T getOrCreate(AtomicReference<T> ref,
+	protected static <T extends TcpResources> T getOrCreate(AtomicReference<@Nullable T> ref,
 			@Nullable LoopResources loops,
 			@Nullable ConnectionProvider provider,
 			BiFunction<LoopResources, ConnectionProvider, T> onNew,
@@ -405,7 +405,8 @@ public class TcpResources implements ConnectionProvider, LoopResources {
 			BiFunction<LoopResources, ConnectionProvider, T> onNew) {
 		if (previous == null) {
 			loops = loops == null ? LoopResources.create("reactor-" + name) : loops;
-			provider = provider == null ? ConnectionProvider.create(name, 500) : provider;
+			int defaultMaxConnections = Math.max(ConnectionProvider.DEFAULT_POOL_MAX_CONNECTIONS, 500);
+			provider = provider == null ? ConnectionProvider.create(name, defaultMaxConnections) : provider;
 		}
 		else {
 			loops = loops == null ? previous.defaultLoops : loops;
@@ -420,7 +421,7 @@ public class TcpResources implements ConnectionProvider, LoopResources {
 
 	static final BiFunction<LoopResources, ConnectionProvider, TcpResources> ON_TCP_NEW;
 
-	static final AtomicReference<TcpResources>                               tcpResources;
+	static final AtomicReference<@Nullable TcpResources>                     tcpResources;
 
 	static {
 		DEFAULT_NAME_RESOLVER_PROVIDER = NameResolverProvider.builder().build();

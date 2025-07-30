@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,7 +19,9 @@ import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.multipart.HttpData;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import reactor.core.publisher.Flux;
@@ -28,7 +30,7 @@ import reactor.netty.BaseHttpTest;
 import reactor.netty.http.Http2SslContextSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.client.HttpClient;
-import reactor.util.annotation.Nullable;
+import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
 
@@ -61,15 +63,15 @@ class HttpServerPostFormTests extends BaseHttpTest {
 
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.METHOD)
-	@ParameterizedTest(name = "{displayName}({0}, {1})")
+	@ParameterizedTest
 	@MethodSource("data")
 	@interface ParameterizedPostFormTest {
 	}
 
 	@SuppressWarnings("deprecation")
 	static Object[][] data() throws Exception {
-		SelfSignedCertificate cert = new SelfSignedCertificate();
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+		X509Bundle cert = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(cert.toTempCertChainPem(), cert.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 						.configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -266,6 +268,8 @@ class HttpServerPostFormTests extends BaseHttpTest {
 	private void doTestPostForm(HttpServer server, HttpClient client,
 			Consumer<HttpServerFormDecoderProvider.Builder> provider, boolean configOnServer,
 			boolean multipart, boolean streaming, @Nullable String expectedResponse) throws Exception {
+		AtomicReference<@Nullable Throwable> error = new AtomicReference<>();
+		Consumer<Throwable> onErrorDropped = error::set;
 		AtomicReference<List<HttpData>> originalHttpData1 = new AtomicReference<>(new ArrayList<>());
 		AtomicReference<List<HttpData>> originalHttpData2 = new AtomicReference<>(new ArrayList<>());
 		AtomicReference<Map<String, CompositeByteBuf>> copiedHttpData = new AtomicReference<>(new HashMap<>());
@@ -296,7 +300,8 @@ class HttpServerPostFormTests extends BaseHttpTest {
 		                                data.isCompleted() + "] ");
 		                    })
 		                    .onErrorResume(t -> Mono.just(t.getCause().getMessage()))
-		                    .log()));
+		                    .log()
+		                    .contextWrite(Context.of("reactor.onErrorDropped.local", onErrorDropped))));
 
 		disposableServer = server.bindNow();
 
@@ -350,9 +355,12 @@ class HttpServerPostFormTests extends BaseHttpTest {
 				}
 			}
 		}
+
+		Throwable throwable = error.get();
+		assertThat(throwable).isNull();
 	}
 
-	private void testContent(CompositeByteBuf file, byte[] expectedBytes) {
+	private static void testContent(CompositeByteBuf file, byte[] expectedBytes) {
 		byte[] fileBytes = new byte[file.readableBytes()];
 		file.readBytes(fileBytes);
 		assertThat(fileBytes).isEqualTo(expectedBytes);

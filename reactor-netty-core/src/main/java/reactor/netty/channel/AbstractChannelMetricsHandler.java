@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,13 +24,14 @@ import io.netty.channel.socket.DatagramPacket;
 import io.netty.handler.proxy.ProxyHandler;
 import io.netty.handler.ssl.AbstractSniHandler;
 import io.netty.handler.ssl.SslHandler;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.NettyPipeline;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 
+import static java.util.Objects.requireNonNull;
 import static reactor.netty.ReactorNetty.format;
 
 /**
@@ -43,12 +44,12 @@ public abstract class AbstractChannelMetricsHandler extends ChannelDuplexHandler
 
 	private static final Logger log = Loggers.getLogger(AbstractChannelMetricsHandler.class);
 
-	final SocketAddress remoteAddress;
+	final @Nullable SocketAddress remoteAddress;
 
 	final boolean onServer;
 
 	boolean channelOpened;
-	SocketAddress proxyAddress;
+	@Nullable SocketAddress proxyAddress;
 
 	protected AbstractChannelMetricsHandler(@Nullable SocketAddress remoteAddress, boolean onServer) {
 		this.remoteAddress = remoteAddress;
@@ -127,7 +128,7 @@ public abstract class AbstractChannelMetricsHandler extends ChannelDuplexHandler
 			if (msg instanceof ByteBuf) {
 				ByteBuf buffer = (ByteBuf) msg;
 				if (buffer.readableBytes() > 0) {
-					recordRead(ctx, remoteAddress, buffer.readableBytes());
+					recordRead(ctx, requireNonNull(remoteAddress), buffer.readableBytes());
 				}
 			}
 			else if (msg instanceof DatagramPacket) {
@@ -155,7 +156,7 @@ public abstract class AbstractChannelMetricsHandler extends ChannelDuplexHandler
 			if (msg instanceof ByteBuf) {
 				ByteBuf buffer = (ByteBuf) msg;
 				if (buffer.readableBytes() > 0) {
-					recordWrite(ctx, remoteAddress, buffer.readableBytes());
+					recordWrite(ctx, requireNonNull(remoteAddress), buffer.readableBytes());
 				}
 			}
 			else if (msg instanceof DatagramPacket) {

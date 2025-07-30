@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,11 @@ import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.resolver.dns.DnsCache;
 import io.netty.resolver.dns.DnsCacheEntry;
 import io.netty.resolver.dns.DnsNameResolverBuilder;
+import io.netty.resolver.dns.DnsNameResolverChannelStrategy;
 import io.netty.resolver.dns.DnsServerAddressStreamProviders;
 import io.netty.resolver.dns.RoundRobinDnsAddressResolverGroup;
 import io.netty.resolver.dns.macos.MacOSDnsServerAddressStreamProvider;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledOnOs;
@@ -48,6 +50,7 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_CACHE_MAX_TIME_TO_LIVE;
 import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_CACHE_MIN_TIME_TO_LIVE;
 import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_CACHE_NEGATIVE_TIME_TO_LIVE;
+import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_DATAGRAM_CHANNEL_STRATEGY;
 import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_MAX_PAYLOAD_SIZE;
 import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_MAX_QUERIES_PER_RESOLVE;
 import static reactor.netty.transport.NameResolverProvider.Build.DEFAULT_NDOTS;
@@ -69,13 +72,21 @@ class NameResolverProviderTest {
 	@Test
 	void bindAddressSupplier() {
 		assertThat(builder.build().bindAddressSupplier()).isNull();
-		Supplier<SocketAddress> addressSupplier = () -> new InetSocketAddress("localhost", 9527);
+
+		Supplier<@Nullable SocketAddress> addressSupplier = () -> new InetSocketAddress("localhost", 9527);
 		builder.bindAddressSupplier(addressSupplier);
 		assertThat(builder.build().bindAddressSupplier()).isEqualTo(addressSupplier);
+
+		addressSupplier = () -> null;
+		builder.bindAddressSupplier(addressSupplier);
+		assertThat(builder.build().bindAddressSupplier()).isEqualTo(addressSupplier);
+		assertThat(builder.build().bindAddressSupplier().get()).isNull();
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void bindAddressSupplierBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.bindAddressSupplier(null));
 	}
@@ -90,7 +101,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void cacheMaxTimeToLiveBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.cacheMaxTimeToLive(null));
 
@@ -109,7 +122,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void cacheMinTimeToLiveBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.cacheMinTimeToLive(null));
 
@@ -128,7 +143,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void cacheNegativeTimeToLiveBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.cacheNegativeTimeToLive(null));
 
@@ -143,6 +160,22 @@ class NameResolverProviderTest {
 
 		builder.completeOncePreferredResolved(false);
 		assertThat(builder.build().isCompleteOncePreferredResolved()).isFalse();
+	}
+
+	@Test
+	void datagramChannelStrategy() {
+		assertThat(builder.build().datagramChannelStrategy()).isEqualTo(DEFAULT_DATAGRAM_CHANNEL_STRATEGY);
+
+		builder.datagramChannelStrategy(DnsNameResolverChannelStrategy.ChannelPerResolution);
+		assertThat(builder.build().datagramChannelStrategy()).isEqualTo(DnsNameResolverChannelStrategy.ChannelPerResolution);
+	}
+
+	@Test
+	@SuppressWarnings("NullAway")
+	void datagramChannelStrategyBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
+		assertThatExceptionOfType(NullPointerException.class)
+				.isThrownBy(() -> builder.cacheNegativeTimeToLive(null));
 	}
 
 	@Test
@@ -179,7 +212,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void hostsFileEntriesResolverBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.hostsFileEntriesResolver(null));
 	}
@@ -239,7 +274,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void queryTimeoutBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.queryTimeout(null));
 	}
@@ -253,8 +290,10 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void resolveCacheBadValues() {
 		assertThat(builder.build().resolveCache()).isNull();
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.resolveCache(null));
 	}
@@ -268,7 +307,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void resolvedAddressTypesBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.resolvedAddressTypes(null));
 	}
@@ -301,7 +342,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void runOnBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.runOn(null, false));
 	}
@@ -316,7 +359,9 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void searchDomainsBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.searchDomains(null));
 	}
@@ -331,10 +376,13 @@ class NameResolverProviderTest {
 	}
 
 	@Test
+	@SuppressWarnings("NullAway")
 	void traceBadValues() {
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.trace(null, LogLevel.DEBUG));
 
+		// Deliberately suppress "NullAway" for testing purposes
 		assertThatExceptionOfType(NullPointerException.class)
 				.isThrownBy(() -> builder.trace("category", null));
 	}
@@ -342,12 +390,16 @@ class NameResolverProviderTest {
 	private static class TestDnsCache implements DnsCache {
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public DnsCacheEntry cache(String hostname, DnsRecord[] additionals, InetAddress address, long originalTtl, EventLoop loop) {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public DnsCacheEntry cache(String hostname, DnsRecord[] additionals, Throwable cause, EventLoop loop) {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -361,7 +413,9 @@ class NameResolverProviderTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public List<? extends DnsCacheEntry> get(String hostname, DnsRecord[] additionals) {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 	}

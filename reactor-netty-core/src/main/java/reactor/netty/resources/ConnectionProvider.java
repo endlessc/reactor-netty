@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package reactor.netty.resources;
 
 import io.netty.resolver.AddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -24,7 +25,6 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.ReactorNetty;
 import reactor.netty.internal.util.Metrics;
 import reactor.netty.transport.TransportConfig;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.time.Duration;
@@ -232,7 +232,7 @@ public interface ConnectionProvider extends Disposable {
 	 * {@link ConnectionProvider} implementations may decide to provide more specific implementation.
 	 *
 	 * @return a Mono representing the completion of the ConnectionProvider disposal.
-	 **/
+	 */
 	default Mono<Void> disposeLater() {
 		//noop default
 		return Mono.empty();
@@ -252,8 +252,7 @@ public interface ConnectionProvider extends Disposable {
 	 *
 	 * @return the maximum number of connections per host before starting pending
 	 */
-	@Nullable
-	default Map<SocketAddress, Integer> maxConnectionsPerHost() {
+	default @Nullable Map<SocketAddress, Integer> maxConnectionsPerHost() {
 		return null;
 	}
 
@@ -263,8 +262,7 @@ public interface ConnectionProvider extends Disposable {
 	 * @return a builder to mutate properties of this {@link ConnectionProvider}
 	 * @since 1.0.14
 	 */
-	@Nullable
-	default Builder mutate() {
+	default @Nullable Builder mutate() {
 		return null;
 	}
 
@@ -274,8 +272,7 @@ public interface ConnectionProvider extends Disposable {
 	 * @return {@link ConnectionProvider} name used for metrics
 	 * @since 1.0.14
 	 */
-	@Nullable
-	default String name() {
+	default @Nullable String name() {
 		return null;
 	}
 
@@ -394,11 +391,13 @@ public interface ConnectionProvider extends Disposable {
 	final class Builder extends ConnectionPoolSpec<Builder> {
 
 		static final Duration DISPOSE_INACTIVE_POOLS_IN_BACKGROUND_DISABLED = Duration.ZERO;
+		static final int MAX_CONNECTION_POOLS = -1;
 
 		String name;
 		Duration inactivePoolDisposeInterval = DISPOSE_INACTIVE_POOLS_IN_BACKGROUND_DISABLED;
-		Duration poolInactivity;
-		Duration disposeTimeout;
+		@Nullable Duration poolInactivity;
+		@Nullable Duration disposeTimeout;
+		int maxConnectionPools = MAX_CONNECTION_POOLS;
 		final Map<SocketAddress, ConnectionPoolSpec<?>> confPerRemoteHost = new HashMap<>();
 
 		/**
@@ -417,6 +416,7 @@ public interface ConnectionProvider extends Disposable {
 			this.inactivePoolDisposeInterval = copy.inactivePoolDisposeInterval;
 			this.poolInactivity = copy.poolInactivity;
 			this.disposeTimeout = copy.disposeTimeout;
+			this.maxConnectionPools = copy.maxConnectionPools;
 			copy.confPerRemoteHost.forEach((address, spec) -> this.confPerRemoteHost.put(address, new ConnectionPoolSpec<>(spec)));
 		}
 
@@ -489,6 +489,24 @@ public interface ConnectionProvider extends Disposable {
 		}
 
 		/**
+		 * Specifies the maximum number of connection pools that the provider can create.
+		 * If the number of connection pools created exceeds this value, a warning message is logged.
+		 * The value must be strictly positive or -1; otherwise, the connection pools check is ignored.
+		 * Setting the configuration to -1 disables the setting.
+		 *
+		 * @param maxConnectionPools the maximum number of connection pools that can be created
+		 * @return the current {@link Builder} instance with the updated configuration
+		 * @since 1.2.2
+		 */
+		public Builder maxConnectionPools(int maxConnectionPools) {
+			if (maxConnectionPools != MAX_CONNECTION_POOLS && maxConnectionPools <= 0) {
+				throw new IllegalArgumentException("Maximum connection pools setting must be strictly positive.");
+			}
+			this.maxConnectionPools = maxConnectionPools;
+			return this;
+		}
+
+		/**
 		 * Builds new ConnectionProvider.
 		 *
 		 * @return builds new ConnectionProvider
@@ -512,14 +530,14 @@ public interface ConnectionProvider extends Disposable {
 		int      maxConnections         = DEFAULT_POOL_MAX_CONNECTIONS;
 		int      pendingAcquireMaxCount = PENDING_ACQUIRE_MAX_COUNT_NOT_SPECIFIED;
 		Duration pendingAcquireTimeout  = Duration.ofMillis(DEFAULT_POOL_ACQUIRE_TIMEOUT);
-		Duration maxIdleTime;
-		Duration maxLifeTime;
+		@Nullable Duration maxIdleTime;
+		@Nullable Duration maxLifeTime;
 		boolean  metricsEnabled;
 		String   leasingStrategy        = DEFAULT_POOL_LEASING_STRATEGY;
-		Supplier<? extends ConnectionProvider.MeterRegistrar> registrar;
-		BiFunction<Runnable, Duration, Disposable> pendingAcquireTimer;
-		AllocationStrategy<?> allocationStrategy;
-		BiPredicate<Connection, ConnectionMetadata> evictionPredicate;
+		@Nullable Supplier<? extends ConnectionProvider.MeterRegistrar> registrar;
+		@Nullable BiFunction<Runnable, Duration, Disposable> pendingAcquireTimer;
+		@Nullable AllocationStrategy<?> allocationStrategy;
+		@Nullable BiPredicate<Connection, ConnectionMetadata> evictionPredicate;
 
 		/**
 		 * Returns {@link ConnectionPoolSpec} new instance with default properties.

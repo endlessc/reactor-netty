@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,8 +22,8 @@ import io.netty.channel.ChannelMetadata;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.EventLoop;
 import io.netty.channel.embedded.EmbeddedChannel;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
-import reactor.util.annotation.Nullable;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -97,7 +97,7 @@ class ReactorNettyTest {
 				InetSocketAddress.createUnresolved("127.0.0.1", 9090)));
 	}
 
-	private void doTestFormatChannel(TestChannel channel) {
+	private static void doTestFormatChannel(TestChannel channel) {
 		channel.active = true;
 		String channelStr = channel.toString();
 		assertThat(ReactorNetty.format(channel, "testFormatWithChannel"))
@@ -106,8 +106,8 @@ class ReactorNettyTest {
 
 	static class TestChannel extends AbstractChannel {
 
-		final SocketAddress localAddress;
-		final SocketAddress remoteAddress;
+		final @Nullable SocketAddress localAddress;
+		final @Nullable SocketAddress remoteAddress;
 
 		boolean active;
 
@@ -126,7 +126,9 @@ class ReactorNettyTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected AbstractUnsafe newUnsafe() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -141,7 +143,9 @@ class ReactorNettyTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected SocketAddress localAddress0() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return localAddress;
 		}
 
@@ -151,7 +155,9 @@ class ReactorNettyTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected SocketAddress remoteAddress0() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return remoteAddress;
 		}
 
@@ -176,7 +182,9 @@ class ReactorNettyTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public ChannelConfig config() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -191,7 +199,9 @@ class ReactorNettyTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public ChannelMetadata metadata() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 	}

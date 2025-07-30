@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2023-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ dependencies {
 
 	testImplementation "io.netty:netty-transport-native-epoll:$nettyVersion"
 	testImplementation "io.netty:netty-transport-native-kqueue:$nettyVersion"
-	testImplementation "io.netty.incubator:netty-incubator-transport-native-io_uring:$nettyIoUringVersion"
+	testImplementation "io.netty:netty-transport-native-io_uring:$nettyVersion"
 	if (project.hasProperty("forceTransport")) {
 		//now we explicitly add correctly qualified native, or do nothing if we want to test NIO
 		if (forceTransport == "native") {
@@ -40,9 +40,9 @@ dependencies {
 				testRuntimeOnly "io.netty:netty-transport-native-epoll:$nettyVersion$os_suffix"
 			}
 		} else if (forceTransport == "io_uring" && osdetector.os == "linux") {
-			testRuntimeOnly "io.netty.incubator:netty-incubator-transport-native-io_uring:$nettyIoUringVersion$os_suffix"
+			testRuntimeOnly "io.netty:netty-transport-native-io_uring:$nettyVersion$os_suffix"
 		} else if (forceTransport != "nio") {
-			throw new InvalidUserDataException("invalid -PforceTranport option " + forceTransport + ", should be native|nio")
+			throw new InvalidUserDataException("invalid -PforceTransport option " + forceTransport + ", should be native|nio|io_uring")
 		}
 	}
 
@@ -52,6 +52,22 @@ dependencies {
 	testImplementation "org.assertj:assertj-core:$assertJVersion"
 }
 
+def initializeAtBuildTime = "org.junit.jupiter.api.DisplayNameGenerator\$IndicativeSentences," +
+		"org.junit.jupiter.engine.descriptor.ClassBasedTestDescriptor\$ClassInfo," +
+		"org.junit.jupiter.engine.descriptor.ClassBasedTestDescriptor\$LifecycleMethods," +
+		"org.junit.jupiter.engine.descriptor.ClassTemplateInvocationTestDescriptor," +
+		"org.junit.jupiter.engine.descriptor.ClassTemplateTestDescriptor," +
+		"org.junit.jupiter.engine.descriptor.DynamicDescendantFilter\$Mode," +
+		"org.junit.jupiter.engine.descriptor.ExclusiveResourceCollector\$1," +
+		"org.junit.jupiter.engine.descriptor.MethodBasedTestDescriptor\$MethodInfo," +
+		"org.junit.jupiter.engine.discovery.ClassSelectorResolver\$DummyClassTemplateInvocationContext," +
+		"org.junit.platform.engine.support.store.NamespacedHierarchicalStore\$EvaluatedValue," +
+		"org.junit.platform.launcher.core.DiscoveryIssueNotifier," +
+		"org.junit.platform.launcher.core.HierarchicalOutputDirectoryProvider," +
+		"org.junit.platform.launcher.core.LauncherDiscoveryResult\$EngineResultInfo," +
+		"org.junit.platform.suite.engine.SuiteTestDescriptor\$LifecycleMethods," +
+		"org.junit.platform.launcher.core.LauncherPhase"
+
 graalvmNative {
 	binaries {
 		test {
@@ -59,11 +75,12 @@ graalvmNative {
 				runtimeArgs.add("-DforceTransport=$forceTransport")
 			}
 			buildArgs.add('--initialize-at-run-time=sun.net.dns.ResolverConfigurationImpl')
+			buildArgs.add("--initialize-at-build-time=${initializeAtBuildTime}")
 		}
 	}
 	metadataRepository {
 		enabled = true
-		version = "0.3.6"
+		version = "0.3.19"
 	}
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,8 @@ import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.util.ReferenceCountUtil;
+import org.jspecify.annotations.Nullable;
+import reactor.netty.http.server.compression.HttpCompressionOptionsSpec;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,10 +42,20 @@ import java.util.List;
 final class SimpleCompressionHandler extends HttpContentCompressor {
 
 	boolean decoded;
-	HttpRequest request;
+	@Nullable HttpRequest request;
 
-	SimpleCompressionHandler() {
+	private SimpleCompressionHandler() {
 		super((CompressionOptions[]) null);
+	}
+
+	private SimpleCompressionHandler(CompressionOptions... options) {
+		super(options);
+	}
+
+	static SimpleCompressionHandler create(@Nullable HttpCompressionOptionsSpec compressionOptions) {
+		return compressionOptions == null ?
+				new SimpleCompressionHandler() :
+				new SimpleCompressionHandler(compressionOptions.adapt());
 	}
 
 	@Override
@@ -53,6 +65,7 @@ final class SimpleCompressionHandler extends HttpContentCompressor {
 	}
 
 	@Override
+	@SuppressWarnings("NullAway")
 	public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise)
 			throws Exception {
 
@@ -61,6 +74,8 @@ final class SimpleCompressionHandler extends HttpContentCompressor {
 		}
 		else {
 			if (!decoded && msg instanceof HttpResponse) {
+				// Deliberately suppress "NullAway"
+				// This is a lazy initialization
 				decode(ctx, request);
 			}
 			if (decoded && request != null && msg instanceof LastHttpContent) {

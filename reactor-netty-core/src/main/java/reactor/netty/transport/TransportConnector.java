@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,25 +23,25 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
-import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.FutureListener;
 import io.netty.util.concurrent.GenericFutureListener;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 import reactor.util.context.ContextView;
 import reactor.util.retry.Retry;
 
 import java.net.SocketAddress;
+import java.net.UnknownHostException;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -49,11 +49,13 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.ReactorNetty.setChannelContext;
+import static reactor.netty.transport.DomainSocketAddressUtils.isDomainSocketAddress;
 
 /**
  * {@link TransportConnector} is a helper class that creates, initializes and registers the channel.
@@ -160,7 +162,7 @@ public final class TransportConnector {
 		Objects.requireNonNull(eventLoop, "eventLoop");
 		Objects.requireNonNull(contextView, "contextView");
 
-		boolean isDomainAddress = remoteAddress instanceof DomainSocketAddress;
+		boolean isDomainAddress = isDomainSocketAddress(remoteAddress);
 		return doInitAndRegister(config, channelInitializer, isDomainAddress, eventLoop)
 				.flatMap(channel -> doResolveAndConnect(channel, config, remoteAddress, resolverGroup, contextView)
 						.onErrorResume(RetryConnectException.class,
@@ -222,7 +224,7 @@ public final class TransportConnector {
 	}
 
 	static void doConnect(
-			List<SocketAddress> addresses,
+			List<? extends SocketAddress> addresses,
 			@Nullable Supplier<? extends SocketAddress> bindAddress,
 			MonoChannelPromise connectPromise,
 			int index) {
@@ -315,7 +317,7 @@ public final class TransportConnector {
 			Supplier<? extends SocketAddress> bindAddress = config.bindAddress();
 			if (!resolver.isSupported(remoteAddress) || resolver.isResolved(remoteAddress)) {
 				MonoChannelPromise monoChannelPromise = new MonoChannelPromise(channel);
-				doConnect(Collections.singletonList(remoteAddress), bindAddress, monoChannelPromise, 0);
+				doConnect(selectedAddresses(config, remoteAddress, Collections.singletonList(remoteAddress)), bindAddress, monoChannelPromise, 0);
 				return monoChannelPromise;
 			}
 
@@ -338,18 +340,20 @@ public final class TransportConnector {
 			if (config instanceof ClientTransportConfig) {
 				final ClientTransportConfig<?> clientTransportConfig = (ClientTransportConfig<?>) config;
 
-				if (clientTransportConfig.doOnResolveError != null) {
+				BiConsumer<? super Connection, ? super Throwable> doOnResolveError = clientTransportConfig.doOnResolveError;
+				if (doOnResolveError != null) {
 					resolveFuture.addListener((FutureListener<List<SocketAddress>>) future -> {
 						if (future.cause() != null) {
-							clientTransportConfig.doOnResolveError.accept(Connection.from(channel), future.cause());
+							doOnResolveError.accept(Connection.from(channel), future.cause());
 						}
 					});
 				}
 
-				if (clientTransportConfig.doAfterResolve != null) {
+				BiConsumer<? super Connection, ? super SocketAddress> doAfterResolve = clientTransportConfig.doAfterResolve;
+				if (doAfterResolve != null) {
 					resolveFuture.addListener((FutureListener<List<SocketAddress>>) future -> {
 						if (future.isSuccess()) {
-							clientTransportConfig.doAfterResolve.accept(Connection.from(channel), future.getNow().get(0));
+							doAfterResolve.accept(Connection.from(channel), future.getNow().get(0));
 						}
 					});
 				}
@@ -364,7 +368,7 @@ public final class TransportConnector {
 				}
 				else {
 					MonoChannelPromise monoChannelPromise = new MonoChannelPromise(channel);
-					doConnect(resolveFuture.getNow(), bindAddress, monoChannelPromise, 0);
+					doConnect(selectedAddresses(config, remoteAddress, resolveFuture.getNow()), bindAddress, monoChannelPromise, 0);
 					return monoChannelPromise;
 				}
 			}
@@ -375,7 +379,12 @@ public final class TransportConnector {
 					monoChannelPromise.tryFailure(future.cause());
 				}
 				else {
-					doConnect(future.getNow(), bindAddress, monoChannelPromise, 0);
+					try {
+						doConnect(selectedAddresses(config, remoteAddress, future.getNow()), bindAddress, monoChannelPromise, 0);
+					}
+					catch (Throwable t) {
+						monoChannelPromise.tryFailure(t);
+					}
 				}
 			});
 			return monoChannelPromise;
@@ -385,11 +394,29 @@ public final class TransportConnector {
 		}
 	}
 
+	static List<? extends SocketAddress> selectedAddresses(TransportConfig config, SocketAddress remoteAddress,
+			List<SocketAddress> resolvedAddresses) throws UnknownHostException {
+		List<? extends SocketAddress> selectedAddresses = resolvedAddresses;
+		if (config instanceof ClientTransportConfig) {
+			ClientTransportConfig<?> clientTransportConfig = (ClientTransportConfig<?>) config;
+			if (clientTransportConfig.resolvedAddressesSelector != null) {
+				selectedAddresses = clientTransportConfig.applyResolvedAddressesSelector(resolvedAddresses);
+				if (selectedAddresses == null || selectedAddresses.isEmpty()) {
+					if (log.isDebugEnabled()) {
+						log.debug("No address was chosen by the configured selector for resolved addresses {}", resolvedAddresses);
+					}
+					throw new UnknownHostException("Failed to resolve [" + remoteAddress + "]");
+				}
+			}
+		}
+		return selectedAddresses;
+	}
+
 	static final class MonoChannelPromise extends Mono<Channel> implements ChannelPromise, Subscription {
 
 		final Channel channel;
 
-		CoreSubscriber<? super Channel> actual;
+		@Nullable CoreSubscriber<? super Channel> actual;
 
 		MonoChannelPromise(Channel channel) {
 			this.channel = channel;
@@ -449,8 +476,11 @@ public final class TransportConnector {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Throwable cause() {
 			Object result = this.result;
+			// Deliberately suppress "NullAway"
+			// The super method is not annotated
 			return result == SUCCESS ? null : (Throwable) result;
 		}
 
@@ -645,16 +675,16 @@ public final class TransportConnector {
 		}
 
 		static final Object SUCCESS = new Object();
-		static final AtomicReferenceFieldUpdater<MonoChannelPromise, Object> RESULT_UPDATER =
+		static final AtomicReferenceFieldUpdater<MonoChannelPromise, @Nullable Object> RESULT_UPDATER =
 				AtomicReferenceFieldUpdater.newUpdater(MonoChannelPromise.class, Object.class, "result");
-		volatile Object result;
+		volatile @Nullable Object result;
 	}
 
 	static final class RetryConnectException extends RuntimeException {
 
-		final List<SocketAddress> addresses;
+		final List<? extends SocketAddress> addresses;
 
-		RetryConnectException(List<SocketAddress> addresses) {
+		RetryConnectException(List<? extends SocketAddress> addresses) {
 			this.addresses = addresses;
 		}
 

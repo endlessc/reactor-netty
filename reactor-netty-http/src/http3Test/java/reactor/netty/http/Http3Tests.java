@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,14 +19,26 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOutboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
+import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.ssl.SniCompletionEvent;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
-import io.netty.incubator.codec.quic.InsecureQuicTokenHandler;
-import io.netty.incubator.codec.quic.QuicChannel;
+import io.netty.handler.codec.http3.Http3DataFrame;
+import io.netty.handler.codec.http3.Http3HeadersFrame;
+import io.netty.handler.codec.quic.InsecureQuicTokenHandler;
+import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
@@ -37,11 +49,15 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Signal;
 import reactor.core.scheduler.Schedulers;
 import reactor.netty.ByteBufFlux;
+import reactor.netty.ByteBufMono;
 import reactor.netty.DisposableServer;
 import reactor.netty.LogTracker;
 import reactor.netty.NettyPipeline;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientResponse;
+import reactor.netty.http.client.HttpConnectionPoolMetrics;
+import reactor.netty.http.client.HttpMeterRegistrarAdapter;
+import reactor.netty.http.server.ConnectionInformation;
 import reactor.netty.http.server.HttpServer;
 import reactor.netty.http.server.HttpServerRequest;
 import reactor.netty.http.server.HttpServerResponse;
@@ -49,12 +65,12 @@ import reactor.netty.http.server.logging.AccessLog;
 import reactor.netty.internal.shaded.reactor.pool.PoolAcquireTimeoutException;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.test.StepVerifier;
-import reactor.util.annotation.Nullable;
 import reactor.util.function.Tuple2;
 
+import javax.net.ssl.SNIHostName;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.security.cert.CertificateException;
+import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -62,6 +78,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -91,13 +108,13 @@ class Http3Tests {
 	static final String HTTP3_WITHOUT_TLS_SERVER = "Configured HTTP/3 protocol without TLS. " +
 			"Configure TLS via HttpServer#secure";
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 
-	DisposableServer disposableServer;
+	@Nullable DisposableServer disposableServer;
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
-		ssc = new SelfSignedCertificate();
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	@AfterEach
@@ -243,7 +260,7 @@ class Http3Tests {
 
 	@Test
 	void testAccessLogWithForwardedHeader() throws Exception {
-		Function<SocketAddress, String> applyAddress = addr ->
+		Function<@Nullable SocketAddress, String> applyAddress = addr ->
 				addr instanceof InetSocketAddress ? ((InetSocketAddress) addr).getHostString() : "-";
 
 		disposableServer =
@@ -256,10 +273,14 @@ class Http3Tests {
 				            return resp.send();
 				        })
 				        .forwarded(true)
-				        .accessLog(true, args -> AccessLog.create(
-				            "{} {} {}",
-				            applyAddress.apply(args.connectionInformation().remoteAddress()),
-				            applyAddress.apply(args.connectionInformation().hostAddress()), args.connectionInformation().scheme()))
+				        .accessLog(true, args -> {
+				            ConnectionInformation connectionInformation = args.connectionInformation();
+				            return connectionInformation != null ?
+				                    AccessLog.create("{} {} {}",
+				                            applyAddress.apply(connectionInformation.remoteAddress()),
+				                            applyAddress.apply(connectionInformation.hostAddress()), connectionInformation.scheme()) :
+				                    null;
+				        })
 				        .bindNow();
 
 		String expectedLogRecord = "192.0.2.60 203.0.113.43 http";
@@ -279,7 +300,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testConcurrentRequestsDefaultPool() {
+	void testConcurrentRequestsDefaultPool() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) -> res.sendString(Mono.just("testConcurrentRequestsDefaultPool")))
@@ -289,7 +310,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testConcurrentRequestsOneConnection() {
+	void testConcurrentRequestsOneConnection() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) -> res.sendString(Mono.just("testConcurrentRequestsOneConnection")))
@@ -306,7 +327,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testConcurrentRequestsCustomPool() {
+	void testConcurrentRequestsCustomPool() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) -> res.sendString(Mono.just("testConcurrentRequestsCustomPool")))
@@ -343,7 +364,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testGetRequest() {
+	void testGetRequest() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) -> res.sendString(Mono.just("Hello")))
@@ -362,35 +383,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testHttpClientNoSecurityHttp3Fails() {
-		disposableServer =
-				createServer()
-				        .handle((req, res) -> res.sendString(Mono.just("Hello")))
-				        .bindNow();
-
-		createClient(disposableServer.port())
-		          .noSSL()
-		          .get()
-		          .uri("/")
-		          .responseContent()
-		          .aggregate()
-		          .asString()
-		          .as(StepVerifier::create)
-		          .verifyErrorMessage(HTTP3_WITHOUT_TLS_CLIENT);
-	}
-
-	@Test
-	void testHttpServerNoSecurityHttp3Fails() {
-		createServer()
-		        .noSSL()
-		        .handle((req, res) -> res.sendString(Mono.just("Hello")))
-		        .bind()
-		        .as(StepVerifier::create)
-		        .verifyErrorMessage(HTTP3_WITHOUT_TLS_SERVER);
-	}
-
-	@Test
-	void testHttp3ForMemoryLeaks() {
+	void testHttp3ForMemoryLeaks() throws Exception {
 		disposableServer =
 				createServer()
 				        .wiretap(false)
@@ -422,6 +415,64 @@ class Http3Tests {
 			int[] arr = new int[100000];
 		}
 		System.gc();
+	}
+
+	@Test
+	void testHttpClientNoSecurityHttp3Fails() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(Mono.just("Hello")))
+				        .bindNow();
+
+		createClient(disposableServer.port())
+		        .noSSL()
+		        .get()
+		        .uri("/")
+		        .responseContent()
+		        .aggregate()
+		        .asString()
+		        .as(StepVerifier::create)
+		        .verifyErrorMessage(HTTP3_WITHOUT_TLS_CLIENT);
+	}
+
+	@Test
+	void testHttpServerNoSecurityHttp3Fails() throws Exception {
+		createServer()
+		        .noSSL()
+		        .handle((req, res) -> res.sendString(Mono.just("Hello")))
+		        .bind()
+		        .as(StepVerifier::create)
+		        .verifyErrorMessage(HTTP3_WITHOUT_TLS_SERVER);
+	}
+
+	@Test
+	void testIssue3524Flux() throws Exception {
+		// sends the message and then last http content
+		testRequestBody(sender -> sender.send((req, out) -> out.sendString(Flux.just("te", "st"))), 3);
+	}
+
+	@Test
+	void testIssue3524Mono() throws Exception {
+		// sends "full" request
+		testRequestBody(sender -> sender.send((req, out) -> out.sendString(Mono.just("test"))), 1);
+	}
+
+	@Test
+	void testIssue3524MonoEmpty() throws Exception {
+		// sends "full" request
+		testRequestBody(sender -> sender.send((req, out) -> Mono.empty()), 0);
+	}
+
+	@Test
+	void testIssue3524NoBody() throws Exception {
+		// sends "full" request
+		testRequestBody(sender -> sender.send((req, out) -> out), 0);
+	}
+
+	@Test
+	void testIssue3524Object() throws Exception {
+		// sends "full" request
+		testRequestBody(sender -> sender.send((req, out) -> out.sendObject(Unpooled.wrappedBuffer("test".getBytes(Charset.defaultCharset())))), 1);
 	}
 
 	@Test
@@ -601,16 +652,88 @@ class Http3Tests {
 	}
 
 	@Test
-	void testPostRequest() {
+	void testMonoRequestBodySentAsFullRequest_Flux() throws Exception {
+		// sends the message and then last http content
+		testRequestBody(sender -> sender.send(ByteBufFlux.fromString(Mono.just("test"))), 2);
+	}
+
+	@Test
+	void testMonoRequestBodySentAsFullRequest_Mono() throws Exception {
+		// sends "full" request
+		testRequestBody(sender -> sender.send(ByteBufMono.fromString(Mono.just("test"))), 1);
+	}
+
+	@Test
+	void testMonoRequestBodySentAsFullRequest_MonoEmpty() throws Exception {
+		// sends "full" request
+		testRequestBody(sender -> sender.send(Mono.empty()), 0);
+	}
+
+	@SuppressWarnings("FutureReturnValueIgnored")
+	private void testRequestBody(Function<HttpClient.RequestSender, HttpClient.ResponseReceiver<?>> sendFunction, int expectedMsg)
+			throws Exception {
+		disposableServer =
+				createServer().handle((req, res) -> req.receive()
+				                                       .then(res.send()))
+				              .bindNow(Duration.ofSeconds(30));
+
+		AtomicInteger counterHeaders = new AtomicInteger();
+		AtomicInteger counterData = new AtomicInteger();
+		sendFunction.apply(
+				createClient(disposableServer.port())
+				        .port(disposableServer.port())
+				        .doOnRequest((req, conn) -> {
+				            ChannelPipeline pipeline = conn.channel().pipeline();
+				            ChannelHandlerContext ctx = pipeline.context(NettyPipeline.LoggingHandler);
+				            if (ctx != null) {
+				                pipeline.addAfter(ctx.name(), "testRequestBody",
+				                        new ChannelOutboundHandlerAdapter() {
+				                            boolean done;
+
+				                            @Override
+				                            public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
+				                                ctx.channel().closeFuture().addListener(f -> done = true);
+				                                super.handlerAdded(ctx);
+				                            }
+
+				                            @Override
+				                            public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+				                                if (!done) {
+				                                    if (msg instanceof Http3HeadersFrame) {
+				                                        counterHeaders.getAndIncrement();
+				                                    }
+				                                    else if (msg instanceof Http3DataFrame) {
+				                                        counterData.getAndIncrement();
+				                                    }
+				                                }
+				                                //"FutureReturnValueIgnored" this is deliberate
+				                                ctx.write(msg, promise);
+				                            }
+				                        });
+				            }
+				        })
+				        .post()
+				        .uri("/"))
+				        .responseContent()
+				        .aggregate()
+				        .asString()
+				        .block(Duration.ofSeconds(30));
+
+		assertThat(counterHeaders.get()).isEqualTo(1);
+		assertThat(counterData.get()).isEqualTo(expectedMsg);
+	}
+
+	@Test
+	void testPostRequest() throws Exception {
 		doTestPostRequest(false);
 	}
 
 	@Test
-	void testPostRequestExternalThread() {
+	void testPostRequestExternalThread() throws Exception {
 		doTestPostRequest(true);
 	}
 
-	void doTestPostRequest(boolean externalThread) {
+	void doTestPostRequest(boolean externalThread) throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) -> {
@@ -636,7 +759,68 @@ class Http3Tests {
 	}
 
 	@Test
-	void testTrailerHeadersChunkedResponse() {
+	void testProtocolVersion() throws Exception {
+		disposableServer =
+				createServer().handle((req, res) -> res.sendString(Mono.just(req.protocol())))
+				              .bindNow();
+
+		createClient(disposableServer.port())
+		        .get()
+		        .uri("/")
+		        .responseSingle((res, bytes) -> bytes.asString().zipWith(Mono.just(res.version().text())))
+		        .as(StepVerifier::create)
+		        .expectNextMatches(t -> t.getT1().equals(t.getT2()) && "HTTP/3.0".equals(t.getT1()))
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(5));
+	}
+
+	@Test
+	void testSniSupport() throws Exception {
+		X509Bundle defaultCert = new CertificateBuilder().subject("CN=default").setIsCertificateAuthority(true).buildSelfSigned();
+		X509Bundle testCert = new CertificateBuilder().subject("CN=test.com").setIsCertificateAuthority(true).buildSelfSigned();
+
+		AtomicReference<String> hostname = new AtomicReference<>();
+
+		Http3SslContextSpec defaultSslContextBuilder = Http3SslContextSpec.forServer(defaultCert.toTempPrivateKeyPem(), null, defaultCert.toTempCertChainPem());
+		Http3SslContextSpec testSslContextBuilder = Http3SslContextSpec.forServer(testCert.toTempPrivateKeyPem(), null, testCert.toTempCertChainPem());
+
+		disposableServer =
+				createServer().port(8080)
+				              .secure(spec -> spec.sslContext(defaultSslContextBuilder)
+				                                  .addSniMapping("*.test.com", domainSpec -> domainSpec.sslContext(testSslContextBuilder)))
+				              .doOnChannelInit((obs, channel, remoteAddress) ->
+				                  channel.pipeline()
+				                         .addLast(new ChannelInboundHandlerAdapter() {
+				                               @Override
+				                               public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
+				                                 if (evt instanceof SniCompletionEvent) {
+				                                     hostname.set(((SniCompletionEvent) evt).hostname());
+				                                 }
+				                                 ctx.fireUserEventTriggered(evt);
+				                             }
+				                           }))
+				              .handle((req, res) -> res.sendString(Mono.just("testSniSupport")))
+				              .bindNow();
+
+		Http3SslContextSpec clientSslContextBuilder =
+				Http3SslContextSpec.forClient()
+				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
+
+		createClient(disposableServer.port())
+		         .secure(spec -> spec.sslContext(clientSslContextBuilder)
+		                             .serverNames(new SNIHostName("test.com")))
+		         .get()
+		         .uri("/")
+		         .responseContent()
+		         .aggregate()
+		         .block(Duration.ofSeconds(30));
+
+		assertThat(hostname.get()).isNotNull();
+		assertThat(hostname.get()).isEqualTo("test.com");
+	}
+
+	@Test
+	void testTrailerHeadersChunkedResponse() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) ->
@@ -648,7 +832,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testTrailerHeadersDisallowedNotSent() {
+	void testTrailerHeadersDisallowedNotSent() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) ->
@@ -662,7 +846,7 @@ class Http3Tests {
 	}
 
 	@Test
-	void testTrailerHeadersFailedChunkedResponse() {
+	void testTrailerHeadersFailedChunkedResponse() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) ->
@@ -679,7 +863,61 @@ class Http3Tests {
 	}
 
 	@Test
-	void testTrailerHeadersFullResponse() {
+	void testTrailerHeadersFullResponseSend() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .send())
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendFluxContentAlwaysEmpty() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .status(HttpResponseStatus.NO_CONTENT)
+				               .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response")))
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendFluxContentLengthZero() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .header(HttpHeaderNames.CONTENT_LENGTH, "0")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .sendString(Flux.just("test", "Trailer", "Headers", "Full", "Response")))
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendHeaders() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .sendHeaders())
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendMono() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) ->
@@ -688,11 +926,38 @@ class Http3Tests {
 				               .sendString(Mono.just("testTrailerHeadersFullResponse")))
 				        .bindNow();
 
-		doTestTrailerHeaders(createClient(disposableServer.port()), "empty", "testTrailerHeadersFullResponse");
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "testTrailerHeadersFullResponse");
 	}
 
 	@Test
-	void testTrailerHeadersNotSpecifiedUpfront() {
+	void testTrailerHeadersFullResponseSendMonoEmpty() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> {
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"));
+				            return Mono.empty();
+				        })
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "empty");
+	}
+
+	@Test
+	void testTrailerHeadersFullResponseSendObject() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, "foo")
+				               .trailerHeaders(h -> h.set("foo", "bar"))
+				               .sendObject(Unpooled.wrappedBuffer("testTrailerHeadersFullResponse".getBytes(Charset.defaultCharset()))))
+				        .bindNow();
+
+		doTestTrailerHeaders(createClient(disposableServer.port()), "bar", "testTrailerHeadersFullResponse");
+	}
+
+	@Test
+	void testTrailerHeadersNotSpecifiedUpfront() throws Exception {
 		disposableServer =
 				createServer()
 				        .handle((req, res) ->
@@ -705,15 +970,81 @@ class Http3Tests {
 		doTestTrailerHeaders(createClient(disposableServer.port()), "empty", "testTrailerHeadersNotSpecifiedUpfront");
 	}
 
+	@Test
+	void testTrailerHeadersPseudoHeaderNotAllowed() throws Exception {
+		disposableServer =
+				createServer()
+				        .handle((req, res) ->
+				            res.header(HttpHeaderNames.TRAILER, ":protocol")
+				               .trailerHeaders(h -> h.set(":protocol", "test"))
+				               .sendString(Flux.just("testTrailerHeaders", "PseudoHeaderNotAllowed")))
+				        .bindNow();
+
+		// Trailers MUST NOT include pseudo-header fields
+		doTestTrailerHeaders(createClient(disposableServer.port()), "empty", "testTrailerHeadersPseudoHeaderNotAllowed");
+	}
+
 	private static void doTestTrailerHeaders(HttpClient client, String expectedHeaderValue, String expectedResponse) {
 		client.get()
 		      .uri("/")
-		      .responseSingle((res, bytes) -> bytes.asString().zipWith(res.trailerHeaders()))
+		      .responseSingle((res, bytes) -> bytes.asString().defaultIfEmpty("empty").zipWith(res.trailerHeaders()))
 		      .as(StepVerifier::create)
 		      .expectNextMatches(t -> expectedResponse.equals(t.getT1()) &&
 		              expectedHeaderValue.equals(t.getT2().get("foo", "empty")))
 		      .expectComplete()
 		      .verify(Duration.ofSeconds(5));
+	}
+
+	@Test
+	void clientSendsError() throws Exception {
+		TestHttpMeterRegistrarAdapter metricsRegistrar = new TestHttpMeterRegistrarAdapter();
+
+		ConnectionProvider provider =
+				ConnectionProvider.builder("clientSendsError")
+				                  .maxConnections(1)
+				                  .metrics(true, () -> metricsRegistrar)
+				                  .build();
+		try {
+			disposableServer =
+					createServer()
+					        .handle((req, res) -> Mono.empty())
+					        .bindNow();
+
+			Mono<String> content =
+					createClient(provider, disposableServer.port())
+					        .post()
+					        .uri("/")
+					        .send(Mono.error(new RuntimeException("clientSendsError")))
+					        .responseContent()
+					        .aggregate()
+					        .asString();
+
+			List<Signal<String>> result =
+					Flux.range(1, 3)
+					    .flatMapDelayError(i -> content, 256, 32)
+					    .materialize()
+					    .collectList()
+					    .block(Duration.ofSeconds(10));
+
+			assertThat(result)
+					.isNotNull()
+					.hasSize(1)
+					.allMatch(Signal::hasError);
+			Throwable error = result.get(0).getThrowable();
+			assertThat(error).isNotNull();
+			assertThat(error.getSuppressed())
+					.isNotNull()
+					.hasSize(3)
+					.allMatch(throwable -> "clientSendsError".equals(throwable.getMessage()));
+
+			HttpConnectionPoolMetrics metrics = metricsRegistrar.metrics;
+			assertThat(metrics).isNotNull();
+			assertThat(metrics.activeStreamSize()).isEqualTo(0);
+		}
+		finally {
+			provider.disposeLater()
+			        .block(Duration.ofSeconds(5));
+		}
 	}
 
 	static HttpClient createClient(int port) {
@@ -734,8 +1065,8 @@ class Http3Tests {
 		                                        .maxStreamDataBidirectionalLocal(1000000));
 	}
 
-	static HttpServer createServer() {
-		Http3SslContextSpec serverCtx = Http3SslContextSpec.forServer(ssc.key(), null, ssc.cert());
+	static HttpServer createServer() throws Exception {
+		Http3SslContextSpec serverCtx = Http3SslContextSpec.forServer(ssc.toTempPrivateKeyPem(), null, ssc.toTempCertChainPem());
 		return HttpServer.create()
 		                 .port(0)
 		                 .wiretap(true)
@@ -755,4 +1086,13 @@ class Http3Tests {
 	private static final String SERVER_RESPONSE_TIME = HTTP_SERVER_PREFIX + RESPONSE_TIME;
 	private static final String SERVER_DATA_SENT_TIME = HTTP_SERVER_PREFIX + DATA_SENT_TIME;
 	private static final String SERVER_DATA_RECEIVED_TIME = HTTP_SERVER_PREFIX + DATA_RECEIVED_TIME;
+
+	static final class TestHttpMeterRegistrarAdapter extends HttpMeterRegistrarAdapter {
+		HttpConnectionPoolMetrics metrics;
+
+		@Override
+		protected void registerMetrics(String poolName, String id, SocketAddress remoteAddress, HttpConnectionPoolMetrics metrics) {
+			this.metrics = metrics;
+		}
+	}
 }

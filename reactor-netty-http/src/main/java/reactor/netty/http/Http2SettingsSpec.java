@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,7 @@ package reactor.netty.http;
 
 import io.netty.handler.codec.http2.Http2CodecUtil;
 import io.netty.handler.codec.http2.Http2Settings;
-import reactor.util.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import java.util.Objects;
 
@@ -37,6 +37,15 @@ public final class Http2SettingsSpec {
 		 * @return a new {@link Http2SettingsSpec}
 		 */
 		Http2SettingsSpec build();
+
+		/**
+		 * Sets the {@code SETTINGS_ENABLE_CONNECT_PROTOCOL} value.
+		 *
+		 * @param connectProtocolEnabled the {@code SETTINGS_ENABLE_CONNECT_PROTOCOL} value
+		 * @return {@code this}
+		 * @since 1.2.5
+		 */
+		Builder connectProtocolEnabled(boolean connectProtocolEnabled);
 
 		/**
 		 * Sets the {@code SETTINGS_HEADER_TABLE_SIZE} value.
@@ -105,12 +114,21 @@ public final class Http2SettingsSpec {
 	}
 
 	/**
+	 * Returns the configured {@code SETTINGS_ENABLE_CONNECT_PROTOCOL} value or null.
+	 *
+	 * @return the configured {@code SETTINGS_ENABLE_CONNECT_PROTOCOL} value or null
+	 * @since 1.2.5
+	 */
+	public @Nullable Boolean connectProtocolEnabled() {
+		return connectProtocolEnabled;
+	}
+
+	/**
 	 * Returns the configured {@code SETTINGS_HEADER_TABLE_SIZE} value or null.
 	 *
 	 * @return the configured {@code SETTINGS_HEADER_TABLE_SIZE} value or null
 	 */
-	@Nullable
-	public Long headerTableSize() {
+	public @Nullable Long headerTableSize() {
 		return headerTableSize;
 	}
 
@@ -119,8 +137,7 @@ public final class Http2SettingsSpec {
 	 *
 	 * @return the configured {@code SETTINGS_INITIAL_WINDOW_SIZE} value or null
 	 */
-	@Nullable
-	public Integer initialWindowSize() {
+	public @Nullable Integer initialWindowSize() {
 		return initialWindowSize;
 	}
 
@@ -129,8 +146,7 @@ public final class Http2SettingsSpec {
 	 *
 	 * @return the configured {@code SETTINGS_MAX_CONCURRENT_STREAMS} value or null
 	 */
-	@Nullable
-	public Long maxConcurrentStreams() {
+	public @Nullable Long maxConcurrentStreams() {
 		return maxConcurrentStreams;
 	}
 
@@ -139,8 +155,7 @@ public final class Http2SettingsSpec {
 	 *
 	 * @return the configured {@code SETTINGS_MAX_FRAME_SIZE} value or null
 	 */
-	@Nullable
-	public Integer maxFrameSize() {
+	public @Nullable Integer maxFrameSize() {
 		return maxFrameSize;
 	}
 
@@ -161,8 +176,7 @@ public final class Http2SettingsSpec {
 	 * @return the configured {@code maxStreams} value or null
 	 * @since 1.0.33
 	 */
-	@Nullable
-	public Long maxStreams() {
+	public @Nullable Long maxStreams() {
 		return maxStreams;
 	}
 
@@ -171,13 +185,12 @@ public final class Http2SettingsSpec {
 	 *
 	 * @return the configured {@code SETTINGS_ENABLE_PUSH} value or null
 	 */
-	@Nullable
-	public Boolean pushEnabled() {
+	public @Nullable Boolean pushEnabled() {
 		return pushEnabled;
 	}
 
 	@Override
-	public boolean equals(Object o) {
+	public boolean equals(@Nullable Object o) {
 		if (this == o) {
 			return true;
 		}
@@ -185,7 +198,8 @@ public final class Http2SettingsSpec {
 			return false;
 		}
 		Http2SettingsSpec that = (Http2SettingsSpec) o;
-		return Objects.equals(headerTableSize, that.headerTableSize) &&
+		return Objects.equals(connectProtocolEnabled, that.connectProtocolEnabled) &&
+				Objects.equals(headerTableSize, that.headerTableSize) &&
 				Objects.equals(initialWindowSize, that.initialWindowSize) &&
 				Objects.equals(maxConcurrentStreams, that.maxConcurrentStreams) &&
 				Objects.equals(maxFrameSize, that.maxFrameSize) &&
@@ -197,26 +211,29 @@ public final class Http2SettingsSpec {
 	@Override
 	public int hashCode() {
 		int result = 1;
-		result = 31 * result + Long.hashCode(headerTableSize);
-		result = 31 * result + initialWindowSize;
-		result = 31 * result + Long.hashCode(maxConcurrentStreams);
-		result = 31 * result + maxFrameSize;
+		result = 31 * result + (connectProtocolEnabled == null ? 0 : Boolean.hashCode(connectProtocolEnabled));
+		result = 31 * result + (headerTableSize == null ? 0 : Long.hashCode(headerTableSize));
+		result = 31 * result + (initialWindowSize == null ? 0 : initialWindowSize);
+		result = 31 * result + (maxConcurrentStreams == null ? 0 : Long.hashCode(maxConcurrentStreams));
+		result = 31 * result + (maxFrameSize == null ? 0 : maxFrameSize);
 		result = 31 * result + Long.hashCode(maxHeaderListSize);
-		result = 31 * result + Long.hashCode(maxStreams);
-		result = 31 * result + Boolean.hashCode(pushEnabled);
+		result = 31 * result + (maxStreams == null ? 0 : Long.hashCode(maxStreams));
+		result = 31 * result + (pushEnabled == null ? 0 : Boolean.hashCode(pushEnabled));
 		return result;
 	}
 
-	final Long headerTableSize;
-	final Integer initialWindowSize;
-	final Long maxConcurrentStreams;
-	final Integer maxFrameSize;
+	final @Nullable Boolean connectProtocolEnabled;
+	final @Nullable Long headerTableSize;
+	final @Nullable Integer initialWindowSize;
+	final @Nullable Long maxConcurrentStreams;
+	final @Nullable Integer maxFrameSize;
 	final Long maxHeaderListSize;
-	final Long maxStreams;
-	final Boolean pushEnabled;
+	final @Nullable Long maxStreams;
+	final @Nullable Boolean pushEnabled;
 
 	Http2SettingsSpec(Build build) {
 		Http2Settings settings = build.http2Settings;
+		connectProtocolEnabled = build.connectProtocolEnabled;
 		headerTableSize = settings.headerTableSize();
 		initialWindowSize = settings.initialWindowSize();
 		if (settings.maxConcurrentStreams() != null) {
@@ -233,12 +250,19 @@ public final class Http2SettingsSpec {
 	}
 
 	static final class Build implements Builder {
-		Long maxStreams;
+		@Nullable Boolean connectProtocolEnabled;
+		@Nullable Long maxStreams;
 		final Http2Settings http2Settings = Http2Settings.defaultSettings();
 
 		@Override
 		public Http2SettingsSpec build() {
 			return new Http2SettingsSpec(this);
+		}
+
+		@Override
+		public Builder connectProtocolEnabled(boolean connectProtocolEnabled) {
+			this.connectProtocolEnabled = Boolean.valueOf(connectProtocolEnabled);
+			return this;
 		}
 
 		@Override

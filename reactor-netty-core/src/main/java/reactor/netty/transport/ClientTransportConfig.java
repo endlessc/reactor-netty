@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package reactor.netty.transport;
 
 import java.net.SocketAddress;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -32,6 +33,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.unix.DomainSocketChannel;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
@@ -39,7 +41,6 @@ import reactor.netty.channel.MicrometerChannelMetricsRecorder;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.netty.internal.util.MapUtils;
-import reactor.util.annotation.Nullable;
 
 /**
  * Encapsulate all necessary configuration for client transport. The public API is read-only.
@@ -56,6 +57,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		int result = super.channelHash();
 		result = 31 * result + Objects.hashCode(proxyProvider);
 		result = 31 * result + Objects.hashCode(resolver);
+		result = 31 * result + Objects.hashCode(resolvedAddressesSelector);
 		return result;
 	}
 
@@ -73,8 +75,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super CONF> doOnConnect() {
+	public final @Nullable Consumer<? super CONF> doOnConnect() {
 		return doOnConnect;
 	}
 
@@ -83,8 +84,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super Connection> doOnConnected() {
+	public final @Nullable Consumer<? super Connection> doOnConnected() {
 		return doOnConnected;
 	}
 
@@ -93,8 +93,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super Connection> doOnDisconnected() {
+	public final @Nullable Consumer<? super Connection> doOnDisconnected() {
 		return doOnDisconnected;
 	}
 
@@ -104,7 +103,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 * @return true if that {@link ClientTransportConfig} is configured with a proxy
 	 */
 	public final boolean hasProxy() {
-		return proxyProvider != null;
+		return proxyProvider != null || proxyProviderSupplier != null;
 	}
 
 	/**
@@ -112,8 +111,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured {@link NameResolverProvider} or null
 	 */
-	@Nullable
-	public NameResolverProvider getNameResolverProvider() {
+	public @Nullable NameResolverProvider getNameResolverProvider() {
 		return nameResolverProvider;
 	}
 
@@ -122,9 +120,17 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the {@link ProxyProvider} if any or null
 	 */
-	@Nullable
-	public final ProxyProvider proxyProvider() {
+	public final @Nullable ProxyProvider proxyProvider() {
 		return proxyProvider;
+	}
+
+	/**
+	 * Return the {@link ProxyProvider} supplier if any or null.
+	 *
+	 * @return the {@link ProxyProvider} supplier if any or null
+	 */
+	public final @Nullable Supplier<ProxyProvider> proxyProviderSupplier() {
+		return proxyProviderSupplier;
 	}
 
 	/**
@@ -142,8 +148,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured {@link AddressResolverGroup} or null
 	 */
-	@Nullable
-	public final AddressResolverGroup<?> resolver() {
+	public final @Nullable AddressResolverGroup<?> resolver() {
 		return resolver;
 	}
 
@@ -152,16 +157,18 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 
 	final ConnectionProvider connectionProvider;
 
-	Consumer<? super CONF>                   doOnConnect;
-	Consumer<? super Connection>             doOnConnected;
-	Consumer<? super Connection>             doOnDisconnected;
-	Consumer<? super Connection>                doOnResolve;
-	BiConsumer<? super Connection, ? super SocketAddress> doAfterResolve;
-	BiConsumer<? super Connection, ? super Throwable> doOnResolveError;
-	NameResolverProvider                     nameResolverProvider;
-	ProxyProvider                            proxyProvider;
-	Supplier<? extends SocketAddress>        remoteAddress;
-	AddressResolverGroup<?>                  resolver;
+	@Nullable Consumer<? super CONF>                   doOnConnect;
+	@Nullable Consumer<? super Connection>             doOnConnected;
+	@Nullable Consumer<? super Connection>             doOnDisconnected;
+	@Nullable Consumer<? super Connection>             doOnResolve;
+	@Nullable BiConsumer<? super Connection, ? super SocketAddress> doAfterResolve;
+	@Nullable BiConsumer<? super Connection, ? super Throwable> doOnResolveError;
+	@Nullable NameResolverProvider                     nameResolverProvider;
+	@Nullable ProxyProvider                            proxyProvider;
+	@Nullable Supplier<ProxyProvider>                  proxyProviderSupplier;
+	Supplier<? extends SocketAddress>                  remoteAddress;
+	ClientTransport.@Nullable ResolvedAddressSelector<? super CONF> resolvedAddressesSelector;
+	@Nullable AddressResolverGroup<?>                  resolver;
 
 	protected ClientTransportConfig(ConnectionProvider connectionProvider, Map<ChannelOption<?>, ?> options,
 			Supplier<? extends SocketAddress> remoteAddress) {
@@ -179,8 +186,10 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		this.doOnResolve = parent.doOnResolve;
 		this.doAfterResolve = parent.doAfterResolve;
 		this.doOnResolveError = parent.doOnResolveError;
+		this.resolvedAddressesSelector = parent.resolvedAddressesSelector;
 		this.nameResolverProvider = parent.nameResolverProvider;
 		this.proxyProvider = parent.proxyProvider;
+		this.proxyProviderSupplier = parent.proxyProviderSupplier;
 		this.remoteAddress = parent.remoteAddress;
 		this.resolver = parent.resolver;
 	}
@@ -220,8 +229,12 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		return loopResources().onClient(isPreferNative());
 	}
 
-	protected void proxyProvider(@Nullable ProxyProvider proxyProvider) {
+	protected void proxyProvider(ProxyProvider proxyProvider) {
 		this.proxyProvider = proxyProvider;
+	}
+
+	protected void proxyProviderSupplier(Supplier<ProxyProvider> proxyProviderSupplier) {
+		this.proxyProviderSupplier = proxyProviderSupplier;
 	}
 
 	protected AddressResolverGroup<?> resolverInternal() {
@@ -237,6 +250,11 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		else {
 			return resolverGroup;
 		}
+	}
+
+	@SuppressWarnings("unchecked")
+	final @Nullable List<? extends SocketAddress> applyResolvedAddressesSelector(List<? extends SocketAddress> resolvedAddresses) {
+		return resolvedAddressesSelector != null ? resolvedAddressesSelector.apply((CONF) this, resolvedAddresses) : resolvedAddresses;
 	}
 
 	static final ConcurrentMap<Integer, DnsAddressResolverGroup> RESOLVERS_CACHE = new ConcurrentHashMap<>();
@@ -260,7 +278,7 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 		}
 
 		@Override
-		public void onChannelInit(ConnectionObserver connectionObserver, Channel channel, SocketAddress remoteAddress) {
+		public void onChannelInit(ConnectionObserver connectionObserver, Channel channel, @Nullable SocketAddress remoteAddress) {
 			if (proxyProvider.shouldProxy(remoteAddress)) {
 				proxyProvider.addProxyHandler(channel);
 			}
@@ -269,9 +287,9 @@ public abstract class ClientTransportConfig<CONF extends TransportConfig> extend
 
 	static final class ClientTransportDoOn implements ConnectionObserver {
 
-		final ChannelGroup channelGroup;
-		final Consumer<? super Connection> doOnConnected;
-		final Consumer<? super Connection> doOnDisconnected;
+		final @Nullable ChannelGroup channelGroup;
+		final @Nullable Consumer<? super Connection> doOnConnected;
+		final @Nullable Consumer<? super Connection> doOnDisconnected;
 
 		ClientTransportDoOn(@Nullable ChannelGroup channelGroup,
 				@Nullable Consumer<? super Connection> doOnConnected,

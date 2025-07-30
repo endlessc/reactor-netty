@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,7 +15,7 @@
  */
 package reactor.netty.channel;
 
-import reactor.util.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import java.util.Objects;
 
@@ -27,11 +27,11 @@ import java.util.Objects;
  */
 public final class MeterKey {
 
-	private final String uri;
-	private final String remoteAddress;
-	private final String proxyAddress;
-	private final String method;
-	private final String status;
+	private final @Nullable String uri;
+	private final @Nullable String remoteAddress;
+	private final @Nullable String proxyAddress;
+	private final @Nullable String method;
+	private final @Nullable String status;
 
 	/**
 	 * Creates a new meter key.
@@ -44,6 +44,7 @@ public final class MeterKey {
 	 * This method will be removed in version 1.3.0.
 	 */
 	@Deprecated
+	@SuppressWarnings("InlineMeSuggester")
 	public MeterKey(@Nullable String uri, @Nullable String remoteAddress,
 			@Nullable String method, @Nullable String status) {
 		this(uri, remoteAddress, null, method, status);

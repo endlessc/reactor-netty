@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,10 +20,10 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.ssl.SslHandler;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.NettyPipeline;
 import reactor.netty.tcp.SslProvider;
 
-import javax.annotation.Nullable;
 import java.net.SocketAddress;
 import java.util.List;
 
@@ -41,7 +41,7 @@ final class NonSslRedirectDetector extends ByteToMessageDecoder {
 	private static final int SSL_RECORD_HEADER_LENGTH = 5;
 
 	private final SslProvider sslProvider;
-	private final SocketAddress remoteAddress;
+	private final @Nullable SocketAddress remoteAddress;
 	private final boolean sslDebug;
 
 	public NonSslRedirectDetector(SslProvider sslProvider, @Nullable SocketAddress remoteAddress, boolean sslDebug) {
@@ -56,7 +56,7 @@ final class NonSslRedirectDetector extends ByteToMessageDecoder {
 			return;
 		}
 		ChannelPipeline pipeline = ctx.pipeline();
-		if (SslHandler.isEncrypted(in)) {
+		if (SslHandler.isEncrypted(in, false)) {
 			sslProvider.addSslHandler(ctx.channel(), remoteAddress, sslDebug);
 		}
 		else {

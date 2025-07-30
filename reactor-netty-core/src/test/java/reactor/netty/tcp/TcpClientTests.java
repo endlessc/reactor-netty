@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import java.nio.charset.Charset;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBuf;
@@ -48,13 +50,15 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.LineBasedFrameDecoder;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.DefaultAddressResolverGroup;
 import io.netty.util.AttributeKey;
 import io.netty.util.NetUtil;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -74,6 +78,7 @@ import reactor.netty.channel.AbortedException;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
+import reactor.netty.transport.ClientTransport;
 import reactor.netty.transport.NameResolverProvider;
 import reactor.test.StepVerifier;
 import reactor.util.Logger;
@@ -323,7 +328,7 @@ public class TcpClientTests {
 				         .doOnConnected(channelInit));
 	}
 
-	private void tcpClientHandlesLineFeedData(TcpClient client) throws InterruptedException {
+	private static void tcpClientHandlesLineFeedData(TcpClient client) throws InterruptedException {
 		final int messages = 100;
 		final CountDownLatch latch = new CountDownLatch(messages);
 		final List<String> strings = new ArrayList<>();
@@ -370,7 +375,7 @@ public class TcpClientTests {
 	}
 
 	/*Check in details*/
-	private void connectionWillRetryConnectionAttemptWhenItFails(TcpClient client) throws InterruptedException {
+	private static void connectionWillRetryConnectionAttemptWhenItFails(TcpClient client) throws InterruptedException {
 		final CountDownLatch latch = new CountDownLatch(1);
 		final AtomicLong totalDelay = new AtomicLong();
 
@@ -601,7 +606,7 @@ public class TcpClientTests {
 
 		private final    int                 port;
 		private final    ServerSocketChannel server;
-		private volatile Thread              thread;
+		private volatile @Nullable Thread    thread;
 
 		public EchoServer(int port) {
 			super(1);
@@ -802,7 +807,7 @@ public class TcpClientTests {
 		doTestIssue600(false);
 	}
 
-	private void doTestIssue600(boolean withLoop) {
+	private static void doTestIssue600(boolean withLoop) {
 		DisposableServer server =
 				TcpServer.create()
 				         .port(0)
@@ -910,7 +915,7 @@ public class TcpClientTests {
 		server.disposeNow();
 	}
 
-	private void connect(TcpClient  client, boolean reconnect, CountDownLatch latch) {
+	private static void connect(TcpClient client, boolean reconnect, CountDownLatch latch) {
 		client.connect()
 		      .subscribe(
 		          conn -> {
@@ -998,9 +1003,9 @@ public class TcpClientTests {
 		ByteBuf b2 = Unpooled.wrappedBuffer(bytes);
 		ByteBuf b3 = Unpooled.wrappedBuffer(bytes);
 
-		WeakReference<ByteBuf> refCheck1 = new WeakReference<>(b1);
-		WeakReference<ByteBuf> refCheck2 = new WeakReference<>(b2);
-		WeakReference<ByteBuf> refCheck3 = new WeakReference<>(b3);
+		WeakReference<@Nullable ByteBuf> refCheck1 = new WeakReference<>(b1);
+		WeakReference<@Nullable ByteBuf> refCheck2 = new WeakReference<>(b2);
+		WeakReference<@Nullable ByteBuf> refCheck3 = new WeakReference<>(b3);
 
 		Connection conn =
 				TcpClient.create()
@@ -1038,7 +1043,7 @@ public class TcpClientTests {
 		conn.disposeNow();
 	}
 
-	private void checkReference(WeakReference<ByteBuf> ref) throws Exception {
+	private static void checkReference(WeakReference<@Nullable ByteBuf> ref) throws Exception {
 		for (int i = 0; i < 10; i++) {
 			if (ref.get() == null) {
 				return;
@@ -1212,7 +1217,7 @@ public class TcpClientTests {
 				TcpClient.create()
 				         .bootstrap(b ->
 				             b.attr(AttributeKey.valueOf("testBootstrap"), "testBootstrap")
-				              .group(new NioEventLoopGroup())
+				              .group(new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory()))
 				              .option(ChannelOption.valueOf("testBootstrap"), "testBootstrap")
 				              .remoteAddress(server.address())
 				              .resolver(DefaultAddressResolverGroup.INSTANCE)
@@ -1280,7 +1285,7 @@ public class TcpClientTests {
 	@Test
 	void testDefaultResolverWithCustomEventLoop() throws Exception {
 		LoopResources loop1 = LoopResources.create("test", 1, true);
-		EventLoopGroup loop2 = new NioEventLoopGroup(1);
+		EventLoopGroup loop2 = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 		TcpClient client = TcpClient.create();
 		TcpClient newClient = null;
 		try {
@@ -1288,18 +1293,18 @@ public class TcpClientTests {
 
 			newClient = client.runOn(loop1);
 
-			assertThat(newClient.configuration().resolver()).isNotNull();
-			newClient.configuration()
-			         .resolver()
-			         .getResolver(loop2.next())
-			         .resolve(new InetSocketAddress("example.com", 443))
-			         .addListener(f -> assertThat(Thread.currentThread().getName()).startsWith("test-"));
+			AddressResolverGroup<?> addressResolverGroup = newClient.configuration().resolver();
+			assertThat(addressResolverGroup).isNotNull();
+			addressResolverGroup.getResolver(loop2.next())
+			                    .resolve(new InetSocketAddress("example.com", 443))
+			                    .addListener(f -> assertThat(Thread.currentThread().getName()).startsWith("test-"));
 		}
 		finally {
-			if (newClient != null && newClient.configuration().resolver() != null) {
-				newClient.configuration()
-				         .resolver()
-				         .close();
+			if (newClient != null) {
+				AddressResolverGroup<?> addressResolverGroup = newClient.configuration().resolver();
+				if (addressResolverGroup != null) {
+					addressResolverGroup.close();
+				}
 			}
 			loop1.disposeLater()
 			     .block(Duration.ofSeconds(10));
@@ -1317,37 +1322,44 @@ public class TcpClientTests {
 		TcpClient client = TcpClient.create();
 
 		try {
-			assertThat(client.configuration().loopResources()).isSameAs(TcpResources.get());
-			assertThat(client.configuration().resolver()).isNull();
-			assertThat(client.configuration().getNameResolverProvider()).isNull();
+			TcpClientConfig configuration1 = client.configuration();
+			assertThat(configuration1.loopResources()).isSameAs(TcpResources.get());
+			assertThat(configuration1.resolver()).isNull();
+			assertThat(configuration1.getNameResolverProvider()).isNull();
 
 			client = client.runOn(loop1);
 
-			assertThat(client.configuration().loopResources()).isSameAs(loop1);
-			AddressResolverGroup<?> resolver1 = client.configuration().resolver();
-			NameResolverProvider nameResolverProvider1 = client.configuration().getNameResolverProvider();
+			TcpClientConfig configuration2 = client.configuration();
+			assertThat(configuration2.loopResources()).isSameAs(loop1);
+			AddressResolverGroup<?> resolver1 = configuration2.resolver();
+			NameResolverProvider nameResolverProvider1 = configuration2.getNameResolverProvider();
 			assertThat(resolver1).isNotNull();
 			assertThat(nameResolverProvider1).isNotNull();
 			resolver1.close();
 
 			client = client.runOn(loop2);
 
-			assertThat(client.configuration().loopResources()).isSameAs(loop2);
-			AddressResolverGroup<?> resolver2 = client.configuration().resolver();
-			NameResolverProvider nameResolverProvider2 = client.configuration().getNameResolverProvider();
+			TcpClientConfig configuration3 = client.configuration();
+			assertThat(configuration3.loopResources()).isSameAs(loop2);
+			AddressResolverGroup<?> resolver2 = configuration3.resolver();
+			NameResolverProvider nameResolverProvider2 = configuration3.getNameResolverProvider();
 			assertThat(resolver2).isNotNull().isNotSameAs(resolver1);
 			assertThat(nameResolverProvider2).isNotNull().isSameAs(nameResolverProvider1);
 			resolver2.close();
 
 			client = client.resolver(DefaultAddressResolverGroup.INSTANCE);
-			assertThat(client.configuration().loopResources()).isSameAs(loop2);
-			assertThat(client.configuration().resolver()).isSameAs(DefaultAddressResolverGroup.INSTANCE);
-			assertThat(client.configuration().getNameResolverProvider()).isNull();
+
+			TcpClientConfig configuration4 = client.configuration();
+			assertThat(configuration4.loopResources()).isSameAs(loop2);
+			assertThat(configuration4.resolver()).isSameAs(DefaultAddressResolverGroup.INSTANCE);
+			assertThat(configuration4.getNameResolverProvider()).isNull();
 
 			client = client.runOn(loop3);
-			assertThat(client.configuration().loopResources()).isSameAs(loop3);
-			assertThat(client.configuration().resolver()).isSameAs(DefaultAddressResolverGroup.INSTANCE);
-			assertThat(client.configuration().getNameResolverProvider()).isNull();
+
+			TcpClientConfig configuration5 = client.configuration();
+			assertThat(configuration5.loopResources()).isSameAs(loop3);
+			assertThat(configuration5.resolver()).isSameAs(DefaultAddressResolverGroup.INSTANCE);
+			assertThat(configuration5.getNameResolverProvider()).isNull();
 		}
 		finally {
 			loop1.disposeLater()
@@ -1379,7 +1391,7 @@ public class TcpClientTests {
 		doTestSharedNameResolver(TcpClient.newConnection(), false);
 	}
 
-	private void doTestSharedNameResolver(TcpClient client, boolean sharedClient) throws InterruptedException {
+	private static void doTestSharedNameResolver(TcpClient client, boolean sharedClient) throws InterruptedException {
 		DisposableServer disposableServer =
 				TcpServer.create()
 				         .port(0)
@@ -1387,27 +1399,27 @@ public class TcpClientTests {
 				         .bindNow(Duration.ofSeconds(30));
 
 		LoopResources loop = LoopResources.create("doTestSharedNameResolver", 4, true);
-		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
+		AtomicReference<List<@Nullable AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
 		try {
 			int count = 8;
 			CountDownLatch latch = new CountDownLatch(count);
 			TcpClient localClient = null;
 			if (sharedClient) {
 				localClient = client.runOn(loop)
-				               .port(disposableServer.port())
-				               .doOnConnect(config -> resolvers.get().add(config.resolver()))
-				               .doOnConnected(conn -> conn.onDispose(latch::countDown));
+				                    .port(disposableServer.port())
+				                    .doOnConnect(config -> resolvers.get().add(config.resolver()))
+				                    .doOnConnected(conn -> conn.onDispose(latch::countDown));
 			}
 			for (int i = 0; i < count; i++) {
 				if (!sharedClient) {
 					localClient = client.runOn(loop)
-					               .port(disposableServer.port())
-					               .doOnConnect(config -> resolvers.get().add(config.resolver()))
-					               .doOnConnected(conn -> conn.onDispose(latch::countDown));
+					                    .port(disposableServer.port())
+					                    .doOnConnect(config -> resolvers.get().add(config.resolver()))
+					                    .doOnConnected(conn -> conn.onDispose(latch::countDown));
 				}
 				localClient.handle((in, out) -> in.receive().then())
-				      .connect()
-				      .subscribe();
+				           .connect()
+				           .subscribe();
 			}
 
 			assertThat(latch.await(30, TimeUnit.SECONDS)).isTrue();
@@ -1436,7 +1448,7 @@ public class TcpClientTests {
 				         .handle((req, res) -> res.sendString(Mono.just("noSystemProxySettings")))
 				         .bindNow();
 
-		AtomicReference<AddressResolverGroup<?>> resolver = new AtomicReference<>();
+		AtomicReference<@Nullable AddressResolverGroup<?>> resolver = new AtomicReference<>();
 		Connection conn = null;
 		try {
 			conn = TcpClient.create()
@@ -1471,36 +1483,35 @@ public class TcpClientTests {
 			CancelReceiverHandlerTest cancelReceiver = new CancelReceiverHandlerTest(empty::tryEmitEmpty);
 
 			server = TcpServer.create()
-					.port(0)
-					.wiretap(true)
-					.handle((req, res) -> res.sendString(req.receive()
-									.asString()
-									.log("server.receive"))
-							.then(Mono.never()))
-					.bindNow();
+					          .port(0)
+					          .wiretap(true)
+					          .handle((req, res) -> res.sendString(req.receive()
+					                                                  .asString()
+					                                                  .log("server.receive"))
+					                                   .then(Mono.never()))
+					          .bindNow();
 
 			client = TcpClient.create()
-					.wiretap(true)
-					.host("localhost")
-					.port(server.port())
-					.doOnConnected(c -> c.addHandlerFirst(cancelReceiver))
-					.handle((in, out) -> {
-						Mono<Void> receive = in
-								.receive()
-								.asString()
-								.log("client.receive")
-								.doOnCancel(cancelled::countDown)
-								.then();
+					          .wiretap(true)
+					          .host("localhost")
+					          .port(server.port())
+					          .doOnConnected(c -> c.addHandlerFirst(cancelReceiver))
+					          .handle((in, out) -> {
+					              Mono<Void> receive = in.receive()
+					                                     .asString()
+					                                     .log("client.receive")
+					                                     .doOnCancel(cancelled::countDown)
+					                                     .then();
 
-						out.sendString(Mono.just("REQUEST"))
-								.then()
-								.subscribe();
+					              out.sendString(Mono.just("REQUEST"))
+					                 .then()
+					                 .subscribe();
 
-						return Flux.zip(receive, empty.asMono())
-								.log("zip")
-								.then(Mono.never());
-					})
-					.connectNow();
+					              return Flux.zip(receive, empty.asMono())
+					                         .log("zip")
+					                         .then(Mono.never());
+					          })
+					          .connectNow();
 
 			assertThat(cancelled.await(30, TimeUnit.SECONDS)).as("cancelled await").isTrue();
 			assertThat(cancelReceiver.awaitAllReleased(30)).as("cancelReceiver").isTrue();
@@ -1532,35 +1543,32 @@ public class TcpClientTests {
 			CountDownLatch cancelled = new CountDownLatch(1);
 
 			server = TcpServer.create()
-					.port(0)
-					.wiretap(true)
-					.handle((req, res) -> req.receive()
-							.asString()
-							.doOnNext(s -> req.withConnection(DisposableChannel::dispose))
-							.then())
-					.bindNow();
+					          .port(0)
+					          .wiretap(true)
+					          .handle((req, res) -> req.receive()
+					                                   .asString()
+					                                   .doOnNext(s -> req.withConnection(DisposableChannel::dispose))
+					                                   .then())
+					          .bindNow();
 
 			client = TcpClient.create()
-					.wiretap(true)
-					.host("localhost")
-					.port(server.port())
-					.handle((in, out) -> {
-						Mono<Void> receive = in
-								.receive()
-								.asString()
-								.log("client.receive")
-								.doOnCancel(cancelled::countDown)
-								.then();
+					          .wiretap(true)
+					          .host("localhost")
+					          .port(server.port())
+					          .handle((in, out) -> {
+					              Mono<Void> receive = in.receive()
+					                                     .asString()
+					                                     .log("client.receive")
+					                                     .doOnCancel(cancelled::countDown)
+					                                     .then();
 
-						out.sendString(Mono.just("REQUEST"))
-								.then()
-								.subscribe();
+					              out.sendString(Mono.just("REQUEST"))
+					                 .then()
+					                 .subscribe();
 
-						return receive
-								.log("receive")
-								.then(Mono.never());
-					})
-					.connectNow();
+					              return receive.log("receive").then(Mono.never());
+					          })
+					          .connectNow();
 
 			assertThat(cancelled.await(30, TimeUnit.SECONDS)).as("cancelled await").isTrue();
 			assertThat(lt.latch.await(30, TimeUnit.SECONDS)).as("logTracker await").isTrue();
@@ -1571,6 +1579,68 @@ public class TcpClientTests {
 			}
 			if (client != null) {
 				client.disposeNow();
+			}
+		}
+	}
+
+	@Test
+	void testSelectedIpsEmpty() {
+		doTestSelectedIps((tcpClientConfig, list) -> Collections.emptyList(), true);
+	}
+
+	@Test
+	void testSelectedIpsNull() {
+		doTestSelectedIps((tcpClientConfig, list) -> null, true);
+	}
+
+	@Test
+	void testSelectedIpsFilter() {
+		doTestSelectedIps((tcpClientConfig, list) -> list.stream().filter(o -> false).collect(Collectors.toList()), true);
+	}
+
+	@Test
+	void testSelectedIpsCheckConfig() {
+		doTestSelectedIps((tcpClientConfig, list) -> tcpClientConfig.hasProxy() ? list : null, true);
+	}
+
+	@Test
+	void testSelectedIps() {
+		doTestSelectedIps((tcpClientConfig, list) -> list, false);
+	}
+
+	private static void doTestSelectedIps(
+			ClientTransport.ResolvedAddressSelector<TcpClientConfig> resolvedIpFilter,
+			boolean expectError) {
+		DisposableServer disposableServer = null;
+		try {
+			disposableServer =
+					TcpServer.create()
+					         .handle((in, out) -> out.sendString(Mono.just("testSelectedIps")))
+					         .bindNow();
+
+			SocketAddress address = disposableServer.address();
+			Flux<String> result =
+					TcpClient.create()
+					         .resolvedAddressesSelector(resolvedIpFilter)
+					         .remoteAddress(() -> address)
+					         .connect()
+					         .flatMapMany(c -> c.inbound().receive().asString());
+
+			if (expectError) {
+				result.as(StepVerifier::create)
+				      .expectErrorMatches(t -> ("Failed to resolve [" + address + "]").equals(t.getMessage()))
+				      .verify(Duration.ofSeconds(5));
+			}
+			else {
+				result.as(StepVerifier::create)
+				      .expectNextMatches(s -> s.startsWith("test"))
+				      .expectComplete()
+				      .verify(Duration.ofSeconds(30));
+			}
+		}
+		finally {
+			if (disposableServer != null) {
+				disposableServer.disposeNow();
 			}
 		}
 	}

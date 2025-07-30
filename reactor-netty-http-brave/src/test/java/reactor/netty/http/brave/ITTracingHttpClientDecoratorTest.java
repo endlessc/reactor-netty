@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,13 +25,13 @@ import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 import reactor.netty.DisposableServer;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.server.HttpServer;
-import reactor.util.annotation.Nullable;
 
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 public class ITTracingHttpClientDecoratorTest extends ITHttpAsyncClient<HttpClient> {
-	private ChannelGroup group;
+	private @Nullable ChannelGroup group;
 	private static final EventExecutor executor = new DefaultEventExecutor();
 
 	@AfterAll
@@ -139,8 +139,9 @@ public class ITTracingHttpClientDecoratorTest extends ITHttpAsyncClient<HttpClie
 			      .aggregate()
 			      .block(Duration.ofSeconds(30));
 
-			assertThat(headers.get()).isNotNull();
-			assertThat(headers.get().get("x-b3-traceId")).isEqualTo(headers.get().get("test-id"));
+			HttpHeaders httpHeaders = headers.get();
+			assertThat(httpHeaders).isNotNull();
+			assertThat(httpHeaders.get("x-b3-traceId")).isEqualTo(httpHeaders.get("test-id"));
 		}
 		finally {
 			if (disposableServer != null) {
@@ -172,11 +173,11 @@ public class ITTracingHttpClientDecoratorTest extends ITHttpAsyncClient<HttpClie
 		testSpanHandler.takeRemoteSpanWithErrorMessage(CLIENT, "not ready");
 	}
 
-	void execute(HttpClient client, HttpMethod method, String pathIncludingQuery) {
+	static void execute(HttpClient client, HttpMethod method, String pathIncludingQuery) {
 		execute(client, method, pathIncludingQuery, null);
 	}
 
-	void execute(HttpClient client, HttpMethod method, String pathIncludingQuery, @Nullable String body) {
+	static void execute(HttpClient client, HttpMethod method, String pathIncludingQuery, @Nullable String body) {
 		client.request(method)
 		      .uri(pathIncludingQuery.isEmpty() ? "/" : pathIncludingQuery)
 		      .send((req, out) -> {

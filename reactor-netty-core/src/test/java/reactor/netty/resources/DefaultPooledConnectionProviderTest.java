@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2017-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,7 +41,8 @@ import java.util.function.Supplier;
 
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
@@ -145,7 +146,7 @@ class DefaultPooledConnectionProviderTest {
 		final ScheduledExecutorService service = Executors.newScheduledThreadPool(2);
 		int echoServerPort = SocketUtils.findAvailableTcpPort();
 		TcpClientTests.EchoServer echoServer = new TcpClientTests.EchoServer(echoServerPort);
-		EventLoopGroup group = new NioEventLoopGroup(2);
+		EventLoopGroup group = new MultiThreadIoEventLoopGroup(2, NioIoHandler.newFactory());
 
 		java.util.concurrent.Future<?> f1 = null;
 		java.util.concurrent.Future<?> f2 = null;
@@ -301,8 +302,10 @@ class DefaultPooledConnectionProviderTest {
 			assertThat(onNext).isEqualTo(1);
 			assertThat(onError).isEqualTo(4);
 
-			assertThat(pool.get().metrics().acquiredSize()).as("currently acquired").isEqualTo(0);
-			assertThat(pool.get().metrics().idleSize()).as("currently idle").isEqualTo(0);
+			InstrumentedPool<PooledConnection> instrumentedPool = pool.get();
+			assertThat(instrumentedPool).isNotNull();
+			assertThat(instrumentedPool.metrics().acquiredSize()).as("currently acquired").isEqualTo(0);
+			assertThat(instrumentedPool.metrics().idleSize()).as("currently idle").isEqualTo(0);
 		}
 		finally {
 			server.disposeNow();
@@ -377,8 +380,10 @@ class DefaultPooledConnectionProviderTest {
 			assertThat(onErrorTimeout).isEqualTo(1);
 			assertThat(onErrorPendingAcquire).isEqualTo(1);
 
-			assertThat(pool.get().metrics().acquiredSize()).as("currently acquired").isEqualTo(0);
-			assertThat(pool.get().metrics().idleSize()).as("currently idle").isEqualTo(0);
+			InstrumentedPool<PooledConnection> instrumentedPool = pool.get();
+			assertThat(instrumentedPool).isNotNull();
+			assertThat(instrumentedPool.metrics().acquiredSize()).as("currently acquired").isEqualTo(0);
+			assertThat(instrumentedPool.metrics().idleSize()).as("currently idle").isEqualTo(0);
 		}
 		finally {
 			server.disposeNow();
@@ -389,7 +394,7 @@ class DefaultPooledConnectionProviderTest {
 	@Test
 	@SuppressWarnings("unchecked")
 	void testRetryConnect() throws Exception {
-		EventLoopGroup group = new NioEventLoopGroup(1);
+		EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 		InetSocketAddress address = AddressUtils.createUnresolved("localhost", 12122);
 
 		AddressResolverGroup<SocketAddress> resolverGroup = Mockito.mock(AddressResolverGroup.class);
@@ -418,6 +423,7 @@ class DefaultPooledConnectionProviderTest {
 		try {
 			conn = pool.acquire(config, observer, remoteAddress, config.resolverInternal())
 			           .block(Duration.ofSeconds(5));
+			assertThat(conn).isNotNull();
 			assertThat(((InetSocketAddress) conn.address()).getHostString()).isEqualTo("example.com");
 		}
 		finally {
@@ -433,7 +439,7 @@ class DefaultPooledConnectionProviderTest {
 
 	@Test
 	void testDisposeInactivePoolsInBackground() throws Exception {
-		EventLoopGroup group = new NioEventLoopGroup(1);
+		EventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 		InetSocketAddress address = AddressUtils.createUnresolved("example.com", 80);
 		ConnectionProvider.Builder builder =
 				ConnectionProvider.builder("testDisposeInactivePoolsInBackground")
@@ -449,6 +455,7 @@ class DefaultPooledConnectionProviderTest {
 		try {
 			conn = pool.acquire(config, observer, remoteAddress, config.resolverInternal())
 			           .block(Duration.ofSeconds(5));
+			assertThat(conn).isNotNull();
 			assertThat(((InetSocketAddress) conn.address()).getHostString()).isEqualTo("example.com");
 		}
 		finally {
@@ -486,7 +493,7 @@ class DefaultPooledConnectionProviderTest {
 		doTestIssue1790(false);
 	}
 
-	private void doTestIssue1790(boolean fifoPool) {
+	private static void doTestIssue1790(boolean fifoPool) {
 		DefaultPooledConnectionProvider provider;
 		if (fifoPool) {
 			provider =
@@ -548,7 +555,7 @@ class DefaultPooledConnectionProviderTest {
 
 		DefaultPooledConnectionProvider provider =
 				(DefaultPooledConnectionProvider) ConnectionProvider.create("testIssue3316", 400);
-		EventLoopGroup group = new NioEventLoopGroup();
+		EventLoopGroup group = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
 		try {
 			Flux.range(0, 400)
 			    .flatMap(i ->
@@ -573,7 +580,9 @@ class DefaultPooledConnectionProviderTest {
 	static final class PoolImpl extends AtomicInteger implements InstrumentedPool<PooledConnection> {
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Mono<Integer> warmup() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -583,7 +592,9 @@ class DefaultPooledConnectionProviderTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Mono<PooledRef<PooledConnection>> acquire(Duration timeout) {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -603,7 +614,9 @@ class DefaultPooledConnectionProviderTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public PoolMetrics metrics() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 	}
@@ -611,12 +624,16 @@ class DefaultPooledConnectionProviderTest {
 	static final class PoolConfigImpl implements PoolConfig<PooledConnection> {
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Mono<PooledConnection> allocator() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public AllocationStrategy allocationStrategy() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -626,32 +643,44 @@ class DefaultPooledConnectionProviderTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Function<PooledConnection, ? extends Publisher<Void>> releaseHandler() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Function<PooledConnection, ? extends Publisher<Void>> destroyHandler() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public BiPredicate<PooledConnection, PooledRefMetadata> evictionPredicate() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Scheduler acquisitionScheduler() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public PoolMetricsRecorder metricsRecorder() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public Clock clock() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -675,7 +704,9 @@ class DefaultPooledConnectionProviderTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected LoggingHandler defaultLoggingHandler() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 
@@ -685,7 +716,9 @@ class DefaultPooledConnectionProviderTest {
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		protected ChannelMetricsRecorder defaultMetricsRecorder() {
+			// Deliberately suppress "NullAway" for testing purposes
 			return null;
 		}
 

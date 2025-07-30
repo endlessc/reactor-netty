@@ -186,13 +186,13 @@ By default, the `HTTP` client is configured with the following settings:
 {http-source-link}/reactor/netty/http/HttpDecoderSpec.java
 [%unbreakable]
 ----
-include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=28..39]
+include::{sourcedir}/reactor/netty/http/HttpDecoderSpec.java[lines=28..40]
 ----
 
 {http-source-link}/reactor/netty/http/client/HttpResponseDecoderSpec.java
 [%unbreakable]
 ----
-include::{sourcedir}/reactor/netty/http/client/HttpResponseDecoderSpec.java[lines=44..52]
+include::{sourcedir}/reactor/netty/http/client/HttpResponseDecoderSpec.java[lines=42..50]
 ----
 
 When you need to change these default settings, you can configure the `HTTP` client as follows:
@@ -333,25 +333,24 @@ include::{examples-dir}/http2/H2CApplication.java[lines=18..41]
 {http-source-link}/reactor/netty/http/HttpProtocol.java
 [%unbreakable]
 ----
-include::{sourcedir}/reactor/netty/http/HttpProtocol.java[lines=24..58]
+include::{sourcedir}/reactor/netty/http/HttpProtocol.java[lines=26..61]
 ----
 
 [[HTTP3]]
 == HTTP/3
 By default, the `HTTP` client supports `HTTP/1.1`. If you need `HTTP/3`, you can get it through configuration.
-In addition to the protocol configuration, you need to add dependency to `io.netty.incubator:netty-incubator-codec-http3`.
+In addition to the protocol configuration, you need to add dependency to `io.netty:netty-codec-native-quic`.
 
 The following listing presents a simple `HTTP3` example:
 
 {examples-link}/http3/Application.java
 ----
-include::{examples-dir}/http3/Application.java[lines=18..49]
+include::{examples-dir}/http3/Application.java[lines=18..46]
 ----
 <1> Configures the client to support only `HTTP/3`
-<2> Configures `SSL`
-<3> Configures `HTTP/3` settings
+<2> Configures `HTTP/3` settings
 
-include::partial$proxy.adoc[]
+include::partial$http-client-proxy.adoc[]
 
 [[metrics]]
 == Metrics
@@ -461,7 +460,7 @@ include::{examples-dir}/tracing/Application.java[lines=18..90]
 
 The result in `Zipkin` looks like:
 
-image::http-client-tracing.png[]
+image::http-client-tracing.png[role="invert-dark"]
 
 [[access-current-observation]]
 === Access Current Observation
@@ -489,13 +488,14 @@ You may also need to configure the Reactor Netty `ObservationHandlers` using the
 
 [[unix-domain-sockets]]
 == Unix Domain Sockets
-The `HTTP` client supports Unix Domain Sockets (UDS) when native transport is in use.
+The `HTTP` client supports Unix Domain Sockets (UDS) when native transport is in use for all java versions
+and when NIO transport is in use for java 17 and above.
 
 The following example shows how to use UDS support:
 
 {examples-link}/uds/Application.java
 ----
-include::{examples-dir}/uds/Application.java[lines=18..33]
+include::{examples-dir}/uds/Application.java[lines=18..38]
 ----
 <1> Specifies `DomainSocketAddress` that will be used
 
@@ -534,6 +534,8 @@ Default: 0.
 | `completeOncePreferredResolved` | When this setting is enabled, the resolver notifies as soon as all queries for the preferred address type are complete.
 When this setting is disabled, the resolver notifies when all possible address types are complete.
 This configuration is applicable for `DnsNameResolver#resolveAll(String)`. By default, this setting is enabled.
+| `datagramChannelStrategy` | Sets the strategy that is used to determine how a `DatagramChannel` is used by the resolver
+for sending queries over UDP protocol. Default to {nettyjavadoc}/io/netty/resolver/dns/DnsNameResolverChannelStrategy.html#ChannelPerResolver[`DnsNameResolverChannelStrategy#ChannelPerResolver`]
 | `disableOptionalRecord` | Disables the automatic inclusion of an optional record that tries to give a hint to the remote DNS server about
 how much data the resolver can read per response. By default, this setting is enabled.
 | `disableRecursionDesired` | Specifies whether this resolver has to send a DNS query with the recursion desired (RD) flag set.

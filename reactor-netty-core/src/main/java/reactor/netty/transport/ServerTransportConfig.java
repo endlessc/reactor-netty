@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,15 +25,16 @@ import java.util.function.Supplier;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ServerChannel;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.socket.ServerSocketChannel;
 import io.netty.channel.unix.ServerDomainSocketChannel;
 import io.netty.util.AttributeKey;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.DisposableServer;
-import reactor.util.annotation.Nullable;
 
 import static reactor.netty.ReactorNetty.format;
 
@@ -87,8 +88,7 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super CONF> doOnBind() {
+	public final @Nullable Consumer<? super CONF> doOnBind() {
 		return doOnBind;
 	}
 
@@ -97,8 +97,7 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super DisposableServer> doOnBound() {
+	public final @Nullable Consumer<? super DisposableServer> doOnBound() {
 		return doOnBound;
 	}
 
@@ -107,8 +106,7 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super Connection> doOnConnection() {
+	public final @Nullable Consumer<? super Connection> doOnConnection() {
 		return doOnConnection;
 	}
 
@@ -117,21 +115,20 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 	 *
 	 * @return the configured callback or null
 	 */
-	@Nullable
-	public final Consumer<? super DisposableServer> doOnUnbound() {
+	public final @Nullable Consumer<? super DisposableServer> doOnUnbound() {
 		return doOnUnbound;
 	}
 
 
 	// Protected/Package private write API
 
-	Map<AttributeKey<?>, ?>            childAttrs;
-	ConnectionObserver                 childObserver;
-	Map<ChannelOption<?>, ?>           childOptions;
-	Consumer<? super CONF>             doOnBind;
-	Consumer<? super DisposableServer> doOnBound;
-	Consumer<? super Connection>       doOnConnection;
-	Consumer<? super DisposableServer> doOnUnbound;
+	Map<AttributeKey<?>, ?>                      childAttrs;
+	ConnectionObserver                           childObserver;
+	Map<ChannelOption<?>, ?>                     childOptions;
+	@Nullable Consumer<? super CONF>             doOnBind;
+	@Nullable Consumer<? super DisposableServer> doOnBound;
+	@Nullable Consumer<? super Connection>       doOnConnection;
+	@Nullable Consumer<? super DisposableServer> doOnUnbound;
 
 	/**
 	 * Default ServerTransportConfig with options.
@@ -207,8 +204,8 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 
 	static final class ServerTransportDoOn implements ConnectionObserver {
 
-		final Consumer<? super DisposableServer> doOnBound;
-		final Consumer<? super DisposableServer> doOnUnbound;
+		final @Nullable Consumer<? super DisposableServer> doOnBound;
+		final @Nullable Consumer<? super DisposableServer> doOnUnbound;
 
 		ServerTransportDoOn(@Nullable Consumer<? super DisposableServer> doOnBound,
 				@Nullable Consumer<? super DisposableServer> doOnUnbound) {
@@ -233,8 +230,8 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 
 	static final class ServerTransportDoOnConnection implements ConnectionObserver {
 
-		final ChannelGroup                 channelGroup;
-		final Consumer<? super Connection> doOnConnection;
+		final @Nullable ChannelGroup                 channelGroup;
+		final @Nullable Consumer<? super Connection> doOnConnection;
 
 		ServerTransportDoOnConnection(@Nullable ChannelGroup channelGroup, @Nullable Consumer<? super Connection> doOnConnection) {
 			this.channelGroup = channelGroup;
@@ -245,7 +242,13 @@ public abstract class ServerTransportConfig<CONF extends TransportConfig> extend
 		@SuppressWarnings("FutureReturnValueIgnored")
 		public void onStateChange(Connection connection, State newState) {
 			if (channelGroup != null && newState == State.CONNECTED) {
-				channelGroup.add(connection.channel());
+				Channel channel = connection.channel();
+				channelGroup.add(channel);
+				Channel parent = channel.parent();
+				if (!(parent instanceof ServerChannel)) {
+					// HTTP/2 - add both the stream and the connection
+					channelGroup.add(parent);
+				}
 				return;
 			}
 			if (doOnConnection != null && newState == State.CONFIGURED) {

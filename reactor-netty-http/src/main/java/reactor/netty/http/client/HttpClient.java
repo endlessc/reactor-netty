@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,6 +44,7 @@ import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.codec.http.cookie.DefaultCookie;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.handler.ssl.SslContext;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import reactor.core.publisher.Flux;
@@ -66,10 +67,9 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.transport.ClientTransport;
+import reactor.netty.transport.ProxyProvider;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Incubating;
-import reactor.util.annotation.Nullable;
 
 import static reactor.netty.http.client.HttpClientConfig.h3;
 import static reactor.netty.http.internal.Http3.isHttp3Available;
@@ -190,7 +190,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		 *
 		 * @param sender a bifunction given the outgoing request and the sending
 		 * {@link NettyOutbound}, returns a publisher that will terminate the request
-		 * body on complete
+		 * body on complete. Return {@link Mono#empty()} in case of a request without body.
 		 *
 		 * @return a new {@link ResponseReceiver}
 		 */
@@ -646,16 +646,19 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		Objects.requireNonNull(name, "name");
 		Objects.requireNonNull(cookieBuilder, "cookieBuilder");
 		HttpClient dup = duplicate();
-		dup.configuration().deferredConf(config ->
-				cookieBuilder.apply(new DefaultCookie(name, ""))
-				             .map(c -> {
-				                 if (!c.value().isEmpty()) {
-				                     HttpHeaders headers = configuration().headers.copy();
-				                     headers.add(HttpHeaderNames.COOKIE, config.cookieEncoder.encode(c));
-				                     config.headers = headers;
-				                 }
-				                 return config;
-				             }));
+		dup.configuration().deferredConf(config -> {
+			Mono<? extends Cookie> mono = cookieBuilder.apply(new DefaultCookie(name, ""));
+			return mono == null || mono == Mono.<Cookie>empty() ?
+					Mono.just(config) :
+					mono.map(c -> {
+						if (!c.value().isEmpty()) {
+							HttpHeaders headers = configuration().headers.copy();
+							headers.add(HttpHeaderNames.COOKIE, config.cookieEncoder.encode(c));
+							config.headers = headers;
+						}
+						return config;
+					});
+		});
 		return dup;
 	}
 
@@ -1079,12 +1082,15 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	public final HttpClient headersWhen(Function<? super HttpHeaders, Mono<? extends HttpHeaders>> headerBuilder) {
 		Objects.requireNonNull(headerBuilder, "headerBuilder");
 		HttpClient dup = duplicate();
-		dup.configuration().deferredConf(config ->
-				headerBuilder.apply(config.headers.copy())
-				             .map(h -> {
-				                 config.headers = h;
-				                 return config;
-				             }));
+		dup.configuration().deferredConf(config -> {
+			Mono<? extends HttpHeaders> mono = headerBuilder.apply(config.headers.copy());
+			return mono == null || mono == Mono.<HttpHeaders>empty() ?
+					Mono.just(config) :
+					mono.map(h -> {
+						config.headers = h;
+						return config;
+					});
+		});
 		return dup;
 	}
 
@@ -1114,12 +1120,11 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 	 * @return a new {@link HttpClient}
 	 * @since 1.2.0
 	 */
-	@Incubating
 	public final HttpClient http3Settings(Consumer<Http3SettingsSpec.Builder> http3Settings) {
 		Objects.requireNonNull(http3Settings, "http3Settings");
 		if (!isHttp3Available()) {
 			throw new UnsupportedOperationException(
-					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+					"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 							" to the class path first");
 		}
 		Http3SettingsSpec.Builder builder = Http3SettingsSpec.builder();
@@ -1376,7 +1381,7 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 		if (config.checkProtocol(h3)) {
 			if (!isHttp3Available()) {
 				throw new UnsupportedOperationException(
-						"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+						"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 								" to the class path first");
 			}
 
@@ -1632,6 +1637,34 @@ public abstract class HttpClient extends ClientTransport<HttpClient, HttpClientC
 				// the default security will be used thus always try to load the OpenSsl natives
 				// see HttpClientConnect.MonoHttpConnect#subscribe
 				Mono.fromRunnable(OpenSsl::version));
+	}
+
+	/**
+	 * Supports proxy configuration with a deferred approach.
+	 *
+	 * <p>When proxyWhen(...) is set, calls to proxy(...) and noProxy() methods are ignored.</p>
+	 * <p>This method allows dynamic determination of proxy settings, applying or skipping the proxy based on the configured conditions.</p>
+	 *
+	 * @param proxyBuilder a deferred builder for proxy configuration
+	 * @return a new {@link HttpClient} reference
+	 * @since 1.2.3
+	 */
+	public final HttpClient proxyWhen(
+			BiFunction<HttpClientConfig, ? super ProxyProvider.TypeSpec, Mono<? extends ProxyProvider.Builder>> proxyBuilder) {
+		Objects.requireNonNull(proxyBuilder, "proxyBuilder");
+		HttpClient dup = duplicate();
+		dup.configuration().deferredConf(config -> {
+			Mono<? extends ProxyProvider.Builder> mono = proxyBuilder.apply(config, ProxyProvider.builder());
+			if (mono == null || mono == Mono.<ProxyProvider.Builder>empty()) {
+				return Mono.just(config);
+			}
+
+			return mono.map(builder -> {
+				config.proxyProvider(builder.build());
+				return config;
+			});
+		});
+		return dup;
 	}
 
 	/**

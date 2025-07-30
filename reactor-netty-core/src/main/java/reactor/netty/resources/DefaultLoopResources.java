@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,9 +23,11 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.concurrent.Future;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.NonBlocking;
 import reactor.netty.FutureMono;
@@ -41,12 +43,12 @@ final class DefaultLoopResources extends AtomicLong implements LoopResources {
 	final boolean                         daemon;
 	final int                             selectCount;
 	final int                             workerCount;
-	final AtomicReference<EventLoopGroup> serverLoops;
-	final AtomicReference<EventLoopGroup> clientLoops;
-	final AtomicReference<EventLoopGroup> serverSelectLoops;
-	final AtomicReference<EventLoopGroup> cacheNativeClientLoops;
-	final AtomicReference<EventLoopGroup> cacheNativeServerLoops;
-	final AtomicReference<EventLoopGroup> cacheNativeSelectLoops;
+	final AtomicReference<@Nullable EventLoopGroup> serverLoops;
+	final AtomicReference<@Nullable EventLoopGroup> clientLoops;
+	final AtomicReference<@Nullable EventLoopGroup> serverSelectLoops;
+	final AtomicReference<@Nullable EventLoopGroup> cacheNativeClientLoops;
+	final AtomicReference<@Nullable EventLoopGroup> cacheNativeServerLoops;
+	final AtomicReference<@Nullable EventLoopGroup> cacheNativeSelectLoops;
 	final AtomicBoolean                   running;
 	final boolean colocate;
 
@@ -130,7 +132,8 @@ final class DefaultLoopResources extends AtomicLong implements LoopResources {
 				}
 			}
 
-			return Mono.when(clMono, sslMono, slMono, cnclMono, cnslMono, cnsrvlMono);
+			return Mono.when(clMono, sslMono, slMono, cnclMono, cnslMono, cnsrvlMono)
+			           .timeout(timeout, Mono.error(new IllegalStateException("LoopResources couldn't be disposed within " + timeout.toMillis() + "ms")));
 		});
 	}
 
@@ -194,8 +197,8 @@ final class DefaultLoopResources extends AtomicLong implements LoopResources {
 
 		EventLoopGroup eventLoopGroup = serverSelectLoops.get();
 		if (null == eventLoopGroup) {
-			EventLoopGroup newEventLoopGroup = new NioEventLoopGroup(selectCount,
-					threadFactory(this, "select-nio"));
+			EventLoopGroup newEventLoopGroup = new MultiThreadIoEventLoopGroup(selectCount,
+					threadFactory(this, "select-nio"), NioIoHandler.newFactory());
 			if (!serverSelectLoops.compareAndSet(null, newEventLoopGroup)) {
 				//"FutureReturnValueIgnored" this is deliberate
 				newEventLoopGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
@@ -209,8 +212,8 @@ final class DefaultLoopResources extends AtomicLong implements LoopResources {
 	EventLoopGroup cacheNioServerLoops() {
 		EventLoopGroup eventLoopGroup = serverLoops.get();
 		if (null == eventLoopGroup) {
-			EventLoopGroup newEventLoopGroup = new NioEventLoopGroup(workerCount,
-					threadFactory(this, "nio"));
+			EventLoopGroup newEventLoopGroup = new MultiThreadIoEventLoopGroup(workerCount,
+					threadFactory(this, "nio"), NioIoHandler.newFactory());
 			if (!serverLoops.compareAndSet(null, newEventLoopGroup)) {
 				//"FutureReturnValueIgnored" this is deliberate
 				newEventLoopGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
-import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -53,20 +52,25 @@ import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.LineBasedFrameDecoder;
+import io.netty.handler.codec.MessageToMessageEncoder;
 import io.netty.handler.codec.json.JsonObjectDecoder;
 import io.netty.handler.ssl.SniCompletionEvent;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
 import io.netty.util.NetUtil;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
@@ -84,6 +88,7 @@ import reactor.netty.NettyPipeline;
 import reactor.netty.SocketUtils;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.resources.LoopResources;
+import reactor.test.StepVerifier;
 import reactor.util.Logger;
 import reactor.util.Loggers;
 
@@ -101,12 +106,12 @@ class TcpServerTests {
 
 	final Logger log     = Loggers.getLogger(TcpServerTests.class);
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 	static final EventExecutor executor = new DefaultEventExecutor();
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
-		ssc = new SelfSignedCertificate();
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	@AfterAll
@@ -119,7 +124,7 @@ class TcpServerTests {
 	void tcpServerHandlesJsonPojosOverSsl() throws Exception {
 		final CountDownLatch latch = new CountDownLatch(2);
 
-		SslContext serverOptions = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+		SslContext serverOptions = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem())
 		                                            .sslProvider(SslProvider.JDK)
 		                                            .build();
 		SslContext clientOptions = SslContextBuilder.forClient()
@@ -327,7 +332,7 @@ class TcpServerTests {
 	@Test
 	void sendFileSecure() throws Exception {
 		Path largeFile = Paths.get(getClass().getResource("/largeFile.txt").toURI());
-		SslContext sslServer = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+		SslContext sslServer = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
 		SslContext sslClient = SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE).build();
 
 		DisposableServer context =
@@ -440,7 +445,7 @@ class TcpServerTests {
 		}
 	}
 
-	private void assertSendFile(Function<NettyOutbound, NettyOutbound> fn) throws Exception {
+	private static void assertSendFile(Function<NettyOutbound, NettyOutbound> fn) throws Exception {
 		DisposableServer context =
 				TcpServer.create()
 				         .handle((in, out) ->
@@ -479,7 +484,7 @@ class TcpServerTests {
 		Connection client2 =
 				TcpClient.create()
 				         .port(context.port())
-				         .option(ChannelOption.RCVBUF_ALLOCATOR, new AdaptiveRecvByteBufAllocator(64, 1024, 65536))
+				         .option(ChannelOption.RECVBUF_ALLOCATOR, new AdaptiveRecvByteBufAllocator(64, 1024, 65536))
 				         .handle((in, out) -> {
 				             in.receive()
 				               .asString(StandardCharsets.UTF_8)
@@ -539,7 +544,9 @@ class TcpServerTests {
 		assertThat(t.isAlive()).isTrue();
 
 		//check that stopping the bnc stops the server
-		conn.get().disposeNow();
+		DisposableServer actual = conn.get();
+		assertThat(actual).isNotNull();
+		actual.disposeNow();
 		t.join();
 		assertThat(t.isAlive()).isFalse();
 	}
@@ -1052,8 +1059,8 @@ class TcpServerTests {
 		private final int port;
 		private final CountDownLatch latch;
 		private final String output;
-		private ByteBuffer data;
-		private Exception e;
+		private @Nullable ByteBuffer data;
+		private @Nullable Exception e;
 
 		SimpleClient(int port, CountDownLatch latch, String output) {
 			this.port = port;
@@ -1125,13 +1132,13 @@ class TcpServerTests {
 	@Test
 	@SuppressWarnings("deprecation")
 	void testSniSupport() throws Exception {
-		SelfSignedCertificate defaultCert = new SelfSignedCertificate("default");
+		X509Bundle defaultCert = new CertificateBuilder().subject("CN=default").setIsCertificateAuthority(true).buildSelfSigned();
 		TcpSslContextSpec defaultTcpSslContextSpec =
-				TcpSslContextSpec.forServer(defaultCert.certificate(), defaultCert.privateKey());
+				TcpSslContextSpec.forServer(defaultCert.toTempCertChainPem(), defaultCert.toTempPrivateKeyPem());
 
-		SelfSignedCertificate testCert = new SelfSignedCertificate("test.com");
+		X509Bundle testCert = new CertificateBuilder().subject("CN=test.com").setIsCertificateAuthority(true).buildSelfSigned();
 		TcpSslContextSpec testTcpSslContextSpec =
-				TcpSslContextSpec.forServer(testCert.certificate(), testCert.privateKey());
+				TcpSslContextSpec.forServer(testCert.toTempCertChainPem(), testCert.toTempPrivateKeyPem());
 
 		TcpSslContextSpec clientTcpSslContextSpec =
 				TcpSslContextSpec.forClient()
@@ -1232,6 +1239,57 @@ class TcpServerTests {
 			}
 			List<String> serverMessages = serverMsg.get();
 			assertThat(serverMessages.size()).isEqualTo(0);
+		}
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void testIssue3406(boolean singleInvocation) {
+		DisposableServer server = null;
+		Connection client = null;
+
+		try {
+			server =
+					TcpServer.create()
+					         .wiretap(true)
+					         .handle((in, out) -> out.sendString(Mono.just("testIssue3406"))
+					                                 .then(in.receive().then()))
+					         .bindNow();
+
+			Sinks.One<Void> result = Sinks.one();
+			client =
+					TcpClient.create()
+					         .remoteAddress(server::address)
+					         .wiretap(true)
+					         .doOnConnected(conn ->
+					                 conn.addHandlerFirst(
+					                     new MessageToMessageEncoder<Object>() {
+					                         @Override
+					                         protected void encode(ChannelHandlerContext ctx, Object msg, List<Object> out) {
+					                             // This is no-op in order to force Netty to release the 'msg'
+					                             // and to throw Exception
+					                         }
+					                     }))
+					         .handle((in, out) ->
+					                 in.receive()
+					                   .retain()
+					                   .doOnError(result::tryEmitError)
+					                   .doOnComplete(result::tryEmitEmpty)
+					                   .flatMap(b -> singleInvocation ? out.sendObject(b) : out.sendObject(b.retain()).sendObject(b)))
+					         .connectNow();
+
+			result.asMono()
+			      .as(StepVerifier::create)
+			      .expectComplete()
+			      .verify(Duration.ofSeconds(5));
+		}
+		finally {
+			if (client != null) {
+				client.disposeNow();
+			}
+			if (server != null) {
+				server.disposeNow();
+			}
 		}
 	}
 }

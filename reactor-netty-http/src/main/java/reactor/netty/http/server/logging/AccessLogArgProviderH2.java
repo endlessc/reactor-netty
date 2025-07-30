@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,11 @@
 package reactor.netty.http.server.logging;
 
 import io.netty.handler.codec.http2.Http2HeadersFrame;
-import reactor.util.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import java.net.SocketAddress;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -30,8 +32,8 @@ final class AccessLogArgProviderH2 extends AbstractAccessLogArgProvider<AccessLo
 
 	static final String H2_PROTOCOL_NAME = "HTTP/2.0";
 
-	Http2HeadersFrame requestHeaders;
-	Http2HeadersFrame responseHeaders;
+	@Nullable Http2HeadersFrame requestHeaders;
+	@Nullable Http2HeadersFrame responseHeaders;
 
 	AccessLogArgProviderH2(@Nullable SocketAddress remoteAddress) {
 		super(remoteAddress);
@@ -49,23 +51,30 @@ final class AccessLogArgProviderH2 extends AbstractAccessLogArgProvider<AccessLo
 	}
 
 	@Override
-	@Nullable
-	public CharSequence status() {
+	public @Nullable CharSequence status() {
 		return responseHeaders == null ? null : responseHeaders.headers().status();
 	}
 
 	@Override
-	@Nullable
-	public CharSequence requestHeader(CharSequence name) {
+	public @Nullable CharSequence requestHeader(CharSequence name) {
 		Objects.requireNonNull(name, "name");
 		return requestHeaders == null ? null : requestHeaders.headers().get(name);
 	}
 
 	@Override
-	@Nullable
-	public CharSequence responseHeader(CharSequence name) {
+	public @Nullable CharSequence responseHeader(CharSequence name) {
 		Objects.requireNonNull(name, "name");
 		return responseHeaders == null ? null : responseHeaders.headers().get(name);
+	}
+
+	@Override
+	public @Nullable Iterator<Map.Entry<CharSequence, CharSequence>> requestHeaderIterator() {
+		return requestHeaders == null ? null : requestHeaders.headers().iterator();
+	}
+
+	@Override
+	public @Nullable Iterator<Map.Entry<CharSequence, CharSequence>> responseHeaderIterator() {
+		return responseHeaders == null ? null : responseHeaders.headers().iterator();
 	}
 
 	@Override

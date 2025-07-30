@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -74,10 +74,12 @@ import io.netty.handler.codec.http.multipart.HttpData;
 import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder;
 import io.netty.handler.codec.http.websocketx.CloseWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketCloseStatus;
+import io.netty.handler.codec.http2.Http2Headers;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.util.AsciiString;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.GenericFutureListener;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -94,11 +96,12 @@ import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.HttpOperations;
 import reactor.netty.http.logging.HttpMessageArgProviderFactory;
 import reactor.netty.http.logging.HttpMessageLogFactory;
+import reactor.netty.http.server.compression.HttpCompressionOptionsSpec;
+import reactor.netty.http.server.logging.error.ErrorLogEvent;
 import reactor.netty.http.websocket.WebsocketInbound;
 import reactor.netty.http.websocket.WebsocketOutbound;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static io.netty.buffer.Unpooled.EMPTY_BUFFER;
@@ -109,6 +112,7 @@ import static io.netty.handler.codec.http.LastHttpContent.EMPTY_LAST_CONTENT;
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.http.server.HttpServerFormDecoderProvider.DEFAULT_FORM_DECODER_SPEC;
 import static reactor.netty.http.server.HttpServerState.REQUEST_DECODING_FAILED;
+import static reactor.netty.http.server.HttpTrafficHandler.H2;
 
 /**
  * Conversion between Netty types and Reactor types ({@link HttpOperations}.
@@ -118,7 +122,8 @@ import static reactor.netty.http.server.HttpServerState.REQUEST_DECODING_FAILED;
 class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerResponse>
 		implements HttpServerRequest, HttpServerResponse, GenericFutureListener<io.netty.util.concurrent.Future<? super Void>> {
 
-	final BiPredicate<HttpServerRequest, HttpServerResponse> configuredCompressionPredicate;
+	final @Nullable HttpCompressionOptionsSpec compressionOptions;
+	final @Nullable BiPredicate<HttpServerRequest, HttpServerResponse> configuredCompressionPredicate;
 	final ConnectionInfo connectionInfo;
 	final ServerCookieDecoder cookieDecoder;
 	final ServerCookieEncoder cookieEncoder;
@@ -126,28 +131,29 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	final HttpServerFormDecoderProvider formDecoderProvider;
 	final boolean is100ContinueExpected;
 	final boolean isHttp2;
-	final BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle;
+	final @Nullable BiFunction<? super Mono<Void>, ? super Connection, ? extends Mono<Void>> mapHandle;
 	final HttpRequest nettyRequest;
 	final HttpResponse nettyResponse;
-	final Duration readTimeout;
-	final Duration requestTimeout;
+	final @Nullable Duration readTimeout;
+	final @Nullable Duration requestTimeout;
 	final HttpHeaders responseHeaders;
 	final String scheme;
 	final ZonedDateTime timestamp;
 	final boolean validateHeaders;
 
-	BiPredicate<HttpServerRequest, HttpServerResponse> compressionPredicate;
+	@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compressionPredicate;
 	boolean isWebsocket;
-	Function<? super String, Map<String, String>> paramsResolver;
-	String path;
-	Future<?> requestTimeoutFuture;
-	Consumer<? super HttpHeaders> trailerHeadersConsumer;
-	FullHttpResponse fullHttpResponse;
+	@Nullable Function<? super String, Map<String, String>> paramsResolver;
+	@Nullable String path;
+	@Nullable Future<?> requestTimeoutFuture;
+	@Nullable Consumer<? super HttpHeaders> trailerHeadersConsumer;
+	@Nullable FullHttpResponse fullHttpResponse;
 
 	volatile Context currentContext;
 
 	HttpServerOperations(HttpServerOperations replaced) {
 		super(replaced);
+		this.compressionOptions = replaced.compressionOptions;
 		this.compressionPredicate = replaced.compressionPredicate;
 		this.configuredCompressionPredicate = replaced.configuredCompressionPredicate;
 		this.connectionInfo = replaced.connectionInfo;
@@ -175,6 +181,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	HttpServerOperations(Connection c, ConnectionObserver listener, HttpRequest nettyRequest,
+			@Nullable HttpCompressionOptionsSpec compressionOptions,
 			@Nullable BiPredicate<HttpServerRequest, HttpServerResponse> compressionPredicate,
 			ConnectionInfo connectionInfo,
 			ServerCookieDecoder decoder,
@@ -189,6 +196,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			ZonedDateTime timestamp,
 			boolean validateHeaders) {
 		super(c, listener, httpMessageLogFactory);
+		this.compressionOptions = compressionOptions;
 		this.compressionPredicate = compressionPredicate;
 		this.configuredCompressionPredicate = compressionPredicate;
 		this.connectionInfo = connectionInfo;
@@ -201,6 +209,13 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		this.isHttp2 = isHttp2;
 		this.mapHandle = mapHandle;
 		this.nettyRequest = nettyRequest;
+		if (isHttp2) {
+			String uri = this.nettyRequest.headers().get("x-http2-path");
+			if (uri != null) {
+				this.nettyRequest.headers().remove("x-http2-path");
+				this.nettyRequest.setUri(uri);
+			}
+		}
 		this.nettyResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, headersFactory().withValidation(validateHeaders));
 		this.readTimeout = readTimeout;
 		this.requestTimeout = requestTimeout;
@@ -229,7 +244,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	protected HttpMessage newFullBodyMessage(ByteBuf body) {
-		HttpResponse res =
+		FullHttpResponse res =
 				new DefaultFullHttpResponse(version(), status(), body,
 						headersFactory().withValidation(validateHeaders), trailersFactory().withValidation(validateHeaders));
 
@@ -257,6 +272,11 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		}
 
 		res.headers().set(responseHeaders);
+
+		HttpHeaders trailerHeaders = prepareTrailerHeaders();
+		if (trailerHeaders != null) {
+			res.trailingHeaders().set(trailerHeaders);
+		}
 		return res;
 	}
 
@@ -378,8 +398,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
-	@Nullable
-	public String param(CharSequence key) {
+	public @Nullable String param(CharSequence key) {
 		Objects.requireNonNull(key, "key");
 		Map<String, String> params = null;
 		if (paramsResolver != null) {
@@ -389,13 +408,12 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
-	@Nullable
-	public Map<String, String> params() {
+	public @Nullable Map<String, String> params() {
 		return null != paramsResolver ? paramsResolver.apply(uri()) : null;
 	}
 
 	@Override
-	public HttpServerRequest paramsResolver(Function<? super String, Map<String, String>> paramsResolver) {
+	public HttpServerRequest paramsResolver(@Nullable Function<? super String, Map<String, String>> paramsResolver) {
 		this.paramsResolver = paramsResolver;
 		return this;
 	}
@@ -438,8 +456,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
-	@Nullable
-	public InetSocketAddress hostAddress() {
+	public @Nullable InetSocketAddress hostAddress() {
 		return this.connectionInfo.getHostAddress();
 	}
 
@@ -448,14 +465,12 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
-	@Nullable
-	public SocketAddress connectionHostAddress() {
+	public @Nullable SocketAddress connectionHostAddress() {
 		return channel().localAddress();
 	}
 
 	@Override
-	@Nullable
-	public InetSocketAddress remoteAddress() {
+	public @Nullable InetSocketAddress remoteAddress() {
 		return this.connectionInfo.getRemoteAddress();
 	}
 
@@ -464,8 +479,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	}
 
 	@Override
-	@Nullable
-	public SocketAddress connectionRemoteAddress() {
+	public @Nullable SocketAddress connectionRemoteAddress() {
 		return channel().remoteAddress();
 	}
 
@@ -504,12 +518,22 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	@Override
 	public String protocol() {
-		return nettyRequest.protocolVersion().text();
+		if (isHttp2) {
+			return H2.text();
+		}
+		else {
+			return nettyRequest.protocolVersion().text();
+		}
 	}
 
 	@Override
 	public ZonedDateTime timestamp() {
 		return timestamp;
+	}
+
+	@Override
+	public @Nullable String forwardedPrefix() {
+		return connectionInfo.getForwardedPrefix();
 	}
 
 	@Override
@@ -729,7 +753,12 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	@Override
 	public HttpVersion version() {
 		if (nettyRequest != null) {
-			return nettyRequest.protocolVersion();
+			if (isHttp2) {
+				return H2;
+			}
+			else {
+				return nettyRequest.protocolVersion();
+			}
 		}
 		throw new IllegalStateException("request not parsed");
 	}
@@ -741,7 +770,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			removeHandler(NettyPipeline.CompressionHandler);
 		}
 		else if (channel().pipeline().get(NettyPipeline.CompressionHandler) == null) {
-			SimpleCompressionHandler handler = new SimpleCompressionHandler();
+			SimpleCompressionHandler handler = SimpleCompressionHandler.create(compressionOptions);
 			handler.request = nettyRequest;
 			try {
 				addHandlerFirst(NettyPipeline.CompressionHandler, handler);
@@ -766,7 +795,13 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			handleLastHttpContent();
 		}
 		else if (msgClass == DefaultLastHttpContent.class) {
-			super.onInboundNext(ctx, msg);
+			DefaultLastHttpContent lastHttpContent = (DefaultLastHttpContent) msg;
+			if (lastHttpContent.content().readableBytes() > 0) {
+				super.onInboundNext(ctx, msg);
+			}
+			else {
+				lastHttpContent.release();
+			}
 			handleLastHttpContent();
 		}
 		else if (msgClass == DefaultHttpContent.class) {
@@ -798,10 +833,23 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 					channel().config().setAutoRead(true);
 					onInboundComplete();
 				}
+				else if (request.headers().contains(HttpHeaderNames.UPGRADE)) {
+					// HTTP/1.1 TLS Upgrade (RFC-2817) requests (GET/HEAD/OPTIONS) with empty / non-empty payload
+					stopReadTimeout();
+					//force auto read to enable more accurate close selection now inbound is done
+					channel().config().setAutoRead(true);
+					onInboundComplete();
+				}
 			}
 		}
 		else if (msg instanceof LastHttpContent) {
-			super.onInboundNext(ctx, msg);
+			LastHttpContent lastHttpContent = (LastHttpContent) msg;
+			if (lastHttpContent.content().readableBytes() > 0) {
+				super.onInboundNext(ctx, msg);
+			}
+			else {
+				lastHttpContent.release();
+			}
 			handleLastHttpContent();
 		}
 		else {
@@ -932,34 +980,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			f = channel().writeAndFlush(fullHttpResponse != null ? fullHttpResponse : newFullBodyMessage(EMPTY_BUFFER));
 		}
 		else if (markSentBody()) {
-			HttpHeaders trailerHeaders = null;
-			// https://datatracker.ietf.org/doc/html/rfc7230#section-4.1.2
-			// A trailer allows the sender to include additional fields at the end
-			// of a chunked message in order to supply metadata that might be
-			// dynamically generated while the message body is sent, such as a
-			// message integrity check, digital signature, or post-processing
-			// status.
-			if (trailerHeadersConsumer != null && isTransferEncodingChunked(nettyResponse)) {
-				// https://datatracker.ietf.org/doc/html/rfc7230#section-4.4
-				// When a message includes a message body encoded with the chunked
-				// transfer coding and the sender desires to send metadata in the form
-				// of trailer fields at the end of the message, the sender SHOULD
-				// generate a Trailer header field before the message body to indicate
-				// which fields will be present in the trailers.
-				String declaredHeaderNames = responseHeaders.get(HttpHeaderNames.TRAILER);
-				if (declaredHeaderNames != null) {
-					trailerHeaders = new TrailerHeaders(declaredHeaderNames);
-					try {
-						trailerHeadersConsumer.accept(trailerHeaders);
-					}
-					catch (IllegalArgumentException e) {
-						// A sender MUST NOT generate a trailer when header names are
-						// HttpServerOperations.TrailerHeaders.DISALLOWED_TRAILER_HEADER_NAMES
-						log.error(format(channel(), "Cannot apply trailer headers [{}]"), declaredHeaderNames, e);
-					}
-				}
-			}
-
+			HttpHeaders trailerHeaders = prepareTrailerHeaders();
 			f = channel().writeAndFlush(trailerHeaders != null && !trailerHeaders.isEmpty() ?
 					new DefaultLastHttpContent(Unpooled.buffer(0), trailerHeaders) :
 					EMPTY_LAST_CONTENT);
@@ -970,6 +991,31 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			return;
 		}
 		f.addListener(this);
+	}
+
+	@SuppressWarnings("ReferenceEquality")
+	private @Nullable HttpHeaders prepareTrailerHeaders() {
+		HttpHeaders trailerHeaders = null;
+		// https://datatracker.ietf.org/doc/html/rfc7230#section-4.1.2
+		// A trailer allows the sender to include additional fields at the end
+		// of a chunked message in order to supply metadata that might be
+		// dynamically generated while the message body is sent, such as a
+		// message integrity check, digital signature, or post-processing
+		// status.
+		// There is no requirement for chunked message when HTTP/2 and HTTP/3
+		boolean isNotHttp11 = version() != HttpVersion.HTTP_1_1;
+		if (trailerHeadersConsumer != null && (isNotHttp11 || isTransferEncodingChunked(nettyResponse))) {
+			trailerHeaders = new TrailerHeaders(isNotHttp11);
+			try {
+				trailerHeadersConsumer.accept(trailerHeaders);
+			}
+			catch (IllegalArgumentException e) {
+				// A sender MUST NOT generate a trailer when header names are
+				// HttpServerOperations.TrailerHeaders.DISALLOWED_TRAILER_HEADER_NAMES
+				log.error(format(channel(), "Cannot apply trailer headers"), e);
+			}
+		}
+		return trailerHeaders;
 	}
 
 	@Override
@@ -1033,7 +1079,9 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			responseHeaders.remove(HttpHeaderNames.TRANSFER_ENCODING);
 		}
 
-		return new DefaultFullHttpResponse(version(), status(), body, responseHeaders, trailersFactory().withValidation(validateHeaders).newHeaders());
+		HttpHeaders trailerHeaders = prepareTrailerHeaders();
+		return new DefaultFullHttpResponse(version(), status(), body, responseHeaders,
+				trailerHeaders != null ? trailerHeaders : trailersFactory().withValidation(validateHeaders).newHeaders());
 	}
 
 	static long requestsCounter(Channel channel) {
@@ -1135,6 +1183,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 	 */
 	@Override
 	protected void onOutboundError(Throwable err) {
+		channel().pipeline().fireUserEventTriggered(ErrorLogEvent.create(err));
 
 		if (!channel().isActive()) {
 			super.onOutboundError(err);
@@ -1199,6 +1248,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 								.doFinally(sig -> decoder.destroy())));
 	}
 
+	@SuppressWarnings("ReferenceEquality")
 	final Mono<Void> withWebsocketSupport(String url,
 			WebsocketServerSpec websocketServerSpec,
 			BiFunction<? super WebsocketInbound, ? super WebsocketOutbound, ? extends Publisher<Void>> websocketHandler) {
@@ -1206,13 +1256,20 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		Objects.requireNonNull(websocketHandler, "websocketHandler");
 		if (markSentHeaders()) {
 			isWebsocket = true;
-			WebsocketServerOperations ops = new WebsocketServerOperations(url, websocketServerSpec, this);
+			WebsocketServerOperations ops;
+			// ReferenceEquality is deliberate
+			if (version() == H2) {
+				ops = new Http2WebsocketServerOperations(url, websocketServerSpec, this);
+			}
+			else {
+				ops = new WebsocketServerOperations(url, websocketServerSpec, this);
+			}
 
 			return FutureMono.from(ops.handshakerResult)
 			                 .doOnEach(signal -> {
 			                     if (!signal.hasError() && (websocketServerSpec.protocols() == null || ops.selectedSubprotocol() != null)) {
 			                         websocketHandler.apply(ops, ops)
-			                                         .subscribe(new WebsocketSubscriber(ops, Context.of(signal.getContextView())));
+			                                         .subscribe(ops.websocketSubscriber(signal.getContextView()));
 			                     }
 			                 });
 		}
@@ -1224,11 +1281,17 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 	static final class WebsocketSubscriber implements CoreSubscriber<Void>, ChannelFutureListener {
 		final WebsocketServerOperations ops;
-		final Context                context;
+		final Context                   context;
+		final @Nullable ChannelFutureListener listener;
 
 		WebsocketSubscriber(WebsocketServerOperations ops, Context context) {
+			this(ops, context, null);
+		}
+
+		WebsocketSubscriber(WebsocketServerOperations ops, Context context, @Nullable ChannelFutureListener listener) {
 			this.ops = ops;
 			this.context = context;
+			this.listener = listener;
 		}
 
 		@Override
@@ -1253,9 +1316,9 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 
 		@Override
 		public void onComplete() {
-			if (ops.channel()
-			       .isActive()) {
-				ops.sendCloseNow(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE), this);
+			if (ops.channel().isActive()) {
+				ops.sendCloseNow(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE),
+						listener == null ? this : listener);
 			}
 		}
 
@@ -1285,7 +1348,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 				ZonedDateTime timestamp,
 				ConnectionInfo connectionInfo,
 				boolean validateHeaders) {
-			super(c, listener, nettyRequest, null, connectionInfo,
+			super(c, listener, nettyRequest, null, null, connectionInfo,
 					ServerCookieDecoder.STRICT, ServerCookieEncoder.STRICT, DEFAULT_FORM_DECODER_SPEC, httpMessageLogFactory, isHttp2,
 					null, null, null, secure, timestamp, validateHeaders);
 			this.customResponse = nettyResponse;
@@ -1325,7 +1388,7 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 		@SuppressWarnings("FutureReturnValueIgnored")
 		public void run() {
 			if (ctx.channel().isActive() && !(isInboundCancelled() || isInboundDisposed())) {
-				onInboundError(RequestTimeoutException.INSTANCE);
+				onInboundError(RequestTimeoutException.requestTimedOut());
 				//"FutureReturnValueIgnored" this is deliberate
 				ctx.close();
 			}
@@ -1360,41 +1423,28 @@ class HttpServerOperations extends HttpOperations<HttpServerRequest, HttpServerR
 			DISALLOWED_TRAILER_HEADER_NAMES.add("warning");
 		}
 
-		TrailerHeaders(String declaredHeaderNames) {
-			super(true, new TrailerNameValidator(filterHeaderNames(declaredHeaderNames)));
-		}
-
-		static Set<String> filterHeaderNames(String declaredHeaderNames) {
-			Objects.requireNonNull(declaredHeaderNames, "declaredHeaderNames");
-			Set<String> result = new HashSet<>();
-			String[] names = declaredHeaderNames.split(",", -1);
-			for (String name : names) {
-				String trimmedStr = name.trim();
-				if (trimmedStr.isEmpty() ||
-						DISALLOWED_TRAILER_HEADER_NAMES.contains(trimmedStr.toLowerCase(Locale.ENGLISH))) {
-					continue;
-				}
-				result.add(trimmedStr);
-			}
-			return result;
+		TrailerHeaders(boolean isNotHttp11) {
+			super(true, new TrailerNameValidator(isNotHttp11));
 		}
 
 		static final class TrailerNameValidator implements DefaultHeaders.NameValidator<CharSequence> {
 
-			/**
-			 * Contains the headers names specified with {@link HttpHeaderNames#TRAILER}.
-			 */
-			final Set<String> declaredHeaderNames;
+			final boolean isNotHttp11;
 
-			TrailerNameValidator(Set<String> declaredHeaderNames) {
-				this.declaredHeaderNames = declaredHeaderNames;
+			TrailerNameValidator(boolean isNotHttp11) {
+				this.isNotHttp11 = isNotHttp11;
 			}
 
 			@Override
 			public void validateName(CharSequence name) {
-				if (!declaredHeaderNames.contains(name.toString())) {
-					throw new IllegalArgumentException("Trailer header name [" + name +
-							"] not declared with [Trailer] header, or it is not a valid trailer header name");
+				String trimmedStr = name.toString().trim();
+				if (trimmedStr.isEmpty() || DISALLOWED_TRAILER_HEADER_NAMES.contains(trimmedStr.toLowerCase(Locale.ENGLISH))) {
+					throw new IllegalArgumentException("Header [" + name + "] is not allowed as a trailer header");
+				}
+				// https://www.rfc-editor.org/rfc/rfc9113.html#name-http-message-framing
+				// Trailers MUST NOT include pseudo-header fields
+				else if (isNotHttp11 && Http2Headers.PseudoHeaderName.hasPseudoHeaderFormat(trimmedStr)) {
+					throw new IllegalArgumentException("Pseudo header [" + name + "] is not allowed as a trailer header");
 				}
 			}
 		}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,7 @@
 package reactor.netty.http.server.logging;
 
 import io.netty.channel.ChannelHandler;
-import reactor.util.annotation.Incubating;
-import reactor.util.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import java.util.function.Function;
 
@@ -39,7 +38,6 @@ public enum AccessLogHandlerFactory {
 	/**
 	 * HTTP/3.0.
 	 */
-	@Incubating
 	H3;
 
 	/**
@@ -48,7 +46,7 @@ public enum AccessLogHandlerFactory {
 	 * @param accessLog apply an {@link AccessLog} by an {@link AccessLogArgProvider}
 	 * @return the access log handler
 	 */
-	public ChannelHandler create(@Nullable Function<AccessLogArgProvider, AccessLog> accessLog) {
+	public ChannelHandler create(@Nullable Function<AccessLogArgProvider, @Nullable AccessLog> accessLog) {
 		switch (this) {
 			case H3:
 				return new AccessLogHandlerH3(accessLog);

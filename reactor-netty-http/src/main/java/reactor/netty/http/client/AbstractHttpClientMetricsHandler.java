@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,8 +24,8 @@ import io.netty.channel.ChannelPromise;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponse;
 import io.netty.handler.codec.http.LastHttpContent;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.channel.ChannelOperations;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.ContextView;
 import reactor.util.Logger;
 import reactor.util.Loggers;
@@ -34,6 +34,7 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.function.Function;
 
+import static java.util.Objects.requireNonNull;
 import static reactor.netty.ReactorNetty.format;
 
 /**
@@ -46,16 +47,16 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	private static final Logger log = Loggers.getLogger(AbstractHttpClientMetricsHandler.class);
 
-	final SocketAddress proxyAddress;
+	final @Nullable SocketAddress proxyAddress;
 	final SocketAddress remoteAddress;
 
-	String path;
+	@Nullable String path;
 
-	String method;
+	@Nullable String method;
 
-	String status;
+	@Nullable String status;
 
-	ContextView contextView;
+	@Nullable ContextView contextView;
 
 
 	long dataReceived;
@@ -67,7 +68,7 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	long dataSentTime;
 
-	final Function<String, String> uriTagValue;
+	final @Nullable Function<String, String> uriTagValue;
 
 	int lastReadSeq;
 
@@ -196,7 +197,7 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 		startWrite(request, ctx.channel(), remoteAddress);
 	}
 
-	private long extractProcessedDataFromBuffer(Object msg) {
+	private static long extractProcessedDataFromBuffer(Object msg) {
 		if (msg instanceof ByteBufHolder) {
 			return ((ByteBufHolder) msg).content().readableBytes();
 		}
@@ -219,7 +220,7 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	protected void recordRead(Channel channel, SocketAddress address) {
 		if (proxyAddress == null) {
-			recorder().recordDataReceivedTime(address, path, method, status,
+			recorder().recordDataReceivedTime(address, requireNonNull(path), requireNonNull(method), requireNonNull(status),
 					Duration.ofNanos(System.nanoTime() - dataReceivedTime));
 
 			recorder().recordResponseTime(address, path, method, status,
@@ -228,7 +229,7 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 			recorder().recordDataReceived(address, path, dataReceived);
 		}
 		else {
-			recorder().recordDataReceivedTime(address, proxyAddress, path, method, status,
+			recorder().recordDataReceivedTime(address, proxyAddress, requireNonNull(path), requireNonNull(method), requireNonNull(status),
 					Duration.ofNanos(System.nanoTime() - dataReceivedTime));
 
 			recorder().recordResponseTime(address, proxyAddress, path, method, status,
@@ -240,13 +241,13 @@ abstract class AbstractHttpClientMetricsHandler extends ChannelDuplexHandler {
 
 	protected void recordWrite(SocketAddress address) {
 		if (proxyAddress == null) {
-			recorder().recordDataSentTime(address, path, method,
+			recorder().recordDataSentTime(address, requireNonNull(path), requireNonNull(method),
 					Duration.ofNanos(System.nanoTime() - dataSentTime));
 
 			recorder().recordDataSent(address, path, dataSent);
 		}
 		else {
-			recorder().recordDataSentTime(address, proxyAddress, path, method,
+			recorder().recordDataSentTime(address, proxyAddress, requireNonNull(path), requireNonNull(method),
 					Duration.ofNanos(System.nanoTime() - dataSentTime));
 
 			recorder().recordDataSent(address, proxyAddress, path, dataSent);

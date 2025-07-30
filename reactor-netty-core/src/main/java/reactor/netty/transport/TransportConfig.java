@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@ import io.netty.channel.EventLoopGroup;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.util.AttributeKey;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.ChannelPipelineConfigurer;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
@@ -44,7 +45,6 @@ import reactor.netty.internal.util.Metrics;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import static java.util.Objects.requireNonNull;
 import static reactor.netty.ReactorNetty.format;
@@ -75,8 +75,7 @@ public abstract class TransportConfig {
 	 *
 	 * @return the {@link SocketAddress} supplier
 	 */
-	@Nullable
-	public final Supplier<? extends SocketAddress> bindAddress() {
+	public final @Nullable Supplier<? extends SocketAddress> bindAddress() {
 		return this.bindAddress;
 	}
 
@@ -100,8 +99,7 @@ public abstract class TransportConfig {
 	 *
 	 * @return the configured {@link ChannelGroup} or null
 	 */
-	@Nullable
-	public final ChannelGroup channelGroup() {
+	public final @Nullable ChannelGroup channelGroup() {
 		return channelGroup;
 	}
 
@@ -147,9 +145,9 @@ public abstract class TransportConfig {
 	}
 
 	/**
-	 * Return {@code true} if prefer native event loop and channel factory (e.g. epoll or kqueue).
+	 * Return {@code true} if prefer native event loop and channel factory (e.g. epoll, io_uring or kqueue).
 	 *
-	 * @return {@code true} if prefer native event loop and channel factory (e.g. epoll or kqueue)
+	 * @return {@code true} if prefer native event loop and channel factory (e.g. epoll, io_uring or kqueue)
 	 */
 	public final boolean isPreferNative() {
 		return this.preferNative;
@@ -160,8 +158,7 @@ public abstract class TransportConfig {
 	 *
 	 * @return the configured {@link LoggingHandler} or null
 	 */
-	@Nullable
-	public final LoggingHandler loggingHandler() {
+	public final @Nullable LoggingHandler loggingHandler() {
 		return loggingHandler;
 	}
 
@@ -179,8 +176,7 @@ public abstract class TransportConfig {
 	 *
 	 * @return the configured metrics recorder {@link ChannelMetricsRecorder} or null
 	 */
-	@Nullable
-	public final Supplier<? extends ChannelMetricsRecorder> metricsRecorder() {
+	public final @Nullable Supplier<? extends ChannelMetricsRecorder> metricsRecorder() {
 		return this.metricsRecorder != null ? () -> this.metricsRecorder : null;
 	}
 
@@ -199,16 +195,16 @@ public abstract class TransportConfig {
 
 	// Protected/Package private write API
 
-	Map<AttributeKey<?>, ?>                    attrs;
-	Supplier<? extends SocketAddress>          bindAddress;
-	ChannelGroup                               channelGroup;
-	ChannelPipelineConfigurer                  doOnChannelInit;
-	LoggingHandler                             loggingHandler;
-	LoopResources                              loopResources;
-	ChannelMetricsRecorder                     metricsRecorder;
-	ConnectionObserver                         observer;
-	Map<ChannelOption<?>, ?>                   options;
-	boolean                                    preferNative;
+	Map<AttributeKey<?>, ?>                     attrs;
+	@Nullable Supplier<? extends SocketAddress> bindAddress;
+	@Nullable ChannelGroup                      channelGroup;
+	ChannelPipelineConfigurer                   doOnChannelInit;
+	@Nullable LoggingHandler                    loggingHandler;
+	@Nullable LoopResources                     loopResources;
+	@Nullable ChannelMetricsRecorder            metricsRecorder;
+	ConnectionObserver                          observer;
+	Map<ChannelOption<?>, ?>                    options;
+	boolean                                     preferNative;
 
 	/**
 	 * Default TransportConfig with options.
@@ -336,7 +332,7 @@ public abstract class TransportConfig {
 		this.metricsRecorder = metricsRecorderSupplier != null ? metricsRecorderSupplier.get() : null;
 	}
 
-	protected ChannelMetricsRecorder metricsRecorderInternal() {
+	protected @Nullable ChannelMetricsRecorder metricsRecorderInternal() {
 		return metricsRecorder;
 	}
 
@@ -373,7 +369,7 @@ public abstract class TransportConfig {
 		final TransportConfig config;
 		final ConnectionObserver connectionObserver;
 		final boolean onServer;
-		final SocketAddress remoteAddress;
+		final @Nullable SocketAddress remoteAddress;
 
 		TransportChannelInitializer(TransportConfig config, ConnectionObserver connectionObserver,
 				@Nullable SocketAddress remoteAddress, boolean onServer) {

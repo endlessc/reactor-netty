@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,11 +36,13 @@ import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.codec.http2.HttpConversionUtil;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.ReadTimeoutException;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
 import org.assertj.core.api.Assertions;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -67,13 +69,11 @@ import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.SslProvider.ProtocolSslContextSpec;
 import reactor.netty.transport.AddressUtils;
 import reactor.test.StepVerifier;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 import reactor.util.context.ContextView;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -133,7 +133,7 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 
 	final Flux<ByteBuf> body = ByteBufFlux.fromString(Flux.just("Hello", " ", "World", "!")).delayElements(Duration.ofMillis(10));
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 	static Http11SslContextSpec serverCtx11;
 	static Http2SslContextSpec serverCtx2;
 	static Http11SslContextSpec clientCtx11;
@@ -149,12 +149,12 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	}
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
+	static void createSelfSignedCertificate() throws Exception {
 		Assertions.setMaxStackTraceElementsDisplayed(100);
-		ssc = new SelfSignedCertificate();
-		serverCtx11 = Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
+		serverCtx11 = Http11SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem())
 		                                  .configure(builder -> builder.sslProvider(SslProvider.JDK));
-		serverCtx2 = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())
+		serverCtx2 = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem())
 		                                .configure(builder -> builder.sslProvider(SslProvider.JDK));
 		clientCtx11 = Http11SslContextSpec.forClient()
 		                                  .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE)
@@ -228,6 +228,10 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 					.block(Duration.ofSeconds(30));
 		}
 
+		Metrics.removeRegistry(registry);
+		registry.clear();
+		registry.close();
+
 		// In case the ServerCloseHandler is registered on the server, make sure client socket is closed on the server side
 		assertThat(ServerCloseHandler.INSTANCE.awaitClientClosedOnServer()).as("awaitClientClosedOnServer timeout").isTrue();
 
@@ -240,10 +244,6 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 			group.close()
 			     .get(5, TimeUnit.SECONDS);
 		}
-
-		Metrics.removeRegistry(registry);
-		registry.clear();
-		registry.close();
 	}
 
 	@ParameterizedTest
@@ -411,13 +411,13 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 		List<HttpProtocol> protocols = Arrays.asList(clientProtocols);
 		int[] numWrites = new int[]{5, 7};
 		int[] numReads = new int[]{1, 2};
-		int[] bytesWrite = new int[]{106, 122};
+		int[] bytesWrite = new int[]{103, 118};
 		int[] bytesRead = new int[]{37, 48};
 		int connIndex = 1;
 		if ((serverProtocols.length == 1 && serverProtocols[0] == HttpProtocol.HTTP11) ||
 				(clientProtocols.length == 1 && clientProtocols[0] == HttpProtocol.HTTP11)) {
 			numWrites = new int[]{1, 2};
-			bytesWrite = new int[]{123, 246};
+			bytesWrite = new int[]{104, 208};
 			bytesRead = new int[]{64, 128};
 			connIndex = 2;
 		}
@@ -425,7 +425,7 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 				Arrays.equals(clientProtocols, new HttpProtocol[]{HttpProtocol.H2C, HttpProtocol.HTTP11})) {
 			numWrites = new int[]{4, 6};
 			numReads = new int[]{2, 3};
-			bytesWrite = new int[]{287, 345};
+			bytesWrite = new int[]{268, 323};
 			bytesRead = new int[]{108, 119};
 		}
 		else if (protocols.contains(HttpProtocol.H2) || protocols.contains(HttpProtocol.H2C)) {
@@ -1057,8 +1057,8 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 
 	@ParameterizedTest
 	@MethodSource("httpCompatibleProtocols")
-	void testIssue3060ConnectTimeoutException(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols,
-			@Nullable ProtocolSslContextSpec serverCtx, @Nullable ProtocolSslContextSpec clientCtx) throws Exception {
+	void testIssue3060ConnectTimeoutException(@SuppressWarnings("unused") HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols,
+			@SuppressWarnings("unused") @Nullable ProtocolSslContextSpec serverCtx, @Nullable ProtocolSslContextSpec clientCtx) throws Exception {
 		CountDownLatch latch = new CountDownLatch(1);
 		customizeClientOptions(httpClient, clientCtx, clientProtocols)
 		        .remoteAddress(() -> new InetSocketAddress("1.1.1.1", 11111))
@@ -1187,7 +1187,7 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 		}
 	}
 
-	private void checkServerConnectionsRecorder(HttpServerRequest request) {
+	private static void checkServerConnectionsRecorder(HttpServerRequest request) {
 		try {
 			String address = formatSocketAddress(request.hostAddress());
 			boolean isHttp2 = request.requestHeaders().contains(HttpConversionUtil.ExtensionHeaderNames.SCHEME.text());
@@ -1266,7 +1266,7 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 	}
 
 	private void checkExpectationsNonExisting(String serverAddress, int connIndex, int index, boolean checkTls,
-			int numWrites, @SuppressWarnings("unused")int numReads, double expectedSentAmount,
+			int numWrites, @SuppressWarnings("unused") int numReads, double expectedSentAmount,
 			@SuppressWarnings("unused") double expectedReceivedAmount) {
 		String uri = "/3";
 		String[] timerTags1 = new String[] {URI, uri, METHOD, "GET", STATUS, "404"};
@@ -1367,17 +1367,17 @@ class HttpMetricsHandlerTests extends BaseHttpTest {
 		assertCounter(registry, CLIENT_ERRORS, summaryTags1).isNull();
 		assertDistributionSummary(registry, CLIENT_DATA_SENT, summaryTags2)
 				.hasCountGreaterThanOrEqualTo(1)
-				.hasTotalAmountGreaterThanOrEqualTo(118);
+				.hasTotalAmountGreaterThanOrEqualTo(99);
 		assertCounter(registry, CLIENT_ERRORS, summaryTags2).isNull();
 	}
 
 	@SuppressWarnings("deprecation")
-	HttpServer customizeServerOptions(HttpServer httpServer, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
+	static HttpServer customizeServerOptions(HttpServer httpServer, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
 		return ctx == null ? httpServer.protocol(protocols) : httpServer.protocol(protocols).secure(spec -> spec.sslContext(ctx));
 	}
 
 	@SuppressWarnings("deprecation")
-	HttpClient customizeClientOptions(HttpClient httpClient, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
+	static HttpClient customizeClientOptions(HttpClient httpClient, @Nullable ProtocolSslContextSpec ctx, HttpProtocol[] protocols) {
 		return ctx == null ? httpClient.protocol(protocols) : httpClient.protocol(protocols).secure(spec -> spec.sslContext(ctx));
 	}
 

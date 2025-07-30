@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.logging.ByteBufFormat;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.ChannelOperationsId;
 import reactor.netty.Connection;
 
@@ -51,7 +52,7 @@ import static reactor.netty.transport.logging.AdvancedByteBufFormat.TEXTUAL;
 final class ReactorNettyLoggingHandler extends LoggingHandler {
 
 	private final AdvancedByteBufFormat byteBufFormat;
-	private final Charset charset;
+	private final @Nullable Charset charset;
 	private final String name;
 
 	/**
@@ -166,7 +167,7 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 				.toString();
 	}
 
-	private String channelString(Channel channel) {
+	private static String channelString(Channel channel) {
 		String channelStr;
 		StringBuilder result;
 		Connection connection = Connection.from(channel);
@@ -298,7 +299,7 @@ final class ReactorNettyLoggingHandler extends LoggingHandler {
 		}
 	}
 
-	private String formatSimple(ChannelHandlerContext ctx, String eventName, Object msg) {
+	private static String formatSimple(ChannelHandlerContext ctx, String eventName, Object msg) {
 		String chStr = channelString(ctx.channel());
 		String msgStr = String.valueOf(msg);
 		return new StringBuilder(chStr.length() + 1 + eventName.length() + 2 + msgStr.length())

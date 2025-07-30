@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,44 +20,79 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
-import io.netty.incubator.codec.quic.QuicClientCodecBuilder;
-import io.netty.incubator.codec.quic.QuicSslContext;
+import io.netty.handler.codec.quic.QuicClientCodecBuilder;
+import io.netty.handler.codec.quic.QuicSslContext;
+import io.netty.handler.codec.quic.QuicSslEngine;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelOperations;
 import reactor.netty.http.Http3SettingsSpec;
+import reactor.netty.tcp.SslProvider;
 
+import javax.net.ssl.SNIHostName;
+import javax.net.ssl.SNIServerName;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeUnit;
 
-import static io.netty.incubator.codec.http3.Http3.newQuicClientCodecBuilder;
+import static io.netty.handler.codec.http3.Http3.newQuicClientCodecBuilder;
 
 final class Http3ChannelInitializer extends ChannelInitializer<Channel> {
 
-	final Http3SettingsSpec           http3Settings;
-	final ChannelHandler              loggingHandler;
+	final @Nullable Http3SettingsSpec http3Settings;
+	final @Nullable ChannelHandler    loggingHandler;
 	final ConnectionObserver          obs;
 	final ChannelOperations.OnSetup   opsFactory;
 	final ChannelInitializer<Channel> quicChannelInitializer;
-	final QuicSslContext              quicSslContext;
+	final @Nullable SocketAddress     remoteAddress;
+	final @Nullable SslProvider       sslProvider;
 
-	Http3ChannelInitializer(HttpClientConfig config, ChannelInitializer<Channel> quicChannelInitializer, ConnectionObserver obs) {
+	Http3ChannelInitializer(HttpClientConfig config, ChannelInitializer<Channel> quicChannelInitializer, ConnectionObserver obs,
+			@Nullable SocketAddress remoteAddress) {
 		this.http3Settings = config.http3SettingsSpec();
 		this.loggingHandler = config.loggingHandler();
 		this.obs = obs;
 		this.opsFactory = config.channelOperationsProvider();
 		this.quicChannelInitializer = quicChannelInitializer;
-		if (config.sslProvider.getSslContext() instanceof QuicSslContext) {
-			this.quicSslContext = (QuicSslContext) config.sslProvider.getSslContext();
-		}
-		else {
-			throw new IllegalArgumentException("The configured SslContext is not QuicSslContext");
-		}
+		this.remoteAddress = remoteAddress;
+		this.sslProvider = config.sslProvider;
 	}
 
 	@Override
 	protected void initChannel(Channel channel) {
-		QuicClientCodecBuilder quicClientCodecBuilder = newQuicClientCodecBuilder().sslContext(quicSslContext);
+		QuicClientCodecBuilder quicClientCodecBuilder = newQuicClientCodecBuilder();
+
+		quicClientCodecBuilder.sslEngineProvider(ch -> {
+			QuicSslContext quicSslContext;
+			if (sslProvider != null && sslProvider.getSslContext() instanceof QuicSslContext) {
+				quicSslContext = (QuicSslContext) sslProvider.getSslContext();
+			}
+			else {
+				throw new IllegalArgumentException("The configured SslContext is not QuicSslContext");
+			}
+
+			QuicSslEngine engine;
+			if (remoteAddress instanceof InetSocketAddress) {
+				InetSocketAddress sniInfo = (InetSocketAddress) remoteAddress;
+				if (sslProvider.getServerNames() != null && !sslProvider.getServerNames().isEmpty()) {
+					SNIServerName serverName = sslProvider.getServerNames().get(0);
+					String serverNameStr = serverName instanceof SNIHostName ? ((SNIHostName) serverName).getAsciiName() :
+							new String(serverName.getEncoded(), StandardCharsets.US_ASCII);
+					engine = quicSslContext.newEngine(ch.alloc(), serverNameStr, sniInfo.getPort());
+				}
+				else {
+					engine = quicSslContext.newEngine(ch.alloc(), sniInfo.getHostString(), sniInfo.getPort());
+				}
+			}
+			else {
+				engine = quicSslContext.newEngine(ch.alloc());
+			}
+
+			return engine;
+		});
 
 		if (http3Settings != null) {
 			quicClientCodecBuilder.initialMaxData(http3Settings.maxData())

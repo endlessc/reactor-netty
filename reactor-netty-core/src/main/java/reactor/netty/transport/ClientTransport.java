@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,15 +16,19 @@
 package reactor.netty.transport;
 
 import java.net.SocketAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.Properties;
 import java.util.function.BiConsumer;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.NoopAddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
@@ -44,6 +48,28 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 		extends Transport<T, CONF> {
 
 	/**
+	 * An interface for selecting resolved addresses based on configuration and available socket addresses.
+	 *
+	 * @param <CONF> client configuration implementation
+	 * @since 1.2.5
+	 */
+	public interface ResolvedAddressSelector<CONF>
+			extends BiFunction<CONF, List<? extends SocketAddress>, @Nullable List<? extends SocketAddress>> {
+
+		/**
+		 * Selects the resolved addresses to be used for a connection.
+		 * If empty list is returned or {@code null}, the connection establishment will fail with
+		 * {@link UnknownHostException}
+		 *
+		 * @param config client configuration implementation
+		 * @param resolvedAddresses the list of resolved socket addresses
+		 * @return the selected list of socket addresses
+		 */
+		@Override
+		@Nullable List<? extends SocketAddress> apply(CONF config, List<? extends SocketAddress> resolvedAddresses);
+	}
+
+	/**
 	 * Connect the {@link ClientTransport} and return a {@link Mono} of {@link Connection}. If
 	 * {@link Mono} is cancelled, the underlying connection will be aborted. Once the
 	 * {@link Connection} has been emitted and is not necessary anymore, disposing must be
@@ -52,7 +78,22 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 	 * @return a {@link Mono} of {@link Connection}
 	 */
 	protected Mono<? extends Connection> connect() {
-		CONF config = configuration();
+		CONF originalConfiguration = configuration();
+		CONF config;
+		if (originalConfiguration.proxyProvider() == null) {
+			Supplier<ProxyProvider> proxyProviderSupplier = originalConfiguration.proxyProviderSupplier();
+			if (proxyProviderSupplier != null) {
+				T dup = duplicate();
+				config = dup.configuration();
+				config.proxyProvider(proxyProviderSupplier.get());
+			}
+			else {
+				config = originalConfiguration;
+			}
+		}
+		else {
+			config = originalConfiguration;
+		}
 
 		ConnectionObserver observer = config.defaultConnectionObserver().then(config.observer);
 
@@ -60,8 +101,9 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 
 		Mono<? extends Connection> mono = config.connectionProvider()
 		                                        .acquire(config, observer, config.remoteAddress, resolver);
-		if (config.doOnConnect != null) {
-			mono = mono.doOnSubscribe(s -> config.doOnConnect.accept(config));
+		Consumer<? super CONF> doOnConnect = config.doOnConnect;
+		if (doOnConnect != null) {
+			mono = mono.doOnSubscribe(s -> doOnConnect.accept(config));
 		}
 		return mono;
 	}
@@ -90,7 +132,8 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 			return Objects.requireNonNull(connect().block(timeout), "aborted");
 		}
 		catch (IllegalStateException e) {
-			if (e.getMessage().contains("blocking read")) {
+			String message = e.getMessage();
+			if (message != null && message.contains("blocking read")) {
 				throw new IllegalStateException(getClass().getSimpleName() + " couldn't be started within " + timeout.toMillis() + "ms");
 			}
 			throw e;
@@ -212,6 +255,7 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 		if (configuration().hasProxy()) {
 			T dup = duplicate();
 			dup.configuration().proxyProvider = null;
+			dup.configuration().proxyProviderSupplier = null;
 			if (dup.configuration().resolver == NoopAddressResolverGroup.INSTANCE) {
 				dup.configuration().resolver = null;
 			}
@@ -242,13 +286,25 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 		Objects.requireNonNull(proxyOptions, "proxyOptions");
 		ProxyProvider.Build builder = (ProxyProvider.Build) ProxyProvider.builder();
 		proxyOptions.accept(builder);
-		return proxyWithProxyProvider(builder.build());
+		return proxyWithProxyProviderSupplier(builder::build);
 	}
 
 	final T proxyWithProxyProvider(ProxyProvider proxy) {
 		T dup = duplicate();
 		CONF conf = dup.configuration();
 		conf.proxyProvider = proxy;
+		conf.proxyProviderSupplier = null;
+		if (conf.resolver == null) {
+			conf.resolver = NoopAddressResolverGroup.INSTANCE;
+		}
+		return dup;
+	}
+
+	final T proxyWithProxyProviderSupplier(Supplier<ProxyProvider> proxy) {
+		T dup = duplicate();
+		CONF conf = dup.configuration();
+		conf.proxyProvider = null;
+		conf.proxyProviderSupplier = proxy;
 		if (conf.resolver == null) {
 			conf.resolver = NoopAddressResolverGroup.INSTANCE;
 		}
@@ -299,6 +355,21 @@ public abstract class ClientTransport<T extends ClientTransport<T, CONF>,
 		Objects.requireNonNull(remoteAddressSupplier, "remoteAddressSupplier");
 		T dup = duplicate();
 		dup.configuration().remoteAddress = remoteAddressSupplier;
+		return dup;
+	}
+
+	/**
+	 * Determines the resolved addresses to which this client should connect for each subscription.
+	 *
+	 * @param resolvedAddressesSelector a {@link ResolvedAddressSelector} invoked after resolving
+	 * the remote address to determine which addresses should be used for the connection.
+	 * @return a new {@link ClientTransport}
+	 * @since 1.2.5
+	 */
+	public T resolvedAddressesSelector(ResolvedAddressSelector<? super CONF> resolvedAddressesSelector) {
+		Objects.requireNonNull(resolvedAddressesSelector, "resolvedAddressesSelector");
+		T dup = duplicate();
+		dup.configuration().resolvedAddressesSelector = resolvedAddressesSelector;
 		return dup;
 	}
 

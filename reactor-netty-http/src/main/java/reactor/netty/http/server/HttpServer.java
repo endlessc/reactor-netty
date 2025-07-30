@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ import io.netty.handler.codec.http.cookie.ServerCookieEncoder;
 import io.netty.handler.ssl.JdkSslContext;
 import io.netty.handler.ssl.OpenSsl;
 import io.netty.handler.ssl.SslContext;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
@@ -45,17 +45,21 @@ import reactor.netty.http.Http3SettingsSpec;
 import reactor.netty.http.HttpProtocol;
 import reactor.netty.http.logging.HttpMessageLogFactory;
 import reactor.netty.http.logging.ReactorNettyHttpMessageLogFactory;
+import reactor.netty.http.server.compression.HttpCompressionOption;
+import reactor.netty.http.server.compression.HttpCompressionOptionsSpec;
 import reactor.netty.http.server.logging.AccessLog;
 import reactor.netty.http.server.logging.AccessLogArgProvider;
 import reactor.netty.http.server.logging.AccessLogFactory;
+import reactor.netty.http.server.logging.error.ErrorLog;
+import reactor.netty.http.server.logging.error.ErrorLogArgProvider;
+import reactor.netty.http.server.logging.error.ErrorLogEvent;
+import reactor.netty.http.server.logging.error.ErrorLogFactory;
 import reactor.netty.internal.util.Metrics;
 import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpServer;
 import reactor.netty.transport.ServerTransport;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Incubating;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
@@ -261,7 +265,7 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * with the {@link AccessLogFactory} interface instead. This method will be removed in version 1.2.0.
 	 */
 	@Deprecated
-	public final HttpServer accessLog(Function<AccessLogArgProvider, AccessLog> accessLogFactory) {
+	public final HttpServer accessLog(Function<AccessLogArgProvider, @Nullable AccessLog> accessLogFactory) {
 		Objects.requireNonNull(accessLogFactory, "accessLogFactory");
 		HttpServer dup = duplicate();
 		dup.configuration().accessLog = accessLogFactory;
@@ -301,6 +305,7 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	/**
 	 * Specifies whether GZip response compression is enabled if the client request
 	 * presents accept encoding.
+	 * Default compression level is 6.
 	 *
 	 * @param compressionEnabled if true GZip response compression
 	 * is enabled if the client request presents accept encoding, otherwise disabled.
@@ -333,6 +338,41 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		}
 		HttpServer dup = duplicate();
 		dup.configuration().minCompressionSize = minResponseSize;
+		return dup;
+	}
+
+	/**
+	 * Specifies GZip, Deflate, ZSTD compression option
+	 * with {@link reactor.netty.http.server.compression.GzipOption}, {@link reactor.netty.http.server.compression.DeflateOption},
+	 * {@link reactor.netty.http.server.compression.ZstdOption}.
+	 *
+	 * @param compressionOptions configures {@link HttpCompressionOption} after enable compress
+	 *
+	 * <pre>
+	 * {@code
+	 * HttpServer.create()
+	 *           .compress(true)
+	 *           .compressOptions(
+	 *                   GzipOption.builder()
+	 *                             .compressionLevel(6)
+	 *                             .windowBits(15)
+	 *                             .memoryLevel(8)
+	 *                             .build(),
+	 *                   ZstdOption.builder()
+	 *                             .compressionLevel(3)
+	 *                             .build()
+	 *           )
+	 *           .bindNow();
+	 * }
+	 * </pre>
+	 * @return a new {@link HttpServer}
+	 * @since 1.2.3
+	 */
+	public final HttpServer compressOptions(HttpCompressionOption... compressionOptions) {
+		Objects.requireNonNull(compressionOptions, "compressionOptions");
+
+		HttpServer dup = duplicate();
+		dup.configuration().compressionOptions = new HttpCompressionOptionsSpec(compressionOptions);
 		return dup;
 	}
 
@@ -374,6 +414,77 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		HttpServer dup = duplicate();
 		dup.configuration().cookieEncoder = encoder;
 		dup.configuration().cookieDecoder = decoder;
+		return dup;
+	}
+
+	/**
+	 * Enable or disable the error log. If enabled, the default log system will be used.
+	 * <p>
+	 * Example:
+	 * <pre>
+	 * {@code
+	 * HttpServer.create()
+	 *           .port(8080)
+	 *           .route(r -> r.get("/hello",
+	 *                   (req, res) -> res.header(CONTENT_TYPE, TEXT_PLAIN)
+	 *                                    .sendString(Mono.just("Hello World!"))))
+	 *           .errorLog(true)
+	 *           .bindNow()
+	 *           .onDispose()
+	 *           .block();
+	 * }
+	 * </pre>
+	 * <p>
+	 *
+	 * Note that this method takes precedence over the {@value reactor.netty.ReactorNetty#ERROR_LOG_ENABLED} system property.
+	 * By default, error logs are formatted as {@code [{datetime}] [pid {pid}] [client {remote address}] {error message}}.
+	 *
+	 * @param enable enable or disable the error log
+	 * @return a new {@link HttpServer}
+	 * @since 1.2.6
+	 */
+	public final HttpServer errorLog(boolean enable) {
+		HttpServer dup = duplicate();
+		dup.configuration().errorLog = null;
+		dup.configuration().errorLogEnabled = enable;
+		return dup;
+	}
+
+	/**
+	 * Enable or disable the error log and customize it through an {@link ErrorLogFactory}.
+	 * <p>
+	 * Example:
+	 * <pre>
+	 * {@code
+	 * HttpServer.create()
+	 *           .port(8080)
+	 *           .route(r -> r.get("/hello",
+	 *                   (req, res) -> res.header(CONTENT_TYPE, TEXT_PLAIN)
+	 *                                    .sendString(Mono.just("Hello World!"))))
+	 *           .errorLog(true, ErrorLogFactory.createFilter(
+	 *                   args -> args.cause() instanceof RuntimeException,
+	 *                   args -> ErrorLog.create("host-name={}", args.httpServerInfos().hostName())))
+	 *           .bindNow()
+	 *           .onDispose()
+	 *           .block();
+	 * }
+	 * </pre>
+	 * <p>
+	 * The {@link ErrorLogFactory} class offers several helper methods to generate such a function,
+	 * notably if one wants to {@link ErrorLogFactory#createFilter(Predicate) filter} some exceptions out of the error log.
+	 * <p>
+	 * Note that this method takes precedence over the {@value reactor.netty.ReactorNetty#ERROR_LOG_ENABLED} system property.
+	 *
+	 * @param enable enable or disable the error log
+	 * @param errorLogFactory the {@link ErrorLogFactory} that creates an {@link ErrorLog} given an {@link ErrorLogArgProvider}
+	 * @return a new {@link HttpServer}
+	 * @since 1.2.6
+	 */
+	public final HttpServer errorLog(boolean enable, ErrorLogFactory errorLogFactory) {
+		Objects.requireNonNull(errorLogFactory, "errorLogFactory");
+		HttpServer dup = duplicate();
+		dup.configuration().errorLog = enable ? errorLogFactory : null;
+		dup.configuration().errorLogEnabled = enable;
 		return dup;
 	}
 
@@ -465,12 +576,11 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 * @return a new {@link HttpServer}
 	 * @since 1.2.0
 	 */
-	@Incubating
 	public final HttpServer http3Settings(Consumer<Http3SettingsSpec.Builder> http3Settings) {
 		Objects.requireNonNull(http3Settings, "http3Settings");
 		if (!isHttp3Available()) {
 			throw new UnsupportedOperationException(
-					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+					"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 							" to the class path first");
 		}
 		Http3SettingsSpec.Builder builder = Http3SettingsSpec.builder();
@@ -847,7 +957,7 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 		dup.configuration().protocols(supportedProtocols);
 		if ((dup.configuration()._protocols & h3) == h3 && !isHttp3Available()) {
 			throw new UnsupportedOperationException(
-					"To enable HTTP/3 support, you must add the dependency `io.netty.incubator:netty-incubator-codec-http3`" +
+					"To enable HTTP/3 support, you must add the dependency `io.netty:netty-codec-native-quic`" +
 							" to the class path first");
 		}
 		return dup;
@@ -959,13 +1069,15 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 *     <li>{@code 3} seconds close_notify flush timeout</li>
 	 *     <li>{@code 0} second close_notify read timeout</li>
 	 * </ul>
-	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
-	 * used. Note that {@link SelfSignedCertificate} should not be used in production.
+	 * If self-signed certificate needs to be used, the sample below can be
+	 * used (the functionality is provided by io.netty:netty-pkitesting).
+	 * Note that self-signed certificate should not be used in production.
 	 * <pre>
 	 * {@code
-	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
+	 *     X509Bundle cert =
+	 *             new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	 *     Http11SslContextSpec http11SslContextSpec =
-	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *             Http11SslContextSpec.forServer(cert.toTempCertChainPem(), cert.toTempPrivateKeyPem());
 	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec));
 	 * }
 	 * </pre>
@@ -987,13 +1099,15 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	 *     <li>{@code 0} second close_notify read timeout</li>
 	 * </ul>
 	 * <p>
-	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
-	 * used. Note that {@link SelfSignedCertificate} should not be used in production.
+	 * If self-signed certificate needs to be used, the sample below can be
+	 * used (the functionality is provided by io.netty:netty-pkitesting).
+	 * Note that self-signed certificate should not be used in production.
 	 * <pre>
 	 * {@code
-	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
+	 *     X509Bundle cert =
+	 *             new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	 *     Http11SslContextSpec http11SslContextSpec =
-	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *             Http11SslContextSpec.forServer(cert.toTempCertChainPem(), cert.toTempPrivateKeyPem());
 	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec), true);
 	 * }
 	 * </pre>
@@ -1018,13 +1132,15 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	/**
 	 * Applies an SSL configuration via the passed {@link SslProvider}.
 	 *
-	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
-	 * used. Note that {@link SelfSignedCertificate} should not be used in production.
+	 * If self-signed certificate needs to be used, the sample below can be
+	 * used (the functionality is provided by io.netty:netty-pkitesting).
+	 * Note that self-signed certificate should not be used in production.
 	 * <pre>
 	 * {@code
-	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
+	 *     X509Bundle cert =
+	 *             new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	 *     Http11SslContextSpec http11SslContextSpec =
-	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *             Http11SslContextSpec.forServer(cert.toTempCertChainPem(), cert.toTempPrivateKeyPem());
 	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec));
 	 * }
 	 * </pre>
@@ -1040,13 +1156,15 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 	/**
 	 * Applies an SSL configuration via the passed {@link SslProvider}.
 	 * <p>
-	 * If {@link SelfSignedCertificate} needs to be used, the sample below can be
-	 * used. Note that {@link SelfSignedCertificate} should not be used in production.
+	 * If self-signed certificate needs to be used, the sample below can be
+	 * used (the functionality is provided by io.netty:netty-pkitesting).
+	 * Note that self-signed certificate should not be used in production.
 	 * <pre>
 	 * {@code
-	 *     SelfSignedCertificate cert = new SelfSignedCertificate();
+	 *     X509Bundle cert =
+	 *             new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	 *     Http11SslContextSpec http11SslContextSpec =
-	 *             Http11SslContextSpec.forServer(cert.certificate(), cert.privateKey());
+	 *             Http11SslContextSpec.forServer(cert.toTempCertChainPem(), cert.toTempPrivateKeyPem());
 	 *     secure(sslContextSpec -> sslContextSpec.sslContext(http11SslContextSpec), true);
 	 * }
 	 * </pre>
@@ -1212,6 +1330,7 @@ public abstract class HttpServer extends ServerTransport<HttpServer, HttpServerC
 				}
 				catch (Throwable t) {
 					log.error(format(connection.channel(), ""), t);
+					connection.channel().pipeline().fireUserEventTriggered(ErrorLogEvent.create(t));
 					//"FutureReturnValueIgnored" this is deliberate
 					connection.channel()
 					          .close();

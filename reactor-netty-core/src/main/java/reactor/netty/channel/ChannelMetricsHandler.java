@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2019-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,7 +22,7 @@ import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.handler.ssl.SniCompletionEvent;
 import io.netty.handler.ssl.SslHandler;
-import reactor.util.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import java.net.SocketAddress;
 import java.time.Duration;
@@ -61,7 +61,7 @@ public class ChannelMetricsHandler extends AbstractChannelMetricsHandler {
 
 	static final class ConnectMetricsHandler extends ChannelOutboundHandlerAdapter {
 
-		final SocketAddress proxyAddress;
+		final @Nullable SocketAddress proxyAddress;
 		final ChannelMetricsRecorder recorder;
 
 		ConnectMetricsHandler(ChannelMetricsRecorder recorder, @Nullable SocketAddress proxyAddress) {
@@ -96,9 +96,9 @@ public class ChannelMetricsHandler extends AbstractChannelMetricsHandler {
 
 	static class TlsMetricsHandler extends ChannelInboundHandlerAdapter {
 
-		protected final SocketAddress proxyAddress;
+		protected final @Nullable SocketAddress proxyAddress;
 		protected final ChannelMetricsRecorder recorder;
-		protected final SocketAddress remoteAddress;
+		protected final @Nullable SocketAddress remoteAddress;
 
 		boolean listenerAdded;
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@ package reactor.netty.http.client;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.incubator.codec.http3.Http3ClientConnectionHandler;
+import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.Connection;
 import reactor.netty.internal.shaded.reactor.pool.PoolConfig;
 import reactor.netty.resources.ConnectionProvider;
-import reactor.util.annotation.Nullable;
 
 /**
  * <p>This class is intended to be used only as {@code HTTP/3} connection pool. It doesn't have generic purpose.
@@ -31,7 +31,7 @@ import reactor.util.annotation.Nullable;
  */
 final class Http3Pool extends Http2Pool {
 
-	Http3Pool(PoolConfig<Connection> poolConfig, @Nullable ConnectionProvider.AllocationStrategy<?> allocationStrategy) {
+	Http3Pool(PoolConfig<Connection> poolConfig, ConnectionProvider.@Nullable AllocationStrategy<?> allocationStrategy) {
 		super(poolConfig, allocationStrategy);
 	}
 
@@ -72,7 +72,7 @@ final class Http3Pool extends Http2Pool {
 	}
 
 	static final class Slot extends Http2Pool.Slot {
-		volatile ChannelHandlerContext http3ClientConnectionHandlerCtx;
+		volatile @Nullable ChannelHandlerContext http3ClientConnectionHandlerCtx;
 
 		Slot(Http2Pool pool, Connection connection) {
 			super(pool, connection);
@@ -94,8 +94,7 @@ final class Http3Pool extends Http2Pool {
 			return connectionHandlerCtx != null && ((Http3ClientConnectionHandler) connectionHandlerCtx.handler()).isGoAwayReceived();
 		}
 
-		@Nullable
-		ChannelHandlerContext http3ClientConnectionHandlerCtx() {
+		@Nullable ChannelHandlerContext http3ClientConnectionHandlerCtx() {
 			ChannelHandlerContext ctx = http3ClientConnectionHandlerCtx;
 			// ChannelHandlerContext.isRemoved is only meant to be called from within the EventLoop
 			if (ctx != null && connection.channel().eventLoop().inEventLoop() && !ctx.isRemoved()) {

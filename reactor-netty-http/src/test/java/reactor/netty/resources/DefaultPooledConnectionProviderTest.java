@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,8 +33,10 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslProvider;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
 import org.apache.commons.lang3.StringUtils;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,13 +62,11 @@ import reactor.netty.http.server.HttpServer;
 import reactor.netty.internal.shaded.reactor.pool.InstrumentedPool;
 import reactor.netty.internal.shaded.reactor.pool.PoolShutdownException;
 import reactor.test.StepVerifier;
-import reactor.util.annotation.Nullable;
 
 import javax.net.ssl.SSLException;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -93,13 +93,13 @@ import static reactor.netty.micrometer.TimerAssert.assertTimer;
 
 class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 
 	private MeterRegistry registry;
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
-		ssc = new SelfSignedCertificate();
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	@BeforeEach
@@ -117,8 +117,8 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testIssue903() {
-		Http11SslContextSpec serverCtx = Http11SslContextSpec.forServer(ssc.key(), ssc.cert());
+	void testIssue903() throws Exception {
+		Http11SslContextSpec serverCtx = Http11SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		disposableServer =
 				createServer()
 				          .secure(s -> s.sslContext(serverCtx))
@@ -187,7 +187,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 		          })
 		          .wiretap(true)
 		          .get()
-		          .uri("https://example.com/")
+		          .uri("https://projectreactor.io/")
 		          .responseContent()
 		          .aggregate()
 		          .block(Duration.ofSeconds(30));
@@ -327,14 +327,15 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 				      .asString();
 
 		StepVerifier.create(response)
-		            .expectErrorMatches(t -> t.getClass().isAssignableFrom(expectedExc) && t.getMessage().startsWith(expectedMsg))
+		            .expectErrorMatches(t -> t.getClass().isAssignableFrom(expectedExc) &&
+		                    t.getMessage() != null && t.getMessage().startsWith(expectedMsg))
 		            .verify(Duration.ofSeconds(30));
 	}
 
 	@Test
 	@SuppressWarnings("deprecation")
 	void testConnectionIdleWhenNoActiveStreams() throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -392,6 +393,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 			assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
 			InetSocketAddress sa = (InetSocketAddress) serverAddress.get();
+			assertThat(sa).isNotNull();
 			String address = sa.getHostString() + ":" + sa.getPort();
 
 			assertGauge(registry, CONNECTION_PROVIDER_PREFIX + ACTIVE_CONNECTIONS,
@@ -492,7 +494,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 	@ParameterizedTest
 	@MethodSource("h2CompatibleCombinations")
 	void testIssue1982H2(HttpProtocol[] serverProtocols, HttpProtocol[] clientProtocols) throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -556,6 +558,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 			assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
 			InetSocketAddress sa = (InetSocketAddress) serverAddress.get();
+			assertThat(sa).isNotNull();
 			String address = sa.getHostString() + ":" + sa.getPort();
 
 			assertGauge(registry, CONNECTION_PROVIDER_PREFIX + ACTIVE_CONNECTIONS,
@@ -575,7 +578,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 	@Test
 	@SuppressWarnings("deprecation")
 	void testMinConnections() throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -635,6 +638,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 			assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
 
 			InetSocketAddress sa = (InetSocketAddress) serverAddress.get();
+			assertThat(sa).isNotNull();
 			String address = sa.getHostString() + ":" + sa.getPort();
 
 			assertGauge(registry, CONNECTION_PROVIDER_PREFIX + ACTIVE_CONNECTIONS,
@@ -725,6 +729,7 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 			    .verify(Duration.ofSeconds(5));
 
 			InetSocketAddress sa = (InetSocketAddress) serverAddress.get();
+			assertThat(sa).isNotNull();
 			String address = sa.getHostString() + ":" + sa.getPort();
 
 			assertThat(provider.channelPools.size()).isEqualTo(1);
@@ -831,8 +836,8 @@ class DefaultPooledConnectionProviderTest extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings({"FutureReturnValueIgnored", "deprecation"})
-	void testHttp2PoolAndGoAway() {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void testHttp2PoolAndGoAway() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));

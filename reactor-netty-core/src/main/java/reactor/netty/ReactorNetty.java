@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
@@ -40,7 +41,10 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.EventLoop;
+import io.netty.channel.IoEventLoop;
 import io.netty.channel.nio.NioEventLoop;
+import io.netty.channel.nio.NioIoHandle;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.stream.ChunkedWriteHandler;
 import io.netty.handler.timeout.IdleState;
@@ -48,6 +52,7 @@ import io.netty.handler.timeout.IdleStateEvent;
 import io.netty.handler.timeout.IdleStateHandler;
 import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCounted;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CorePublisher;
@@ -60,7 +65,6 @@ import reactor.pool.PoolBuilder;
 import reactor.pool.introspection.SamplingAllocationStrategy;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 import reactor.util.context.ContextView;
 
@@ -114,8 +118,11 @@ public final class ReactorNetty {
 	public static final String SHUTDOWN_TIMEOUT = "reactor.netty.ioShutdownTimeout";
 
 	/**
-	 * Default value whether the native transport (epoll, kqueue) will be preferred,
+	 * Default value whether the native transport (epoll, io_uring, kqueue) will be preferred,
 	 * fallback it will be preferred when available.
+	 * <p><strong>Note:</strong> On {@code Linux}, {@code Epoll} will be preferred by default.
+	 * If {@code IO_Uring} needs to be configured, a dependency to {@code io.netty:netty-transport-native-io_uring}
+	 * has to be added.
 	 */
 	public static final String NATIVE = "reactor.netty.native";
 
@@ -192,6 +199,12 @@ public final class ReactorNetty {
 	 * By default, it is disabled.
 	 */
 	public static final String ACCESS_LOG_ENABLED = "reactor.netty.http.server.accessLogEnabled";
+
+	/**
+	 * Specifies whether the Http Server error log will be enabled.
+	 * By default, it is disabled.
+	 */
+	public static final String ERROR_LOG_ENABLED = "reactor.netty.http.server.errorLogEnabled";
 
 	/**
 	 *  Specifies the zone id used by the access log.
@@ -301,8 +314,7 @@ public final class ReactorNetty {
 	 * @return {@link ContextView} from the channel attributes when exists otherwise returns {@code null}
 	 * @since 1.0.26
 	 */
-	@Nullable
-	public static ContextView getChannelContext(Channel channel) {
+	public static @Nullable ContextView getChannelContext(Channel channel) {
 		return channel.attr(CONTEXT_VIEW).get();
 	}
 
@@ -443,15 +455,17 @@ public final class ReactorNetty {
 		}
 	}
 
+	@SuppressWarnings("deprecation")
 	static boolean mustChunkFileTransfer(Connection c, Path file) {
 		// if channel multiplexing a parent channel as an http2 stream
 		if (c.channel().parent() != null && c.channel().parent().pipeline().get(NettyPipeline.H2MultiplexHandler) != null) {
 			return true;
 		}
 		ChannelPipeline p = c.channel().pipeline();
+		EventLoop eventLoop = c.channel().eventLoop();
 		return p.get(SslHandler.class) != null  ||
 				p.get(NettyPipeline.CompressionHandler) != null ||
-				(!(c.channel().eventLoop() instanceof NioEventLoop) &&
+				(((eventLoop instanceof IoEventLoop && !((IoEventLoop) eventLoop).isCompatible(NioIoHandle.class)) || !(eventLoop instanceof NioEventLoop)) &&
 						!"file".equals(file.toUri().getScheme()));
 	}
 
@@ -721,18 +735,21 @@ public final class ReactorNetty {
 	 * An appending write that delegates to its origin context and append the passed
 	 * publisher after the origin success if any.
 	 */
-	static final class OutboundThen implements NettyOutbound {
+	static final class OutboundThen extends AtomicBoolean implements NettyOutbound {
 
 		final NettyOutbound source;
 		final Mono<Void> thenMono;
 
 		static final Runnable EMPTY_CLEANUP = () -> {};
 
-
 		OutboundThen(NettyOutbound source, Publisher<Void> thenPublisher) {
 			this(source, thenPublisher, EMPTY_CLEANUP);
 		}
 
+		// This construction is used only with ChannelOperations#sendObject
+		// The implementation relies on Netty's promise that Channel#writeAndFlush will release the buffer on success/error
+		// The onCleanup callback is invoked only in case when we are sure that the processing doesn't delegate to Netty
+		// because of some failure before the exchange can be continued in the thenPublisher
 		OutboundThen(NettyOutbound source, Publisher<Void> thenPublisher, Runnable onCleanup) {
 			this.source = source;
 			Objects.requireNonNull(onCleanup, "onCleanup");
@@ -740,23 +757,21 @@ public final class ReactorNetty {
 			Mono<Void> parentMono = source.then();
 
 			if (parentMono == Mono.<Void>empty()) {
-				if (onCleanup == EMPTY_CLEANUP) {
-					this.thenMono = Mono.from(thenPublisher);
-				}
-				else {
-					this.thenMono = Mono.from(thenPublisher)
-					                    .doOnCancel(onCleanup)
-					                    .doOnError(t -> onCleanup.run());
-				}
+				this.thenMono = Mono.from(thenPublisher);
 			}
 			else {
 				if (onCleanup == EMPTY_CLEANUP) {
 					this.thenMono = parentMono.thenEmpty(thenPublisher);
 				}
 				else {
-					this.thenMono = parentMono.thenEmpty(thenPublisher)
-					                          .doOnCancel(onCleanup)
-					                          .doOnError(t -> onCleanup.run());
+					this.thenMono = parentMono
+							.doFinally(signalType -> {
+								if ((signalType == SignalType.CANCEL || signalType == SignalType.ON_ERROR) &&
+										compareAndSet(false, true)) {
+									onCleanup.run();
+								}
+							})
+							.thenEmpty(thenPublisher);
 				}
 			}
 		}
@@ -1017,11 +1032,11 @@ public final class ReactorNetty {
 	static final ConnectionObserver NOOP_LISTENER = (connection, newState) -> {};
 
 	static final Logger log                               = Loggers.getLogger(ReactorNetty.class);
-	static final AttributeKey<Boolean> PERSISTENT_CHANNEL = AttributeKey.valueOf("$PERSISTENT_CHANNEL");
+	static final AttributeKey<@Nullable Boolean> PERSISTENT_CHANNEL = AttributeKey.valueOf("$PERSISTENT_CHANNEL");
 
-	static final AttributeKey<Connection> CONNECTION = AttributeKey.valueOf("$CONNECTION");
+	static final AttributeKey<@Nullable Connection> CONNECTION = AttributeKey.valueOf("$CONNECTION");
 
-	static final AttributeKey<ContextView> CONTEXT_VIEW = AttributeKey.valueOf("$CONTEXT_VIEW");
+	static final AttributeKey<@Nullable ContextView> CONTEXT_VIEW = AttributeKey.valueOf("$CONTEXT_VIEW");
 
 	static final Consumer<? super FileChannel> fileCloser = fc -> {
 		try {

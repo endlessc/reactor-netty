@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,12 @@ import reactor.util.Loggers;
 import static io.netty.handler.codec.http.HttpClientUpgradeHandler.UpgradeEvent.UPGRADE_ISSUED;
 import static io.netty.handler.codec.http.HttpClientUpgradeHandler.UpgradeEvent.UPGRADE_REJECTED;
 import static io.netty.handler.codec.http.HttpClientUpgradeHandler.UpgradeEvent.UPGRADE_SUCCESSFUL;
+import static io.netty.handler.codec.http2.Http2CodecUtil.SETTINGS_ENABLE_CONNECT_PROTOCOL;
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.http.client.Http2ConnectionProvider.OWNER;
+import static reactor.netty.http.client.Http2ConnectionProvider.http2PooledRef;
+import static reactor.netty.http.client.Http2ConnectionProvider.invalidate;
+import static reactor.netty.http.client.HttpClientConnect.ENABLE_CONNECT_PROTOCOL;
 
 /**
  * {@link ChannelInboundHandlerAdapter} prior {@link reactor.netty.channel.ChannelOperationsHandler}
@@ -74,6 +79,7 @@ final class HttpTrafficHandler extends ChannelInboundHandlerAdapter {
 	@Override
 	public void channelRead(ChannelHandlerContext ctx, Object msg) {
 		if (msg instanceof Http2SettingsFrame) {
+			ctx.channel().attr(ENABLE_CONNECT_PROTOCOL).set(((Http2SettingsFrame) msg).settings().get(SETTINGS_ENABLE_CONNECT_PROTOCOL));
 			sendNewState(Connection.from(ctx.channel()), ConnectionObserver.State.CONFIGURED);
 			ctx.pipeline().remove(NettyPipeline.ReactiveBridge);
 			ctx.pipeline().remove(this);
@@ -85,6 +91,16 @@ final class HttpTrafficHandler extends ChannelInboundHandlerAdapter {
 
 	@Override
 	public void channelInactive(ChannelHandlerContext ctx) {
+		ConnectionObserver owner = ctx.channel().attr(OWNER).get();
+		if (owner instanceof Http2ConnectionProvider.DisposableAcquire) {
+			Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(((Http2ConnectionProvider.DisposableAcquire) owner).pooledRef);
+			if (http2PooledRef.slot.h2cUpgradeHandlerCtx() != null &&
+					http2PooledRef.slot.http2MultiplexHandlerCtx() == null) {
+				// Connection close happened before H2C upgrade
+				invalidate(owner);
+			}
+		}
+
 		ctx.fireExceptionCaught(new PrematureCloseException("Connection prematurely closed BEFORE response"));
 	}
 

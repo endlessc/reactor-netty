@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,7 @@ package reactor.netty.http.client;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http2.Http2Connection;
 import io.netty.handler.codec.http2.Http2FrameCodec;
-import io.netty.handler.codec.http2.Http2LocalFlowController;
 import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.codec.http2.Http2StreamChannelBootstrap;
 import io.netty.handler.ssl.ApplicationProtocolNames;
@@ -27,6 +25,7 @@ import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -39,6 +38,7 @@ import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.resources.ConnectionPoolMetrics;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.PooledConnectionProvider;
 import reactor.netty.transport.ClientTransportConfig;
@@ -48,7 +48,6 @@ import reactor.netty.internal.shaded.reactor.pool.PooledRef;
 import reactor.netty.internal.shaded.reactor.pool.PooledRefMetadata;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.concurrent.Queues;
 import reactor.util.context.Context;
 
@@ -98,6 +97,9 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 	}
 
 	@Override
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This method is not used with HTTP/2
 	protected CoreSubscriber<PooledRef<Connection>> createDisposableAcquire(
 			TransportConfig config,
 			ConnectionObserver connectionObserver,
@@ -120,7 +122,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		boolean acceptGzip = false;
 		ChannelMetricsRecorder metricsRecorder = config.metricsRecorder() != null ? config.metricsRecorder().get() : null;
 		SocketAddress proxyAddress = ((ClientTransportConfig<?>) config).proxyProvider() != null ?
-				((ClientTransportConfig<?>) config).proxyProvider().getSocketAddress().get() : null;
+				((ClientTransportConfig<?>) config).proxyProvider().getProxyAddress() : null;
 		Function<String, String> uriTagValue = null;
 		if (config instanceof HttpClientConfig) {
 			acceptGzip = ((HttpClientConfig) config).acceptGzip;
@@ -150,15 +152,26 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 	}
 
 	@Override
+	protected ConnectionPoolMetrics delegateConnectionPoolMetrics(InstrumentedPool.PoolMetrics metrics) {
+		return new HttpDelegatingConnectionPoolMetrics((Http2Pool) metrics);
+	}
+
+	@Override
 	protected void registerDefaultMetrics(String id, SocketAddress remoteAddress, InstrumentedPool.PoolMetrics metrics) {
-		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+		MicrometerHttp2ConnectionProviderMeterRegistrar
 				.registerMetrics(name(), id, remoteAddress, metrics);
 	}
 
 	@Override
 	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
-		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+		MicrometerHttp2ConnectionProviderMeterRegistrar
 				.deRegisterMetrics(name(), id, remoteAddress);
+	}
+
+	static Http2Pool.Http2PooledRef http2PooledRef(PooledRef<Connection> pooledRef) {
+		return pooledRef instanceof Http2Pool.Http2PooledRef ?
+				(Http2Pool.Http2PooledRef) pooledRef :
+				(Http2Pool.Http2PooledRef) pooledRef.metadata();
 	}
 
 	static void invalidate(@Nullable ConnectionObserver owner) {
@@ -170,25 +183,30 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		}
 	}
 
-	static void logStreamsState(Channel channel, Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint, String msg) {
-		log.debug(format(channel, "{}, now: {} active streams and {} max active streams."),
+	static void logStreamsState(Channel channel, Http2Pool.Slot slot, String msg) {
+		log.debug(format(channel, "{}, now: this connection [{} active streams and {} max active streams], " +
+						"all connections [{} active streams and {} max active streams]."),
 				msg,
-				localEndpoint.numActiveStreams(),
-				localEndpoint.maxActiveStreams());
+				slot.concurrency,
+				slot.maxConcurrentStreams,
+				slot.pool.activeStreams(),
+				slot.pool.totalMaxConcurrentStreams);
 	}
 
 	static void registerClose(Channel channel, ConnectionObserver owner) {
 		channel.closeFuture()
 		       .addListener(f -> {
-		           if (log.isDebugEnabled()) {
-		               Http2FrameCodec frameCodec = channel.parent().pipeline().get(Http2FrameCodec.class);
-		               if (frameCodec != null) {
-		                   Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint = frameCodec.connection().local();
-		                   logStreamsState(channel, localEndpoint, "Stream closed");
-		               }
+		           if (owner instanceof DisposableAcquire) {
+		               DisposableAcquire da = (DisposableAcquire) owner;
+		               da.pooledRef
+		                 .invalidate()
+		                 .subscribe(null, null, () -> {
+		                     if (log.isDebugEnabled()) {
+		                         Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(da.pooledRef);
+		                         logStreamsState(channel, http2PooledRef.slot, "Stream closed");
+		                     }
+		                 });
 		           }
-
-		           invalidate(owner);
 		       });
 	}
 
@@ -197,7 +215,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 	static final Logger log = Loggers.getLogger(Http2ConnectionProvider.class);
 
-	static final AttributeKey<ConnectionObserver> OWNER = AttributeKey.valueOf("http2ConnectionOwner");
+	static final AttributeKey<@Nullable ConnectionObserver> OWNER = AttributeKey.valueOf("http2ConnectionOwner");
 
 	static final class DelegatingConnectionObserver implements ConnectionObserver {
 
@@ -211,7 +229,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			owner(connection.channel()).onStateChange(connection, newState);
 		}
 
-		ConnectionObserver owner(Channel channel) {
+		static ConnectionObserver owner(Channel channel) {
 			ConnectionObserver obs;
 
 			for (;;) {
@@ -238,16 +256,23 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		final ConnectionObserver obs;
 		final ChannelOperations.OnSetup opsFactory;
 		final boolean acceptGzip;
-		final ChannelMetricsRecorder metricsRecorder;
+		final @Nullable ChannelMetricsRecorder metricsRecorder;
 		final long pendingAcquireTimeout;
 		final InstrumentedPool<Connection> pool;
-		final SocketAddress proxyAddress;
+		final @Nullable SocketAddress proxyAddress;
 		final boolean retried;
 		final MonoSink<Connection> sink;
-		final Function<String, String> uriTagValue;
+		final @Nullable Function<String, String> uriTagValue;
 
+		@SuppressWarnings("NullAway")
+		// Deliberately suppress "NullAway"
+		// This is a lazy initialization
 		PooledRef<Connection> pooledRef;
-		SocketAddress remoteAddress;
+		@Nullable SocketAddress remoteAddress;
+		// Never null when accessed - only via dispose()
+		// which is registered into sink.onCancel() callback.
+		// See onSubscribe(Subscription).
+		@SuppressWarnings("NullAway")
 		Subscription subscription;
 
 		DisposableAcquire(
@@ -300,6 +325,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		@Override
 		public void dispose() {
+			// sink.onCancel() registration happens in onSubscribe()
 			subscription.cancel();
 		}
 
@@ -378,10 +404,21 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		@Override
 		public void onUncaughtException(Connection connection, Throwable error) {
+			ConnectionObserver owner = connection.channel().attr(OWNER).get();
+			if (owner instanceof DisposableAcquire) {
+				Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(((DisposableAcquire) owner).pooledRef);
+				if (http2PooledRef.slot.h2cUpgradeHandlerCtx() != null &&
+						http2PooledRef.slot.http2MultiplexHandlerCtx() == null) {
+					// Error happened before H2C upgrade
+					invalidate(owner);
+				}
+			}
+
 			obs.onUncaughtException(connection, error);
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public void operationComplete(Future<Http2StreamChannel> future) {
 			if (future.isSuccess()) {
 				Channel channel = pooledRef.poolable().channel();
@@ -411,18 +448,19 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 					if (!currentContext().isEmpty()) {
 						setChannelContext(ch, currentContext());
 					}
+					// Deliberately suppress "NullAway"
+					// remoteAddress null is handled in Http2ConnectionProvider.DisposableAcquire.onNext
 					HttpClientConfig.addStreamHandlers(ch, obs.then(new HttpClientConfig.StreamConnectionObserver(currentContext())),
-							opsFactory, acceptGzip, metricsRecorder, proxyAddress, remoteAddress, -1, uriTagValue);
+							opsFactory, acceptGzip, false, metricsRecorder, proxyAddress, remoteAddress, -1, uriTagValue);
+
+					if (log.isDebugEnabled()) {
+						logStreamsState(ch, http2PooledRef.slot, "Stream opened");
+					}
 
 					ChannelOperations<?, ?> ops = ChannelOperations.get(ch);
 					if (ops != null) {
 						obs.onStateChange(ops, STREAM_CONFIGURED);
 						sink.success(ops);
-					}
-
-					if (log.isDebugEnabled()) {
-						Http2Connection.Endpoint<Http2LocalFlowController> localEndpoint = ((Http2FrameCodec) frameCodec.handler()).connection().local();
-						logStreamsState(ch, localEndpoint, "Stream opened");
 					}
 				}
 			}
@@ -483,13 +521,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			return false;
 		}
 
-		static Http2Pool.Http2PooledRef http2PooledRef(PooledRef<Connection> pooledRef) {
-			return pooledRef instanceof Http2Pool.Http2PooledRef ?
-					(Http2Pool.Http2PooledRef) pooledRef :
-					(Http2Pool.Http2PooledRef) pooledRef.metadata();
-		}
-
-		static final AttributeKey<Http2StreamChannelBootstrap> HTTP2_STREAM_CHANNEL_BOOTSTRAP =
+		static final AttributeKey<@Nullable Http2StreamChannelBootstrap> HTTP2_STREAM_CHANNEL_BOOTSTRAP =
 				AttributeKey.valueOf("http2StreamChannelBootstrap");
 
 		static Http2StreamChannelBootstrap http2StreamChannelBootstrap(Channel channel) {
@@ -526,8 +558,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		static class Pending {
 			final Connection connection;
-			final Throwable error;
-			final State state;
+			final @Nullable Throwable error;
+			final @Nullable State state;
 
 			Pending(Connection connection, @Nullable Throwable error, @Nullable State state) {
 				this.connection = connection;
@@ -542,7 +574,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 		final HttpClientConfig config;
 		final InstrumentedPool<Connection> pool;
 		final SocketAddress remoteAddress;
-		final AddressResolverGroup<?> resolver;
+		final @Nullable AddressResolverGroup<?> resolver;
 
 		PooledConnectionAllocator(
 				ConnectionProvider parent,
@@ -553,6 +585,7 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 			this(null, null, parent, config, poolFactory, remoteAddress, resolver);
 		}
 
+		@SuppressWarnings("NullAway")
 		PooledConnectionAllocator(
 				@Nullable String id,
 				@Nullable String name,
@@ -569,6 +602,8 @@ final class Http2ConnectionProvider extends PooledConnectionProvider<Connection>
 					poolFactory.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
 							poolConfig -> new Http2Pool(poolConfig, poolFactory.allocationStrategy())) :
 					poolFactory.newPool(connectChannel(), DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
+							// Deliberately suppress "NullAway"
+							// With id != null, this means name != null
 							new MicrometerPoolMetricsRecorder(id, name, remoteAddress),
 							poolConfig -> new Http2Pool(poolConfig, poolFactory.allocationStrategy()));
 		}

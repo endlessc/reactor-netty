@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,7 +17,6 @@ package reactor.netty.http.server;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
-import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -25,8 +24,6 @@ import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
-
-import javax.net.ssl.SSLException;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.handler.codec.http.HttpHeaderNames;
@@ -36,12 +33,15 @@ import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
 import org.assertj.core.api.Assertions;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import reactor.core.publisher.Mono;
@@ -53,7 +53,6 @@ import reactor.netty.http.server.forwardheaderhandler.CustomXForwardedHeadersHan
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.transport.AddressUtils;
 import reactor.test.StepVerifier;
-import reactor.util.annotation.Nullable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -69,7 +68,7 @@ import static reactor.netty.http.server.ConnectionInfo.getDefaultHostPort;
  */
 class ConnectionInfoTests extends BaseHttpTest {
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 
 	protected HttpClient customizeClientOptions(HttpClient httpClient) {
 		return httpClient;
@@ -80,8 +79,8 @@ class ConnectionInfoTests extends BaseHttpTest {
 	}
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
-		ssc = new SelfSignedCertificate();
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	static Stream<Arguments> forwardedProtoOnlyParams() {
@@ -94,9 +93,8 @@ class ConnectionInfoTests extends BaseHttpTest {
 				Arguments.of("wss", false));
 	}
 
-	@Nullable
-	static BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> getForwardedHandler(boolean useCustomForwardedHandler) {
-		return useCustomForwardedHandler ? CustomXForwardedHeadersHandler.INSTANCE::apply : null;
+	static @Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> getForwardedHandler(boolean useCustomForwardedHandler) {
+		return useCustomForwardedHandler ? CustomXForwardedHeadersHandler::apply : null;
 	}
 
 	@Test
@@ -193,7 +191,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 				});
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(strings = {"http", "https", "wss"})
 	void forwardedProtoOnly(String protocol) {
 		testClientRequest(
@@ -209,7 +207,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 				});
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedFor(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -218,11 +216,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 				serverRequest -> {
 					Assertions.assertThat(serverRequest.remoteAddress().getHostString()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
 					Assertions.assertThat(serverRequest.remoteAddress().getPort()).isEqualTo(8080);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHost(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -234,11 +233,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(port);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(port);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHostEmptyHostHeader(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -250,11 +250,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(port);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(port);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHostPortIncluded(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -265,11 +266,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(9090);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("1abc:2abc:3abc:0:0:0:5abc:6abc");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(9090);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHostAndPort(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -282,11 +284,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("192.168.0.1");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHostPortIncludedAndXForwardedPort(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -299,11 +302,83 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("192.168.0.1");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void xForwardedPrefix(boolean useCustomForwardedHandler) {
+		testClientRequest(
+				clientRequestHeaders -> {
+					clientRequestHeaders.add("X-Forwarded-Prefix", "/test-prefix");
+				},
+				serverRequest -> {
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isEqualTo("/test-prefix");
+				},
+				useCustomForwardedHandler);
+	}
+
+	@Test
+	void xForwardedPrefixWithoutForwardSlash() {
+		testClientRequest(
+				clientRequestHeaders -> {
+					clientRequestHeaders.add("X-Forwarded-Prefix", "forward-slash-missing");
+				},
+				serverRequest -> {
+
+				},
+				null,
+				httpClient -> httpClient,
+				httpServer -> httpServer.port(8080),
+				false,
+				true);
+	}
+
+	@ParameterizedTest
+	@CsvSource(value = {
+			"/first,/second    | /first/second",
+			"/first,/second/   | /first/second",
+			"/first/,/second/  | /first/second",
+			"/first/,/second// | /first/second"
+	}, delimiter = '|')
+	void xForwardedPrefixDelimited(String input, String output) {
+		testClientRequest(
+				clientRequestHeaders -> {
+					clientRequestHeaders.add("X-Forwarded-Prefix", input);
+				},
+				serverRequest -> {
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isEqualTo(output);
+				},
+				false);
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void xForwardedPrefixEmpty(boolean useCustomForwardedHandler) {
+		testClientRequest(
+				clientRequestHeaders -> {
+					clientRequestHeaders.add("X-Forwarded-Prefix", "");
+				},
+				serverRequest -> {
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isEqualTo("");
+				},
+				useCustomForwardedHandler);
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void xForwardedPrefixMissing(boolean useCustomForwardedHandler) {
+		testClientRequest(
+				clientRequestHeaders -> {},
+				serverRequest -> {
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
+				},
+				useCustomForwardedHandler);
+	}
+
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedMultipleHeaders(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -314,6 +389,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 					clientRequestHeaders.add("X-Forwarded-Port", "8081");
 					clientRequestHeaders.add("X-Forwarded-Proto", "http");
 					clientRequestHeaders.add("X-Forwarded-Proto", "https");
+					clientRequestHeaders.add("X-Forwarded-Prefix", "/test-prefix");
 				},
 				serverRequest -> {
 					Assertions.assertThat(serverRequest.hostAddress().getHostString()).isEqualTo("192.168.0.1");
@@ -321,11 +397,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("192.168.0.1");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.scheme()).isEqualTo("http");
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isEqualTo("/test-prefix");
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHostAndEmptyPort(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -339,6 +416,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(port);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("192.168.0.1");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(port);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				getForwardedHandler(useCustomForwardedHandler),
 				httpClient -> httpClient,
@@ -346,7 +424,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 				false);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedHostAndNonNumericPort(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -359,6 +437,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("192.168.0.1");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				getForwardedHandler(useCustomForwardedHandler),
 				httpClient -> httpClient,
@@ -367,7 +446,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 				true);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedForHostAndPort(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -382,11 +461,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostAddress().getPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("a.example.com");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedForHostAndPortAndProto(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -403,11 +483,12 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("a.example.com");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.scheme()).isEqualTo("http");
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
 	void xForwardedForMultipleHostAndPortAndProto(boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -424,16 +505,17 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("a.example.com");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8080);
 					Assertions.assertThat(serverRequest.scheme()).isEqualTo("http");
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@ValueSource(booleans = {true, false})
-	void xForwardedForAndPortOnly(boolean useCustomForwardedHandler) throws SSLException {
+	void xForwardedForAndPortOnly(boolean useCustomForwardedHandler) throws Exception {
 		SslContext clientSslContext = SslContextBuilder.forClient()
 				.trustManager(InsecureTrustManagerFactory.INSTANCE).build();
-		SslContext serverSslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+		SslContext serverSslContext = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
 
 		testClientRequest(
 				clientRequestHeaders -> {
@@ -449,6 +531,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(8443);
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("a.example.com");
 					Assertions.assertThat(serverRequest.scheme()).isEqualTo("https");
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				getForwardedHandler(useCustomForwardedHandler),
 				httpClient -> httpClient.secure(ssl -> ssl.sslContext(clientSslContext)),
@@ -456,7 +539,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 				true);
 	}
 
-	@ParameterizedTest(name = "{displayName}({arguments})")
+	@ParameterizedTest
 	@MethodSource("forwardedProtoOnlyParams")
 	void xForwardedProtoOnly(String protocol, boolean useCustomForwardedHandler) {
 		testClientRequest(
@@ -471,6 +554,7 @@ class ConnectionInfoTests extends BaseHttpTest {
 					Assertions.assertThat(serverRequest.hostName()).isEqualTo("a.example.com");
 					Assertions.assertThat(serverRequest.hostPort()).isEqualTo(getDefaultHostPort(protocol));
 					Assertions.assertThat(serverRequest.scheme()).isEqualTo(protocol);
+					Assertions.assertThat(serverRequest.forwardedPrefix()).isNull();
 				},
 				useCustomForwardedHandler);
 	}
@@ -636,10 +720,10 @@ class ConnectionInfoTests extends BaseHttpTest {
 	}
 
 	@Test
-	void https() throws SSLException {
+	void https() throws Exception {
 		SslContext clientSslContext = SslContextBuilder.forClient()
 				.trustManager(InsecureTrustManagerFactory.INSTANCE).build();
-		SslContext serverSslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+		SslContext serverSslContext = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
 
 		testClientRequest(
 				clientRequestHeaders -> {},
@@ -651,10 +735,10 @@ class ConnectionInfoTests extends BaseHttpTest {
 
 	// Users may add SslHandler themselves, not by using `httpServer.secure`
 	@Test
-	void httpsUserAddedSslHandler() throws SSLException {
+	void httpsUserAddedSslHandler() throws Exception {
 		SslContext clientSslContext = SslContextBuilder.forClient()
 				.trustManager(InsecureTrustManagerFactory.INSTANCE).build();
-		SslContext serverSslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+		SslContext serverSslContext = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
 
 		testClientRequest(
 				clientRequestHeaders -> {},

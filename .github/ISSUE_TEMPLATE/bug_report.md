@@ -9,9 +9,13 @@ assignees: ''
 
 <!--- Provide a general summary of the issue in the title above -->
 
+<!-- Make sure you use a supported version
+https://projectreactor.io/support
+-->
+
 <!--- /!\ Make sure to follow the Contribution Guidelines and notably for security issues:
 https://github.com/reactor/.github/blob/main/CONTRIBUTING.md
-https://tanzu.vmware.com/security
+https://projectreactor.io/security-policy
 -->
 <!--- /!\ Questions should be asked on [Gitter](https://gitter.im/reactor/reactor-netty) or [StackOverflow](https://stackoverflow.com/questions/tagged/reactor-netty). -->
 

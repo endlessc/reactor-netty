@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +17,8 @@ package reactor.netty.http.server.logging;
 
 import io.netty.channel.ChannelDuplexHandler;
 import io.netty.channel.ChannelHandler;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.http.server.HttpServerInfos;
-import reactor.util.annotation.Nullable;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -37,14 +37,14 @@ class BaseAccessLogHandler extends ChannelDuplexHandler {
 			"{} - {} [{}] \"{} {} {}\" {} {} {}";
 
 	@SuppressWarnings("deprecation")
-	static final Function<AccessLogArgProvider, AccessLog> DEFAULT_ACCESS_LOG =
+	static final Function<AccessLogArgProvider, @Nullable AccessLog> DEFAULT_ACCESS_LOG =
 			args -> AccessLog.create(DEFAULT_LOG_FORMAT, applyAddress(args.remoteAddress()), args.user(),
 					args.zonedDateTime(), args.method(), args.uri(), args.protocol(), args.status(),
 					args.contentLength() > -1 ? args.contentLength() : MISSING, args.duration());
 
-	final Function<AccessLogArgProvider, AccessLog> accessLog;
+	final Function<AccessLogArgProvider, @Nullable AccessLog> accessLog;
 
-	BaseAccessLogHandler(@Nullable Function<AccessLogArgProvider, AccessLog> accessLog) {
+	BaseAccessLogHandler(@Nullable Function<AccessLogArgProvider, @Nullable AccessLog> accessLog) {
 		this.accessLog = accessLog == null ? DEFAULT_ACCESS_LOG : accessLog;
 	}
 
@@ -52,7 +52,7 @@ class BaseAccessLogHandler extends ChannelDuplexHandler {
 		return socketAddress instanceof InetSocketAddress ? ((InetSocketAddress) socketAddress).getHostString() : MISSING;
 	}
 
-	final <T extends AbstractAccessLogArgProvider<T>> void applyServerInfos(AbstractAccessLogArgProvider<T> accessLogArgs, HttpServerInfos serverInfos) {
+	static <T extends AbstractAccessLogArgProvider<T>> void applyServerInfos(AbstractAccessLogArgProvider<T> accessLogArgs, HttpServerInfos serverInfos) {
 		accessLogArgs.cookies(serverInfos.cookies());
 		accessLogArgs.connectionInformation(serverInfos);
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -39,9 +40,9 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
 import io.netty.channel.socket.DatagramChannel;
-import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.DecoderException;
 import io.netty.util.AttributeKey;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
 import reactor.core.publisher.Mono;
@@ -59,10 +60,10 @@ import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.LoopResources;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.transport.DomainSocketAddressUtils.isDomainSocketAddress;
 
 /**
  * A generic server {@link Transport} that will {@link #bind()} to a local address and provide a {@link DisposableServer}.
@@ -87,10 +88,11 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 	 */
 	public Mono<? extends DisposableServer> bind() {
 		CONF config = configuration();
-		Objects.requireNonNull(config.bindAddress(), "bindAddress");
+		Supplier<? extends SocketAddress> bindAddress = config.bindAddress();
+		Objects.requireNonNull(bindAddress, "bindAddress");
 
 		Mono<? extends DisposableServer> mono =  Mono.create(sink -> {
-			SocketAddress local = Objects.requireNonNull(config.bindAddress().get(), "Bind Address supplier returned null");
+			SocketAddress local = Objects.requireNonNull(bindAddress.get(), "Bind Address supplier returned null");
 			if (local instanceof InetSocketAddress) {
 				InetSocketAddress localInet = (InetSocketAddress) local;
 
@@ -101,7 +103,7 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 
 			boolean isDomainSocket = false;
 			DisposableBind disposableServer;
-			if (local instanceof DomainSocketAddress) {
+			if (isDomainSocketAddress(local)) {
 				isDomainSocket = true;
 				disposableServer = new UdsDisposableBind(sink, config, local);
 			}
@@ -121,8 +123,9 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 			                  .subscribe(disposableServer);
 		});
 
-		if (config.doOnBind() != null) {
-			mono = mono.doOnSubscribe(s -> config.doOnBind().accept(config));
+		Consumer<? super CONF> doOnBind = config.doOnBind();
+		if (doOnBind != null) {
+			mono = mono.doOnSubscribe(s -> doOnBind.accept(config));
 		}
 		return mono;
 	}
@@ -154,8 +157,8 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 			return Objects.requireNonNull(bind().block(timeout), "aborted");
 		}
 		catch (IllegalStateException e) {
-			if (e.getMessage()
-			     .contains("blocking read")) {
+			String message = e.getMessage();
+			if (message != null && message.contains("blocking read")) {
 				throw new IllegalStateException(getClass().getSimpleName() + " couldn't be started within " + timeout.toMillis() + "ms");
 			}
 			throw e;
@@ -365,7 +368,7 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 		final Map<AttributeKey<?>, ?> childAttrs;
 		final boolean isDomainSocket;
 
-		Runnable enableAutoReadTask;
+		@Nullable Runnable enableAutoReadTask;
 
 		Acceptor(EventLoopGroup childGroup, ChannelHandler childHandler,
 				Map<ChannelOption<?>, ?> childOptions, Map<AttributeKey<?>, ?> childAttrs,
@@ -494,7 +497,11 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 		final TransportConfig            config;
 		final SocketAddress              bindAddress;
 
-		Channel channel;
+		@Nullable Channel channel;
+		// Never null when accessed - only via dispose()
+		// which is registered into sink.onCancel() callback.
+		// See onSubscribe(Subscription).
+		@SuppressWarnings("NullAway")
 		Subscription subscription;
 
 		DisposableBind(MonoSink<DisposableServer> sink, TransportConfig config, SocketAddress bindAddress) {
@@ -505,6 +512,9 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
+		// Deliberately suppress "NullAway"
+		// This is a lazy initialization
 		public Channel channel() {
 			return channel;
 		}
@@ -529,6 +539,7 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 				}
 			}
 			else {
+				// sink.onCancel() registration happens in onSubscribe()
 				subscription.cancel();
 			}
 		}
@@ -590,8 +601,8 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 				           .block(timeout);
 			}
 			catch (IllegalStateException e) {
-				if (e.getMessage()
-						.contains("blocking read")) {
+				String message = e.getMessage();
+				if (message != null && message.contains("blocking read")) {
 					throw new IllegalStateException("Socket couldn't be stopped within " + timeout.toMillis() + "ms");
 				}
 				throw e;
@@ -658,13 +669,8 @@ public abstract class ServerTransport<T extends ServerTransport<T, CONF>,
 		}
 
 		@Override
-		public DomainSocketAddress address() {
-			return (DomainSocketAddress) channel().localAddress();
-		}
-
-		@Override
 		public String path() {
-			return address().path();
+			return DomainSocketAddressUtils.path(channel().localAddress());
 		}
 	}
 }

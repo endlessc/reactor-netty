@@ -3,9 +3,8 @@ on:
   push:
     branches: # For branches, better to list them explicitly than regexp include
       - main
-      - 1.1.x
-      - 1.0.x
-permissions: read-all
+      - 1.2.x
+permissions: {}
 
 env:
   DOCS_BUILD_ARTIFACT: docs-build
@@ -16,14 +15,19 @@ jobs:
   reactor-netty-core:
     # Notes on reactor-netty-core: this job has no access to secrets, only github token. As a result, all non-core actions are centralized here
     name: reactor-netty-core
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     outputs:
       versionType: ${{ steps.version.outputs.versionType }}
       fullVersion: ${{ steps.version.outputs.fullVersion }}
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      - name: setup java
-        uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+            distribution: 'temurin'
+            java-version: '17'
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
@@ -35,15 +39,15 @@ jobs:
         run: ./gradlew qualifyVersionGha
       - name: run reactor-netty-core checks
         id: reactor-netty-core-checks
-        run: ./gradlew reactor-netty-core:check
+        run: ./gradlew reactor-netty-core:check -x :reactor-netty-core:java17Test
   reactor-netty-http:
     # Notes on reactor-netty-http: this job has no access to secrets, only github token. As a result, all non-core actions are centralized here
     name: reactor-netty-http
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: setup java
-        uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
@@ -53,47 +57,47 @@ jobs:
   reactor-netty-http-brave:
     # Notes on reactor-netty-http-brave: this job has no access to secrets, only github token. As a result, all non-core actions are centralized here
     name: reactor-netty-http-brave
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: setup java
-        uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
       - name: run reactor-netty-http-brave checks
         id: reactor-netty-http-brave-checks
         run: ./gradlew reactor-netty-http-brave:check
-  reactor-netty-incubator-quic:
-    # Notes on reactor-netty-incubator-quic: this job has no access to secrets, only github token. As a result, all non-core actions are centralized here
-    name: reactor-netty-incubator-quic
-    runs-on: ubuntu-20.04
+  reactor-netty-quic:
+    # Notes on reactor-netty-quic: this job has no access to secrets, only github token. As a result, all non-core actions are centralized here
+    name: reactor-netty-quic
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: setup java
-        uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
-      - name: run reactor-netty-incubator-quic checks
-        id: reactor-netty-incubator-quic-checks
-        run: ./gradlew reactor-netty-incubator-quic:check
+      - name: run reactor-netty-quic checks
+        id: reactor-netty-quic-checks
+        run: ./gradlew reactor-netty-quic:check
 
   # build antora doc for the current branch, and upload docs/build results to workflow run.
   # Each deploy job can then download it, in order to let the docs-zip be built properly
   # (see reactor-netty/build.gradle which includes docs/build/site and optionally docs/assembly/.../pdf into the target docs.zip)
   build-branch-doc:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Set up Ruby for asciidoctor-pdf
-        uses: ruby/setup-ruby@a6e6f86333f0a2523ece813039b8b4be04560854 # v1
+        uses: ruby/setup-ruby@65937904bcddfb93f8130882d9afa8597c45f3b5 # v1
         with:
           ruby-version: 3.3.0
       - name: Install asciidoctor-pdf / rouge
         run: gem install asciidoctor-pdf rouge
       - name: Setup java 17 for antora
-        uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -103,7 +107,7 @@ jobs:
         run: |-
           [ -d docs/build/antora/inject-collector-cache-config-extension/.cache ] && cp -rf docs/build/antora/inject-collector-cache-config-extension/.cache docs/build/site/
       - name: Upload docs/build to current workflow run
-        uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ env.DOCS_BUILD_ARTIFACT }}
           retention-days: 3
@@ -113,18 +117,24 @@ jobs:
   #deploy the snapshot artifacts to Artifactory
   deploySnapshot:
     name: deploySnapshot
-    runs-on: ubuntu-20.04
-    needs: [ reactor-netty-core, reactor-netty-http, reactor-netty-http-brave, reactor-netty-incubator-quic, build-branch-doc ]
+    runs-on: ubuntu-22.04
+    needs: [ reactor-netty-core, reactor-netty-http, reactor-netty-http-brave, reactor-netty-quic, build-branch-doc ]
     if: needs.reactor-netty-core.outputs.versionType == 'SNAPSHOT'
     environment: snapshots
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      - uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+            distribution: 'temurin'
+            java-version: '17'
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
       - name: download antora docs/build
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
             name: ${{ env.DOCS_BUILD_ARTIFACT }}
             path: docs/build
@@ -138,18 +148,24 @@ jobs:
   #sign the milestone artifacts and deploy them to Artifactory
   deployMilestone:
     name: deployMilestone
-    runs-on: ubuntu-20.04
-    needs: [ reactor-netty-core, reactor-netty-http, reactor-netty-http-brave, reactor-netty-incubator-quic, build-branch-doc ]
+    runs-on: ubuntu-22.04
+    needs: [ reactor-netty-core, reactor-netty-http, reactor-netty-http-brave, reactor-netty-quic, build-branch-doc ]
     if: needs.reactor-netty-core.outputs.versionType == 'MILESTONE'
     environment: releases
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      - uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+            distribution: 'temurin'
+            java-version: '17'
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
       - name: download antora docs/build
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
             name: ${{ env.DOCS_BUILD_ARTIFACT }}
             path: docs/build
@@ -159,24 +175,47 @@ jobs:
           ORG_GRADLE_PROJECT_artifactory_publish_password: ${{secrets.ARTIFACTORY_PASSWORD}}
           ORG_GRADLE_PROJECT_signingKey: ${{secrets.SIGNING_KEY}}
           ORG_GRADLE_PROJECT_signingPassword: ${{secrets.SIGNING_PASSPHRASE}}
+          ORG_GRADLE_PROJECT_sonatypeUsername: ${{secrets.SONATYPE_USERNAME}}
+          ORG_GRADLE_PROJECT_sonatypePassword: ${{secrets.SONATYPE_PASSWORD}}
         run: |
-          ./gradlew assemble sign artifactoryPublish -Partifactory_publish_contextUrl=https://repo.spring.io -Partifactory_publish_repoKey=libs-milestone-local
+          ./gradlew assemble sign artifactoryPublish -Partifactory_publish_contextUrl=https://repo.spring.io -Partifactory_publish_repoKey=libs-milestone-local publishMavenJavaPublicationToSonatypeRepository
+      - name: Stage the milestone
+        env:
+            ORG_GRADLE_PROJECT_sonatypeUsername: ${{secrets.SONATYPE_USERNAME}}
+            ORG_GRADLE_PROJECT_sonatypePassword: ${{secrets.SONATYPE_PASSWORD}}
+        run: |
+            GRADLE_PUBLISH_MAVEN_AUTHORIZATION=$(echo "${ORG_GRADLE_PROJECT_sonatypeUsername}:${ORG_GRADLE_PROJECT_sonatypePassword}" | base64)
+            echo "Searching for opened repository..."
+            REPOSITORY_RESPONSE=$(curl -s -X GET \
+            -H "Authorization: Bearer ${GRADLE_PUBLISH_MAVEN_AUTHORIZATION}" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/search/repositories?state=open")
+            REPOSITORY_KEY=$(echo "${REPOSITORY_RESPONSE}" | grep -o '"key":"[^"]*"' | head -1 | cut -d':' -f2 | tr -d '"')
+            echo "Triggering uploading..."
+            curl -s -X POST \
+            -H "Authorization: Bearer ${GRADLE_PUBLISH_MAVEN_AUTHORIZATION}" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/upload/repository/${REPOSITORY_KEY}?publishing_type=user_managed"
 
   #sign the release artifacts and deploy them to Artifactory
   deployRelease:
     name: deployRelease
-    runs-on: ubuntu-20.04
-    needs: [ reactor-netty-core, reactor-netty-http, reactor-netty-http-brave, reactor-netty-incubator-quic, build-branch-doc ]
+    runs-on: ubuntu-22.04
+    needs: [ reactor-netty-core, reactor-netty-http, reactor-netty-http-brave, reactor-netty-quic, build-branch-doc ]
     if: needs.reactor-netty-core.outputs.versionType == 'RELEASE'
     environment: releases
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
-      - uses: actions/setup-java@6a0805fcefea3d4657a47ac4c165951e33482018
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Set up JDK 17
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
+        with:
+            distribution: 'temurin'
+            java-version: '17'
+      - name: Set up JDK 1.8
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00
         with:
           distribution: 'temurin'
           java-version: '8'
       - name: download antora docs/build
-        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
             name: ${{ env.DOCS_BUILD_ARTIFACT }}
             path: docs/build
@@ -190,15 +229,30 @@ jobs:
           ORG_GRADLE_PROJECT_sonatypePassword: ${{secrets.SONATYPE_PASSWORD}}
         run: |
           ./gradlew assemble sign artifactoryPublish -Partifactory_publish_contextUrl=https://repo.spring.io  -Partifactory_publish_repoKey=libs-release-local publishMavenJavaPublicationToSonatypeRepository
+      - name: Stage the release
+        env:
+            ORG_GRADLE_PROJECT_sonatypeUsername: ${{secrets.SONATYPE_USERNAME}}
+            ORG_GRADLE_PROJECT_sonatypePassword: ${{secrets.SONATYPE_PASSWORD}}
+        run: |
+            GRADLE_PUBLISH_MAVEN_AUTHORIZATION=$(echo "${ORG_GRADLE_PROJECT_sonatypeUsername}:${ORG_GRADLE_PROJECT_sonatypePassword}" | base64)
+            echo "Searching for opened repository..."
+            REPOSITORY_RESPONSE=$(curl -s -X GET \
+            -H "Authorization: Bearer ${GRADLE_PUBLISH_MAVEN_AUTHORIZATION}" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/search/repositories?state=open")
+            REPOSITORY_KEY=$(echo "${REPOSITORY_RESPONSE}" | grep -o '"key":"[^"]*"' | head -1 | cut -d':' -f2 | tr -d '"')
+            echo "Triggering uploading..."
+            curl -s -X POST \
+            -H "Authorization: Bearer ${GRADLE_PUBLISH_MAVEN_AUTHORIZATION}" \
+            "https://ossrh-staging-api.central.sonatype.com/manual/upload/repository/${REPOSITORY_KEY}?publishing_type=user_managed"
 
   tagMilestone:
     name: Tag milestone
     needs: [ reactor-netty-core, deployMilestone ]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: tag
         run: |
           git config --local user.name 'reactorbot'
@@ -209,11 +263,11 @@ jobs:
   tagRelease:
     name: Tag release
     needs: [ reactor-netty-core, deployRelease ]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: tag
         run: |
           git config --local user.name 'reactorbot'
@@ -224,7 +278,7 @@ jobs:
   cleanup:
     needs: [ deploySnapshot, tagRelease, tagMilestone ]
     if: always() && (needs.deploySnapshot.result == 'success' || needs.tagRelease.result == 'success' || needs.tagMilestone.result == 'success')
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     permissions:
         actions: write
     steps:

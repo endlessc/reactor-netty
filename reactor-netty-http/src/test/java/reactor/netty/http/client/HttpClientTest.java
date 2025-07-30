@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 package reactor.netty.http.client;
 
 import java.io.IOException;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -34,6 +35,7 @@ import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -55,6 +57,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import javax.net.ssl.SSLException;
 
 import io.netty.buffer.ByteBuf;
@@ -65,13 +68,16 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerAdapter;
 import io.netty.channel.ChannelId;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.unix.DomainSocketAddress;
 import io.netty.handler.codec.compression.Brotli;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultHttpContent;
 import io.netty.handler.codec.http.HttpClientCodec;
+import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaderValues;
@@ -81,25 +87,33 @@ import io.netty.handler.codec.http.HttpObjectDecoder;
 import io.netty.handler.codec.http.HttpResponseEncoder;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
-import io.netty.handler.ssl.util.SelfSignedCertificate;
 import io.netty.handler.timeout.ReadTimeoutHandler;
+import io.netty.pkitesting.CertificateBuilder;
+import io.netty.pkitesting.X509Bundle;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.resolver.dns.DnsAddressResolverGroup;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.DefaultEventExecutor;
 import io.netty.util.concurrent.EventExecutor;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Publisher;
+import org.reactivestreams.Subscriber;
+
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.netty.BaseHttpTest;
@@ -107,6 +121,7 @@ import reactor.netty.ByteBufFlux;
 import reactor.netty.ByteBufMono;
 import reactor.netty.CancelReceiverHandlerTest;
 import reactor.netty.Connection;
+import reactor.netty.ConnectionObserver;
 import reactor.netty.FutureMono;
 import reactor.netty.LogTracker;
 import reactor.netty.NettyPipeline;
@@ -123,11 +138,11 @@ import reactor.netty.resources.LoopResources;
 import reactor.netty.tcp.SslProvider;
 import reactor.netty.tcp.TcpClient;
 import reactor.netty.tcp.TcpServer;
+import reactor.netty.transport.ClientTransport;
 import reactor.netty.transport.TransportConfig;
 import reactor.test.StepVerifier;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.concurrent.Queues;
 import reactor.util.context.Context;
 import reactor.util.function.Tuple2;
@@ -138,6 +153,7 @@ import static io.netty.handler.codec.http.HttpHeaderValues.BR;
 import static io.netty.handler.codec.http.HttpHeaderValues.GZIP;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 import static org.assertj.core.api.Assumptions.assumeThat;
 
 /**
@@ -150,18 +166,18 @@ class HttpClientTest extends BaseHttpTest {
 
 	static final Logger log = Loggers.getLogger(HttpClientTest.class);
 
-	static SelfSignedCertificate ssc;
+	static X509Bundle ssc;
 	static final EventExecutor executor = new DefaultEventExecutor();
 
 	@BeforeAll
-	static void createSelfSignedCertificate() throws CertificateException {
-		ssc = new SelfSignedCertificate();
+	static void createSelfSignedCertificate() throws Exception {
+		ssc = new CertificateBuilder().subject("CN=localhost").setIsCertificateAuthority(true).buildSelfSigned();
 	}
 
 	@AfterAll
 	static void cleanup() throws ExecutionException, InterruptedException, TimeoutException {
 		executor.shutdownGracefully()
-				.get(30, TimeUnit.SECONDS);
+		        .get(30, TimeUnit.SECONDS);
 	}
 
 	@Test
@@ -360,7 +376,7 @@ class HttpClientTest extends BaseHttpTest {
 		disposableServer =
 				createServer()
 				          .handle((req, resp) -> {
-				          	req.withConnection(cn -> cn.onDispose(latch::countDown));
+				              req.withConnection(cn -> cn.onDispose(latch::countDown));
 
 				                  return Flux.interval(Duration.ofSeconds(1))
 				                             .flatMap(d -> resp.sendObject(Unpooled.EMPTY_BUFFER));
@@ -381,7 +397,7 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(HttpClient.create()
 		                              .wiretap(true)
 		                              .get()
-		                              .uri("https://example.com")
+		                              .uri("https://projectreactor.io")
 		                              .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -390,7 +406,7 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(HttpClient.create()
 		                              .wiretap(true)
 		                              .get()
-		                              .uri("https://example.com")
+		                              .uri("https://projectreactor.io")
 		                              .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -462,7 +478,7 @@ class HttpClientTest extends BaseHttpTest {
 				        .headers(h -> h.add("Accept-Encoding", "gzip")
 				                       .add("Accept-Encoding", "deflate"))
 				        .doOnRequest((req, conn) ->
-				                conn.addHandlerFirst("gzipDecompressor", new HttpContentDecompressor()))
+				                conn.addHandlerFirst("gzipDecompressor", new HttpContentDecompressor(false, 0)))
 				        .get()
 				        .response((r, buf) -> buf.aggregate()
 				                                 .asString()
@@ -580,8 +596,8 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	void sslExchangeRelativeGet() throws SSLException {
-		SslContext sslServer = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+	void sslExchangeRelativeGet() throws Exception {
+		SslContext sslServer = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem())
 		                                        .build();
 		SslContext sslClient = SslContextBuilder.forClient()
 		                                        .trustManager(InsecureTrustManagerFactory.INSTANCE)
@@ -605,9 +621,65 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(responseString).isEqualTo("hello /foo");
 	}
 
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void testMaxConnectionPools(boolean withMaxConnectionPools) throws Exception {
+		ConnectionProvider connectionProvider = withMaxConnectionPools ?
+				ConnectionProvider.builder("max-connection-pools").maxConnectionPools(1).build() :
+				ConnectionProvider.builder("max-connection-pools").build();
+
+		String msg = "Connection pool creation limit exceeded: 2 pools created, maximum expected is 1";
+		String loggerName = "reactor.netty.resources.PooledConnectionProvider";
+		int count = withMaxConnectionPools ? 1 : 0;
+		try (LogTracker logTracker = new LogTracker(loggerName, count, msg)) {
+			SslContext sslServer = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
+
+			disposableServer =
+					createServer().secure(ssl -> ssl.sslContext(sslServer))
+					              .handle((req, resp) -> resp.sendString(Flux.just("hello ", req.uri())))
+					              .bindNow();
+
+			Flux.range(1, 2)
+			    .flatMap(i ->
+			            createClient(connectionProvider, disposableServer::address)
+			                    .secure(ssl -> ssl.sslContext(createClientSslContext()))
+			                    .get()
+			                    .uri("/foo")
+			                    .responseContent()
+			                    .aggregate()
+			                    .asString())
+			    .as(StepVerifier::create)
+			    .thenConsumeWhile(s -> true)
+			    .expectComplete()
+			    .verify(Duration.ofSeconds(5));
+
+			assertThat(logTracker.latch.await(5, TimeUnit.SECONDS)).isTrue();
+			assertThat(logTracker.actualMessages).hasSize(count);
+		}
+		finally {
+			connectionProvider.dispose();
+		}
+	}
+
+	@ParameterizedTest
+	@ValueSource(ints = {0, -2})
+	void testInvalidMaxConnectionPoolsSetting(int maxConnectionPools) {
+		assertThatIllegalArgumentException()
+				.isThrownBy(() -> ConnectionProvider.builder("max-connection-pools").maxConnectionPools(maxConnectionPools));
+	}
+
+	private static SslContext createClientSslContext() {
+		try {
+			return SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE).build();
+		}
+		catch (SSLException e) {
+			throw new RuntimeException(e);
+		}
+	}
+
 	@Test
-	void sslExchangeAbsoluteGet() throws SSLException {
-		SslContext sslServer = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+	void sslExchangeAbsoluteGet() throws Exception {
+		SslContext sslServer = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
 		SslContext sslClient = SslContextBuilder.forClient()
 		                                        .trustManager(InsecureTrustManagerFactory.INSTANCE).build();
 
@@ -628,9 +700,9 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	void secureSendFile() throws SSLException, URISyntaxException {
+	void secureSendFile() throws Exception {
 		Path largeFile = Paths.get(getClass().getResource("/largeFile.txt").toURI());
-		SslContext sslServer = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+		SslContext sslServer = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem()).build();
 		SslContext sslClient = SslContextBuilder.forClient()
 		                                        .trustManager(InsecureTrustManagerFactory.INSTANCE).build();
 		AtomicReference<String> uploaded = new AtomicReference<>();
@@ -678,12 +750,12 @@ class HttpClientTest extends BaseHttpTest {
 				          .host("localhost")
 				          .route(r -> r.post("/upload", (req, resp) ->
 				                  req.receive()
-				                    .aggregate()
-				                    .asString(StandardCharsets.UTF_8)
-				                    .doOnNext(uploaded::set)
-				                    .then(resp.status(201)
-				                              .sendString(Mono.just("Received File"))
-				                              .then())))
+				                     .aggregate()
+				                     .asString(StandardCharsets.UTF_8)
+				                     .doOnNext(uploaded::set)
+				                     .then(resp.status(201)
+				                               .sendString(Mono.just("Received File"))
+				                               .then())))
 				          .bindNow();
 
 		Tuple2<String, Integer> response =
@@ -791,24 +863,73 @@ class HttpClientTest extends BaseHttpTest {
 		        .blockLast(Duration.ofSeconds(5));
 	}
 
-	@Test
-	void testDeferredHeader() {
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	@SuppressWarnings("CollectionUndefinedEquality")
+	void testDeferredCookie(boolean provideEmptyPublisher) {
 		disposableServer =
 				createServer()
 				          .host("localhost")
-				          .route(r -> r.get("/201", (req, res) -> res.addHeader("Content-Length", "0")
-				                                                     .status(HttpResponseStatus.CREATED)
-				                                                     .sendHeaders()))
+				          .route(r -> r.get("/", (req, res) -> {
+				              // Suppressed "CollectionUndefinedEquality", the CharSequence is String
+				              Set<Cookie> cookies = req.cookies().get("testDeferredCookie");
+				              return cookies != null ?
+				                      res.sendString(Mono.just(cookies.iterator().next().value())) :
+				                      res.sendString(Mono.just("empty"));
+				          }))
 				          .bindNow();
 
 		createHttpClientForContextWithAddress()
-		        .headersWhen(h -> Mono.just(h.set("test", "test")).delayElement(Duration.ofSeconds(2)))
+		          .cookiesWhen("testDeferredCookie", cookie -> {
+		              if (provideEmptyPublisher) {
+		                  return Mono.empty();
+		              }
+		              else {
+		                  cookie.setValue("testDeferredCookie");
+		                  return Mono.just(cookie).delayElement(Duration.ofMillis(100));
+		              }
+		          })
+		          .get()
+		          .uri("/")
+		          .responseSingle((res, bytes) -> bytes.asString())
+		          .as(StepVerifier::create)
+		          .expectNextMatches(s -> provideEmptyPublisher ? "empty".equals(s) : "testDeferredCookie".equals(s))
+		          .expectComplete()
+		          .verify(Duration.ofSeconds(30));
+	}
+
+	@ParameterizedTest
+	@ValueSource(booleans = {true, false})
+	void testDeferredHeader(boolean provideEmptyPublisher) {
+		disposableServer =
+				createServer()
+				          .host("localhost")
+				          .route(r -> r.get("/201", (req, res) -> {
+				              String header = req.requestHeaders().get("test");
+				              if (header != null) {
+				                  res.addHeader("test", header);
+				              }
+				              return res.addHeader("Content-Length", "0")
+				                        .status(HttpResponseStatus.CREATED)
+				                        .sendHeaders();
+				          }))
+				          .bindNow();
+
+		createHttpClientForContextWithAddress()
+		        .headersWhen(h -> provideEmptyPublisher ?
+		                Mono.empty() :
+		                Mono.just(h.set("test", "test")).delayElement(Duration.ofMillis(100)))
 		        .observe((c, s) -> log.debug(s + "" + c))
 		        .get()
 		        .uri("/201")
-		        .responseContent()
+		        .responseSingle((res, bytes) -> Mono.just(res.responseHeaders().get("test", "empty")))
 		        .repeat(4)
-		        .blockLast(Duration.ofSeconds(30));
+		        .collectList()
+		        .as(StepVerifier::create)
+		        .assertNext(l -> assertThat(l).hasSize(5).allMatch(s -> provideEmptyPublisher ?
+		                "empty".equals(s) : "test".equals(s)))
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(30));
 	}
 
 	@Test
@@ -953,9 +1074,9 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testIssue473() {
+	void testIssue473() throws Exception {
 		Http11SslContextSpec serverSslContextBuilder =
-				Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+				Http11SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		disposableServer =
 				createServer()
 				          .secure(spec -> spec.sslContext(serverSslContextBuilder))
@@ -973,11 +1094,12 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testIssue407_1() {
+	void testIssue407_1() throws Exception {
+		Http11SslContextSpec serverCtx =
+				Http11SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		disposableServer =
 				createServer()
-				          .secure(spec -> spec.sslContext(
-				              Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())))
+				          .secure(spec -> spec.sslContext(serverCtx))
 				          .handle((req, res) -> res.sendString(Mono.just("test")))
 				          .bindNow(Duration.ofSeconds(30));
 
@@ -1035,11 +1157,12 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testIssue407_2() {
+	void testIssue407_2() throws Exception {
+		Http11SslContextSpec serverCtx =
+				Http11SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		disposableServer =
 				createServer()
-				          .secure(spec -> spec.sslContext(
-				              Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())))
+				          .secure(spec -> spec.sslContext(serverCtx))
 				          .handle((req, res) -> res.sendString(Mono.just("test")))
 				          .bindNow(Duration.ofSeconds(30));
 
@@ -1171,8 +1294,8 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	private void doOnError(HttpClient client) {
-		AtomicReference<String> requestError1 = new AtomicReference<>();
-		AtomicReference<String> responseError1 = new AtomicReference<>();
+		AtomicReference<@Nullable String> requestError1 = new AtomicReference<>();
+		AtomicReference<@Nullable String> responseError1 = new AtomicReference<>();
 
 		Mono<String> content =
 				client.doOnRequestError((req, err) ->
@@ -1193,8 +1316,8 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(requestError1.get()).isEqualTo("success");
 		assertThat(responseError1.get()).isNull();
 
-		AtomicReference<String> requestError2 = new AtomicReference<>();
-		AtomicReference<String> responseError2 = new AtomicReference<>();
+		AtomicReference<@Nullable String> requestError2 = new AtomicReference<>();
+		AtomicReference<@Nullable String> responseError2 = new AtomicReference<>();
 
 		content =
 				createHttpClientForContextWithPort()
@@ -1300,7 +1423,7 @@ class HttpClientTest extends BaseHttpTest {
 		};
 	}
 
-	private void doWithConnector_2(Publisher<String> content, String expectation) {
+	private static void doWithConnector_2(Publisher<String> content, String expectation) {
 		StepVerifier.create(content)
 		            .expectNext(expectation)
 		            .expectComplete()
@@ -1336,7 +1459,7 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	void testExplicitEmptyBodyOnGetWorks() throws Exception {
-		SslContext sslServer = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+		SslContext sslServer = SslContextBuilder.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem())
 		                                        .build();
 
 		SslContext sslClient = SslContextBuilder.forClient()
@@ -1403,7 +1526,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestRetry(true, false);
 	}
 
-	private void doTestRetry(boolean retryDisabled, boolean expectRetry) throws Exception {
+	private static void doTestRetry(boolean retryDisabled, boolean expectRetry) throws Exception {
 		ExecutorService threadPool = Executors.newCachedThreadPool();
 		int serverPort = SocketUtils.findAvailableTcpPort();
 		ConnectionResetByPeerServer server = new ConnectionResetByPeerServer(serverPort);
@@ -1464,7 +1587,7 @@ class HttpClientTest extends BaseHttpTest {
 	private static final class ConnectionResetByPeerServer extends CountDownLatch implements Runnable {
 		final int port;
 		private final ServerSocketChannel server;
-		private volatile Thread thread;
+		private volatile @Nullable Thread thread;
 
 		private ConnectionResetByPeerServer(int port) {
 			super(1);
@@ -1660,6 +1783,102 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
+	void testIssue3538() {
+		disposableServer =
+				createServer()
+				        .protocol(HttpProtocol.H2C, HttpProtocol.HTTP11)
+				        .route(r -> r.get("/", (req, res) -> {
+				            final EchoAction action = new EchoAction();
+
+				            req.receiveContent()
+				               .switchIfEmpty(Mono.just(LastHttpContent.EMPTY_LAST_CONTENT))
+				               .subscribe(action);
+
+				            return res.sendObject(action);
+				        }))
+				        .bindNow();
+		assertThat(disposableServer).isNotNull();
+
+		final ByteBuf content = createHttpClientForContextWithPort()
+		        .protocol(HttpProtocol.HTTP11)
+		        .headers(h ->
+		            h.add(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+		             .add(HttpHeaderNames.UPGRADE, "TLS/1.2"))
+		        .get()
+		        .uri("/")
+		        .responseContent()
+		        .blockLast(Duration.ofSeconds(30));
+
+		assertThat(content).isNull();
+	}
+
+	@Test
+	void testIssue3538GetWithPayload() {
+		disposableServer =
+				createServer()
+				        .protocol(HttpProtocol.H2C, HttpProtocol.HTTP11)
+				        .route(r -> r.get("/", (req, res) -> {
+				            final EchoAction action = new EchoAction();
+
+				            req.receiveContent()
+				               .switchIfEmpty(Mono.just(LastHttpContent.EMPTY_LAST_CONTENT))
+				               .subscribe(action);
+
+				            return res.sendObject(action);
+				        }))
+				        .bindNow();
+		assertThat(disposableServer).isNotNull();
+
+		// The H2C max content length is 0 by default (no content is expected),
+		// so the request is rejected with HTTP/413 Content Too Large
+		createHttpClientForContextWithPort()
+		        .protocol(HttpProtocol.HTTP11)
+		        .headers(h ->
+		            h.add(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+		             .add(HttpHeaderNames.UPGRADE, "TLS/1.2"))
+		        .request(HttpMethod.GET)
+		        .send((req, res) -> res.sendString(Mono.just("testIssue3538")))
+		        .uri("/")
+		        .response((r, buf) -> Mono.just(r.status().code()))
+		        .as(StepVerifier::create)
+		        .expectNextMatches(status -> status == 413)
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(30));
+	}
+
+	@Test
+	void testIssue3538GetWithPayloadAndH2cMaxContentLength() {
+		disposableServer =
+				createServer()
+				        .protocol(HttpProtocol.H2C, HttpProtocol.HTTP11)
+				        .httpRequestDecoder(spec -> spec.h2cMaxContentLength(100))
+				        .route(r -> r.get("/", (req, res) -> {
+				            final EchoAction action = new EchoAction();
+
+				            req.receiveContent()
+				               .switchIfEmpty(Mono.just(LastHttpContent.EMPTY_LAST_CONTENT))
+				               .subscribe(action);
+
+				            return res.sendObject(action);
+				        }))
+				        .bindNow();
+		assertThat(disposableServer).isNotNull();
+
+		final ByteBuf content = createHttpClientForContextWithPort()
+		        .protocol(HttpProtocol.HTTP11)
+		        .headers(h ->
+		            h.add(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+		             .add(HttpHeaderNames.UPGRADE, "TLS/1.2"))
+		        .request(HttpMethod.GET)
+		        .send((req, res) -> res.sendString(Mono.just("testIssue3538")))
+		        .uri("/")
+		        .responseContent()
+		        .blockLast(Duration.ofSeconds(30));
+
+		assertThat(content).isNotNull();
+	}
+
+	@Test
 	void testIssue694() {
 		disposableServer =
 				createServer()
@@ -1739,6 +1958,7 @@ class HttpClientTest extends BaseHttpTest {
 		AtomicBoolean validate = new AtomicBoolean();
 		AtomicInteger chunkSize = new AtomicInteger();
 		AtomicBoolean allowDuplicateContentLengths = new AtomicBoolean();
+		AtomicBoolean allowPartialChunks = new AtomicBoolean(true);
 		disposableServer =
 				createServer()
 				          .handle((req, resp) -> req.receive()
@@ -1753,7 +1973,8 @@ class HttpClientTest extends BaseHttpTest {
 		                                       .initialBufferSize(10)
 		                                       .failOnMissingResponse(true)
 		                                       .parseHttpAfterConnectRequest(true)
-		                                       .allowDuplicateContentLengths(true))
+		                                       .allowDuplicateContentLengths(true)
+		                                       .allowPartialChunks(false))
 		        .doOnConnected(c -> {
 		                    channelRef.set(c.channel());
 		                    HttpClientCodec codec = c.channel()
@@ -1763,6 +1984,7 @@ class HttpClientTest extends BaseHttpTest {
 		                    chunkSize.set((Integer) getValueReflection(decoder, "maxChunkSize", 2));
 		                    validate.set((Boolean) getValueReflection(decoder, "validateHeaders", 2));
 		                    allowDuplicateContentLengths.set((Boolean) getValueReflection(decoder, "allowDuplicateContentLengths", 2));
+		                    allowPartialChunks.set((Boolean) getValueReflection(decoder, "allowPartialChunks", 2));
 		                })
 		        .post()
 		        .uri("/")
@@ -1776,9 +1998,10 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(chunkSize).as("line length").hasValue(789);
 		assertThat(validate).as("validate headers").isFalse();
 		assertThat(allowDuplicateContentLengths).as("allow duplicate Content-Length").isTrue();
+		assertThat(allowPartialChunks).as("allow partial chunks").isFalse();
 	}
 
-	private Object getValueReflection(Object obj, String fieldName, int superLevel) {
+	private static Object getValueReflection(Object obj, String fieldName, int superLevel) {
 		try {
 			Field field;
 			if (superLevel == 1) {
@@ -1829,56 +2052,56 @@ class HttpClientTest extends BaseHttpTest {
 	}
 
 	@Test
-	void testIssue719_TEWithTextNoSSL() {
+	void testIssue719_TEWithTextNoSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("test")),
 				h -> h.set("Transfer-Encoding", "chunked"), false);
 	}
 
 	@Test
-	void testIssue719_CLWithTextNoSSL() {
+	void testIssue719_CLWithTextNoSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("test")),
 				h -> h.set("Content-Length", "4"), false);
 	}
 
 	@Test
-	void testIssue719_TENoTextNoSSL() {
+	void testIssue719_TENoTextNoSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("")),
 				h -> h.set("Transfer-Encoding", "chunked"), false);
 	}
 
 	@Test
-	void testIssue719_CLNoTextNoSSL() {
+	void testIssue719_CLNoTextNoSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("")),
 				h -> h.set("Content-Length", "0"), false);
 	}
 
 	@Test
-	void testIssue719_TEWithTextWithSSL() {
+	void testIssue719_TEWithTextWithSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("test")),
 				h -> h.set("Transfer-Encoding", "chunked"), true);
 	}
 
 	@Test
-	void testIssue719_CLWithTextWithSSL() {
+	void testIssue719_CLWithTextWithSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("test")),
 				h -> h.set("Content-Length", "4"), true);
 	}
 
 	@Test
-	void testIssue719_TENoTextWithSSL() {
+	void testIssue719_TENoTextWithSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("")),
 				h -> h.set("Transfer-Encoding", "chunked"), true);
 	}
 
 	@Test
-	void testIssue719_CLNoTextWithSSL() {
+	void testIssue719_CLNoTextWithSSL() throws Exception {
 		doTestIssue719(ByteBufFlux.fromString(Mono.just("")),
 				h -> h.set("Content-Length", "0"), true);
 	}
 
 	@SuppressWarnings("deprecation")
 	private void doTestIssue719(Publisher<ByteBuf> clientSend,
-			Consumer<HttpHeaders> clientSendHeaders, boolean ssl) {
+			Consumer<HttpHeaders> clientSendHeaders, boolean ssl) throws Exception {
 		HttpServer server =
 				createServer()
 				          .handle((req, res) -> req.receive()
@@ -1886,8 +2109,9 @@ class HttpClientTest extends BaseHttpTest {
 				                                            .then()));
 
 		if (ssl) {
-			server = server.secure(spec -> spec.sslContext(
-					Http11SslContextSpec.forServer(ssc.certificate(), ssc.privateKey())));
+			Http11SslContextSpec serverCtx =
+					Http11SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
+			server = server.secure(spec -> spec.sslContext(serverCtx));
 		}
 
 		disposableServer = server.bindNow();
@@ -1989,7 +2213,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestIssue777_1(client, "/test", "Test", receiver);
 	}
 
-	private void doTestIssue777_1(HttpClient client, String uri, String expectation,
+	private static void doTestIssue777_1(HttpClient client, String uri, String expectation,
 			BiFunction<? super HttpClientResponse, ? super ByteBufMono, ? extends Mono<String>> receiver) {
 		StepVerifier.create(
 		        client.post()
@@ -2000,7 +2224,7 @@ class HttpClientTest extends BaseHttpTest {
 		            .verify(Duration.ofSeconds(30));
 	}
 
-	private void doTestIssue777_2(HttpClient client, String uri, String expectation,
+	private static void doTestIssue777_2(HttpClient client, String uri, String expectation,
 			BiFunction<? super HttpClientResponse, ? super ByteBufMono, ? extends Mono<Tuple2<String, HttpClientResponse>>> receiver) {
 		StepVerifier.create(
 		        client.post()
@@ -2104,7 +2328,7 @@ class HttpClientTest extends BaseHttpTest {
 	@Test
 	@SuppressWarnings("deprecation")
 	void testConnectionLifeTimeFixedPoolHttp2_1() throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -2147,7 +2371,7 @@ class HttpClientTest extends BaseHttpTest {
 	@Test
 	@SuppressWarnings("deprecation")
 	void testConnectionLifeTimeElasticPoolHttp2() throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -2189,7 +2413,7 @@ class HttpClientTest extends BaseHttpTest {
 	@Test
 	@SuppressWarnings("deprecation")
 	void testConnectionNoLifeTimeFixedPoolHttp2() throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -2228,7 +2452,7 @@ class HttpClientTest extends BaseHttpTest {
 	@Test
 	@SuppressWarnings("deprecation")
 	void testConnectionNoLifeTimeElasticPoolHttp2() throws Exception {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -2274,8 +2498,8 @@ class HttpClientTest extends BaseHttpTest {
 
 	@Test
 	@SuppressWarnings("deprecation")
-	void testConnectionLifeTimeFixedPoolHttp2_2() {
-		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.certificate(), ssc.privateKey());
+	void testConnectionLifeTimeFixedPoolHttp2_2() throws Exception {
+		Http2SslContextSpec serverCtx = Http2SslContextSpec.forServer(ssc.toTempCertChainPem(), ssc.toTempPrivateKeyPem());
 		Http2SslContextSpec clientCtx =
 				Http2SslContextSpec.forClient()
 				                   .configure(builder -> builder.trustManager(InsecureTrustManagerFactory.INSTANCE));
@@ -2640,7 +2864,7 @@ class HttpClientTest extends BaseHttpTest {
 		AtomicReference<List<HttpClientInfos>> onRequest = new AtomicReference<>(new ArrayList<>());
 		AtomicReference<HttpClientInfos> onRedirect = new AtomicReference<>();
 		AtomicReference<HttpClientInfos> onResponse = new AtomicReference<>();
-		AtomicReference<HttpClientInfos> onResponseError = new AtomicReference<>();
+		AtomicReference<@Nullable HttpClientInfos> onResponseError = new AtomicReference<>();
 		Tuple2<String, HttpResponseStatus> response =
 				createHttpClientForContextWithAddress()
 				          .followRedirect(true, req -> req.addHeader("testIssue1031", "testIssue1031"))
@@ -2665,7 +2889,7 @@ class HttpClientTest extends BaseHttpTest {
 		assertThat(onResponseError.get()).isNull();
 	}
 
-	private void checkExpectationsIssue1031(HttpClientInfos info, String expectedUri, int expectedRedirections,
+	private static void checkExpectationsIssue1031(HttpClientInfos info, String expectedUri, int expectedRedirections,
 			String expectedResourceUri, @Nullable String expectedLocation) {
 		assertThat(info).isNotNull();
 		assertThat(info.method()).isEqualTo(HttpMethod.GET);
@@ -2731,7 +2955,7 @@ class HttpClientTest extends BaseHttpTest {
 				          .wiretap(true);
 
 		StepVerifier.create(client.get()
-		                          .uri("https://example.com")
+		                          .uri("https://projectreactor.io")
 		                          .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -2739,7 +2963,7 @@ class HttpClientTest extends BaseHttpTest {
 
 		StepVerifier.create(client.runOn(loop, false)
 		                          .get()
-		                          .uri("https://example.com")
+		                          .uri("https://projectreactor.io")
 		                          .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -2748,7 +2972,7 @@ class HttpClientTest extends BaseHttpTest {
 		StepVerifier.create(client.runOn(loop, false)
 		                          .resolver(spec -> spec.trace("reactor.netty.testLoopAndResolver", LogLevel.DEBUG))
 		                          .get()
-		                          .uri("https://example.com")
+		                          .uri("https://projectreactor.io")
 		                          .response((r, buf) -> Mono.just(r.status().code())))
 		            .expectNextMatches(status -> status >= 200 && status < 400)
 		            .expectComplete()
@@ -2968,7 +3192,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestProtocolsAndDefaultSslProviderAvailability(client.protocol(HttpProtocol.H2C), null);
 	}
 
-	private void doTestProtocolsAndDefaultSslProviderAvailability(HttpClient client, @Nullable SslProvider sslProvider) {
+	private static void doTestProtocolsAndDefaultSslProviderAvailability(HttpClient client, @Nullable SslProvider sslProvider) {
 		assertThat(client.configuration().sslProvider()).isSameAs(sslProvider);
 	}
 
@@ -3028,8 +3252,8 @@ class HttpClientTest extends BaseHttpTest {
 				        .handle((req, res) -> res.sendString(Mono.just("testIssue1547")))
 				        .bindNow();
 
-		EventLoopGroup loop = new NioEventLoopGroup(1);
-		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
+		EventLoopGroup loop = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+		AtomicReference<List<@Nullable AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
 		AtomicReference<List<AddressResolverGroup<?>>> resolversInternal = new AtomicReference<>(new ArrayList<>());
 		try {
 			HttpClient client = createClientNewConnection(disposableServer.port()).runOn(useNative -> loop);
@@ -3171,7 +3395,7 @@ class HttpClientTest extends BaseHttpTest {
 		doTestIssue1697(client.responseTimeout(null), false, onRequest, onResponse, onDisconnected);
 	}
 
-	private void doTestIssue1697(HttpClient client, boolean hasTimeout, AtomicBoolean onRequest,
+	private static void doTestIssue1697(HttpClient client, boolean hasTimeout, AtomicBoolean onRequest,
 			AtomicBoolean onResponse, AtomicBoolean onDisconnected) {
 		String response =
 				client.post()
@@ -3226,36 +3450,35 @@ class HttpClientTest extends BaseHttpTest {
 			Sinks.Empty<Void> empty = Sinks.empty();
 			CancelReceiverHandlerTest cancelReceiver = new CancelReceiverHandlerTest(empty::tryEmitEmpty, 1);
 
-			disposableServer = createServer()
-					.handle((in, out) -> {
-						in.withConnection(connection -> connection.onDispose(serverClosed::countDown));
-						return in.receive()
-								.asString()
-								.log("server.receive")
-								.then(out.sendString(Mono.just("data")).neverComplete());
-					})
-					.bindNow();
+			disposableServer =
+					createServer().handle((in, out) -> {
+					                  in.withConnection(connection -> connection.onDispose(serverClosed::countDown));
+					                  return in.receive()
+					                           .asString()
+					                           .log("server.receive")
+					                           .then(out.sendString(Mono.just("data")).neverComplete());
+					              })
+					              .bindNow();
 
 			HttpClient httpClient = createHttpClientForContextWithPort(pool);
 			CountDownLatch clientCancelled = new CountDownLatch(1);
 
 			// Creates a client that should be cancelled by the Flix.zip (see below)
-			Mono<String> client = httpClient
-					.doOnRequest((req, conn) -> conn.addHandlerFirst(cancelReceiver))
-					.get()
-					.responseContent()
-					.aggregate()
-					.asString()
-					.log("client")
-					.doOnCancel(clientCancelled::countDown);
+			Mono<String> client =
+					httpClient.doOnRequest((req, conn) -> conn.addHandlerFirst(cancelReceiver))
+					          .get()
+					          .responseContent()
+					          .aggregate()
+					          .asString()
+					          .log("client")
+					          .doOnCancel(clientCancelled::countDown);
 
 			// Zip client with a mono which completes with an empty value when the server receives the request.
 			// The client should then be cancelled with a log message.
-			StepVerifier.create(Flux.zip(client, empty.asMono())
-							.log("zip"))
-					.expectNextCount(0)
-					.expectComplete()
-					.verify(Duration.ofSeconds(30));
+			StepVerifier.create(Flux.zip(client, empty.asMono()).log("zip"))
+			            .expectNextCount(0)
+			            .expectComplete()
+			            .verify(Duration.ofSeconds(30));
 
 			assertThat(cancelReceiver.awaitAllReleased(30)).as("cancelReceiver").isTrue();
 			assertThat(clientCancelled.await(30, TimeUnit.SECONDS)).as("latchClient await").isTrue();
@@ -3265,7 +3488,7 @@ class HttpClientTest extends BaseHttpTest {
 		}
 		finally {
 			pool.disposeLater()
-					.block(Duration.ofSeconds(30));
+			    .block(Duration.ofSeconds(30));
 		}
 	}
 
@@ -3277,7 +3500,7 @@ class HttpClientTest extends BaseHttpTest {
 				          .bindNow(Duration.ofSeconds(30));
 
 		LoopResources loop = LoopResources.create("doTestSharedNameResolver", 4, true);
-		AtomicReference<List<AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
+		AtomicReference<List<@Nullable AddressResolverGroup<?>>> resolvers = new AtomicReference<>(new ArrayList<>());
 		try {
 			int count = 8;
 			CountDownLatch latch = new CountDownLatch(count);
@@ -3414,6 +3637,9 @@ class HttpClientTest extends BaseHttpTest {
 		try (LogTracker logTracker = new LogTracker("reactor.netty.channel.ChannelOperationsHandler", 2, "Decoding failed.")) {
 			testIssue3285SendRequest(client, expectedException);
 
+			// Delay a bit the next request so that we do not acquire immediately
+			Thread.sleep(100);
+
 			testIssue3285SendRequest(client, expectedException);
 
 			assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
@@ -3424,9 +3650,11 @@ class HttpClientTest extends BaseHttpTest {
 		}
 	}
 
-	static void testIssue3285SendRequest(HttpClient client, @Nullable Class<? extends Throwable> exception) {
+	static void testIssue3285SendRequest(HttpClient client, @Nullable Class<? extends Throwable> exception) throws Exception {
+		CountDownLatch latch = new CountDownLatch(1);
 		Mono<String> response =
-				client.get()
+				client.doAfterResponseSuccess((res, conn) -> res.trailerHeaders().subscribe(null, null, latch::countDown))
+				      .get()
 				      .uri("/")
 				      .responseSingle((res, bytes) -> bytes.asString());
 		if (exception != null) {
@@ -3439,6 +3667,170 @@ class HttpClientTest extends BaseHttpTest {
 			        .expectNext("test")
 			        .expectComplete()
 			        .verify(Duration.ofSeconds(5));
+		}
+		assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue();
+	}
+
+	@Test
+	void testIssue3416() {
+		disposableServer =
+				createServer()
+				        .route(r -> r.get("/", (req, res) -> res.sendString(Mono.just("testIssue3416")))
+				                     .ws("/ws", (in, out) -> out.neverComplete()))
+				        .bindNow();
+
+		AtomicReference<@Nullable WeakReference<@Nullable Connection>> connWeakRef = new AtomicReference<>();
+		HttpClient client =
+				createClient(disposableServer.port())
+				        .observe((conn, state) -> {
+				            if (state == ConnectionObserver.State.CONNECTED) {
+				                connWeakRef.compareAndSet(null, new WeakReference<>(conn));
+				            }
+				        });
+
+		client.get()
+		      .uri("/")
+		      .response() // Reactor Netty will close the connection
+		      .flatMap(res -> // Keep response object alive and at the same time check that the real connection can be GCed
+		          client.websocket()
+		                .uri("/ws")
+		                .handle((in, out) ->
+		                    Flux.range(0, 10)
+		                        .delayElements(Duration.ofMillis(100))
+		                        .skipUntil(l -> {
+			                        WeakReference<@Nullable Connection> weakReference = connWeakRef.get();
+			                        boolean result = weakReference != null && weakReference.get() == null;
+		                            if (!result) {
+		                                System.gc();
+		                            }
+		                            return result;
+		                        })
+		                        .switchIfEmpty(Mono.error(new RuntimeException("failed"))
+		                        .flatMap(l -> Mono.empty())))
+		                .then()
+		                .contextWrite(Context.of(res.getClass(), res)))
+		      .as(StepVerifier::create)
+		      .expectComplete()
+		      .verify(Duration.ofSeconds(5));
+	}
+
+	@ParameterizedTest
+	@ValueSource(strings = {"mono", "flux", "empty"})
+	void testDeleteMethod(String requestBodyType) {
+		disposableServer =
+				createServer()
+				        .handle((req, res) -> res.sendString(
+				            Flux.concat(req.receive().aggregate().asString().defaultIfEmpty("empty"),
+				                        Mono.just(" " + req.requestHeaders().get(HttpHeaderNames.CONTENT_LENGTH) +
+				                        " " + req.requestHeaders().get(HttpHeaderNames.TRANSFER_ENCODING)))))
+				        .bindNow();
+
+		Publisher<ByteBuf> body = "flux".equals(requestBodyType) ?
+				ByteBufFlux.fromString(Flux.just("d", "e", "l", "e", "t", "e")) :
+				"mono".equals(requestBodyType) ? ByteBufMono.fromString(Mono.just("delete")) : Mono.empty();
+
+		createClient(disposableServer.port())
+		        .delete()
+		        .uri("/")
+		        .send(body)
+		        .responseSingle((res, bytes) -> bytes.asString())
+		        .as(StepVerifier::create)
+		        .expectNext("empty".equals(requestBodyType) ? "empty null null" : "delete 6 null")
+		        .expectComplete()
+		        .verify(Duration.ofSeconds(5));
+	}
+
+	@Test
+	void testSelectedIpsEmpty() {
+		doTestSelectedIps((httpClientConfig, list) -> Collections.emptyList(), true);
+	}
+
+	@Test
+	void testSelectedIpsNull() {
+		doTestSelectedIps((httpClientConfig, list) -> null, true);
+	}
+
+	@Test
+	void testSelectedIpsFilter() {
+		doTestSelectedIps((httpClientConfig, list) -> list.stream().filter(o -> false).collect(Collectors.toList()), true);
+	}
+
+	@Test
+	void testSelectedIpsCheckConfig() {
+		doTestSelectedIps((httpClientConfig, list) -> "".equals(httpClientConfig.uri()) ? list : null, true);
+	}
+
+	@Test
+	void testSelectedIps() {
+		doTestSelectedIps((httpClientConfig, list) -> list, false);
+	}
+
+	private void doTestSelectedIps(
+			ClientTransport.ResolvedAddressSelector<HttpClientConfig> resolvedIpFilter,
+			boolean expectError) {
+		disposableServer =
+				createServer()
+				        .handle((in, out) -> out.sendString(Mono.just("testSelectedIps")))
+				        .bindNow();
+
+		SocketAddress address = disposableServer.address();
+		Flux<String> result =
+				createClient(() -> address)
+				        .resolvedAddressesSelector(resolvedIpFilter)
+				        .get()
+				        .uri("/")
+				        .responseContent()
+				        .asString();
+
+		if (expectError) {
+			result.as(StepVerifier::create)
+			      .expectErrorMatches(t -> ("Failed to resolve [" + address + "]").equals(t.getMessage()))
+			      .verify(Duration.ofSeconds(5));
+		}
+		else {
+			result.as(StepVerifier::create)
+			      .expectNext("testSelectedIps")
+			      .expectComplete()
+			      .verify(Duration.ofSeconds(5));
+		}
+	}
+
+	@Test
+	void testSelectedIpsDelayedAddressResolution() {
+		HttpClient.create()
+		          .wiretap(true)
+		          .resolvedAddressesSelector((config, resolvedAddresses) -> null)
+		          .get()
+		          .uri("https://projectreactor.io")
+		          .responseContent()
+		          .asString()
+		          .as(StepVerifier::create)
+		          .expectErrorMatches(t -> t.getMessage() != null && t.getMessage().startsWith("Failed to resolve [projectreactor.io:443"))
+		          .verify(Duration.ofSeconds(5));
+	}
+
+	private static final class EchoAction implements Publisher<HttpContent>, Consumer<HttpContent> {
+		private final Publisher<HttpContent> sender;
+		private volatile FluxSink<HttpContent> emitter;
+
+		EchoAction() {
+			this.sender = Flux.create(emitter ->  this.emitter = emitter);
+		}
+
+		@Override
+		public void accept(HttpContent message) {
+			if (message.content().readableBytes() > 0) {
+				emitter.next(new DefaultHttpContent(message.content().retain()));
+			}
+
+			if (message instanceof LastHttpContent) {
+				emitter.complete();
+			}
+		}
+
+		@Override
+		public void subscribe(Subscriber<? super HttpContent> s) {
+			sender.subscribe(s);
 		}
 	}
 }

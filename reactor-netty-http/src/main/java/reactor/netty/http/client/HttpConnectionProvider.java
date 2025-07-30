@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,13 @@
 package reactor.netty.http.client;
 
 import io.netty.resolver.AddressResolverGroup;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.http.HttpResources;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.transport.TransportConfig;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.util.Map;
@@ -76,15 +76,15 @@ final class HttpConnectionProvider implements ConnectionProvider {
 	}
 
 	@Override
-	public Map<SocketAddress, Integer> maxConnectionsPerHost() {
+	public @Nullable Map<SocketAddress, Integer> maxConnectionsPerHost() {
 		return http1ConnectionProvider().maxConnectionsPerHost();
 	}
 
-	final ConnectionProvider http1ConnectionProvider;
+	final @Nullable ConnectionProvider http1ConnectionProvider;
 
-	final AtomicReference<ConnectionProvider> http2ConnectionProvider = new AtomicReference<>();
+	final AtomicReference<@Nullable ConnectionProvider> http2ConnectionProvider = new AtomicReference<>();
 
-	final AtomicReference<ConnectionProvider> http3ConnectionProvider = new AtomicReference<>();
+	final AtomicReference<@Nullable ConnectionProvider> http3ConnectionProvider = new AtomicReference<>();
 
 	HttpConnectionProvider() {
 		this(null);
@@ -94,6 +94,9 @@ final class HttpConnectionProvider implements ConnectionProvider {
 		this.http1ConnectionProvider = http1ConnectionProvider;
 	}
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This method is only when http1ConnectionProvider != null
 	ConnectionProvider getOrCreateHttp2() {
 		ConnectionProvider provider = http2ConnectionProvider.get();
 		if (provider == null) {
@@ -106,6 +109,9 @@ final class HttpConnectionProvider implements ConnectionProvider {
 		return provider;
 	}
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This method is only when http1ConnectionProvider != null
 	ConnectionProvider getOrCreateHttp3() {
 		ConnectionProvider provider = http3ConnectionProvider.get();
 		if (provider == null) {

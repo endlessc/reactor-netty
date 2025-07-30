@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,22 @@
 package reactor.netty.http.client;
 
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.logging.LoggingHandler;
-import io.netty.incubator.codec.http3.Http3;
-import io.netty.incubator.codec.http3.Http3ClientConnectionHandler;
-import io.netty.incubator.codec.quic.QuicChannel;
-import io.netty.incubator.codec.quic.QuicChannelBootstrap;
-import io.netty.incubator.codec.quic.QuicStreamChannel;
-import io.netty.incubator.codec.quic.QuicStreamChannelBootstrap;
+import io.netty.handler.codec.http3.Http3;
+import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
+import io.netty.handler.codec.quic.QuicChannel;
+import io.netty.handler.codec.quic.QuicChannelBootstrap;
+import io.netty.handler.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.quic.QuicStreamChannelBootstrap;
+import io.netty.resolver.AddressResolver;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -42,6 +45,7 @@ import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
+import reactor.netty.resources.ConnectionPoolMetrics;
 import reactor.netty.resources.ConnectionProvider;
 import reactor.netty.resources.PooledConnectionProvider;
 import reactor.netty.transport.TransportConfig;
@@ -50,7 +54,6 @@ import reactor.netty.internal.shaded.reactor.pool.PooledRef;
 import reactor.netty.internal.shaded.reactor.pool.PooledRefMetadata;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.concurrent.Queues;
 import reactor.util.context.Context;
 
@@ -62,10 +65,12 @@ import java.util.Queue;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 
+import static java.util.Objects.requireNonNull;
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.ReactorNetty.getChannelContext;
 import static reactor.netty.ReactorNetty.setChannelContext;
-import static reactor.netty.http.client.HttpClientState.STREAM_CONFIGURED;
+import static reactor.netty.http.client.Http2ConnectionProvider.http2PooledRef;
+import static reactor.netty.http.client.Http2ConnectionProvider.logStreamsState;
 
 /**
  * An HTTP/3 implementation for pooled {@link ConnectionProvider}.
@@ -100,6 +105,9 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 	}
 
 	@Override
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This method is not used with HTTP/3
 	protected CoreSubscriber<PooledRef<Connection>> createDisposableAcquire(
 			TransportConfig config,
 			ConnectionObserver connectionObserver,
@@ -153,14 +161,19 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 	}
 
 	@Override
+	protected ConnectionPoolMetrics delegateConnectionPoolMetrics(InstrumentedPool.PoolMetrics metrics) {
+		return new HttpDelegatingConnectionPoolMetrics((Http2Pool) metrics);
+	}
+
+	@Override
 	protected void registerDefaultMetrics(String id, SocketAddress remoteAddress, InstrumentedPool.PoolMetrics metrics) {
-		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+		MicrometerHttp2ConnectionProviderMeterRegistrar
 				.registerMetrics(name(), id, remoteAddress, metrics);
 	}
 
 	@Override
 	protected void deRegisterDefaultMetrics(String id, SocketAddress remoteAddress) {
-		MicrometerHttp2ConnectionProviderMeterRegistrar.INSTANCE
+		MicrometerHttp2ConnectionProviderMeterRegistrar
 				.deRegisterMetrics(name(), id, remoteAddress);
 	}
 
@@ -174,7 +187,20 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 	}
 
 	static void registerClose(Channel channel, ConnectionObserver owner) {
-		channel.closeFuture().addListener(f -> invalidate(owner));
+		channel.closeFuture()
+		       .addListener(f -> {
+		           if (owner instanceof DisposableAcquire) {
+		               DisposableAcquire da = (DisposableAcquire) owner;
+		               da.pooledRef
+		                 .invalidate()
+		                 .subscribe(null, null, () -> {
+		                     if (log.isDebugEnabled()) {
+		                         Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(da.pooledRef);
+		                         logStreamsState(channel, http2PooledRef.slot, "Stream closed");
+		                     }
+		                 });
+		           }
+		       });
 	}
 
 	static final String CONNECTION_PROVIDER_NAME = "http3";
@@ -182,7 +208,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 
 	static final Logger log = Loggers.getLogger(Http3ConnectionProvider.class);
 
-	static final AttributeKey<ConnectionObserver> OWNER = AttributeKey.valueOf("http3ConnectionOwner");
+	static final AttributeKey<@Nullable ConnectionObserver> OWNER = AttributeKey.valueOf("http3ConnectionOwner");
 
 	static final class DelegatingConnectionObserver implements ConnectionObserver {
 
@@ -196,7 +222,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 			owner(connection.channel()).onStateChange(connection, newState);
 		}
 
-		ConnectionObserver owner(Channel channel) {
+		static ConnectionObserver owner(Channel channel) {
 			ConnectionObserver obs;
 
 			for (;;) {
@@ -220,8 +246,8 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 		final Map<AttributeKey<?>, ?> attributes;
 		final Disposable.Composite cancellations;
 		final Context currentContext;
-		final LoggingHandler loggingHandler;
-		final ChannelMetricsRecorder metricsRecorder;
+		final @Nullable LoggingHandler loggingHandler;
+		final @Nullable ChannelMetricsRecorder metricsRecorder;
 		final long pendingAcquireTimeout;
 		final InstrumentedPool<Connection> pool;
 		final ConnectionObserver obs;
@@ -229,11 +255,18 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 		final Map<ChannelOption<?>, ?> options;
 		final boolean retried;
 		final MonoSink<Connection> sink;
-		final Function<String, String> uriTagValue;
+		final @Nullable Function<String, String> uriTagValue;
 		final boolean validate;
 
+		@SuppressWarnings("NullAway")
+		// Deliberately suppress "NullAway"
+		// This is a lazy initialization
 		PooledRef<Connection> pooledRef;
-		SocketAddress remoteAddress;
+		@Nullable SocketAddress remoteAddress;
+		// Never null when accessed - only via dispose()
+		// which is registered into sink.onCancel() callback.
+		// See onSubscribe(Subscription).
+		@SuppressWarnings("NullAway")
 		Subscription subscription;
 
 		DisposableAcquire(
@@ -295,6 +328,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		@Override
 		public void dispose() {
+			// sink.onCancel() registration happens in onSubscribe()
 			subscription.cancel();
 		}
 
@@ -309,6 +343,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 		}
 
 		@Override
+		@SuppressWarnings("NullAway")
 		public void onNext(PooledRef<Connection> pooledRef) {
 			this.pooledRef = pooledRef;
 			Channel channel = pooledRef.poolable().channel();
@@ -340,8 +375,11 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 			}
 
 			QuicStreamChannelBootstrap bootstrap =
+					// Deliberately suppress "NullAway"
+					// remoteAddress null is handled above
 					Http3.newRequestStreamBootstrap((QuicChannel) channel,
-							new Http3Codec(obs, opsFactory, acceptGzip, loggingHandler, metricsRecorder, remoteAddress, uriTagValue, validate));
+							new Http3Codec(obs.then(new HttpClientConfig.StreamConnectionObserver(currentContext())),
+									opsFactory, acceptGzip, loggingHandler, metricsRecorder, remoteAddress, uriTagValue, validate));
 			attributes(bootstrap, attributes);
 			channelOptions(bootstrap, options);
 			bootstrap.create().addListener(this);
@@ -402,7 +440,6 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 
 					ChannelOperations<?, ?> ops = ChannelOperations.get(ch);
 					if (ops != null) {
-						obs.onStateChange(ops, STREAM_CONFIGURED);
 						sink.success(ops);
 					}
 				}
@@ -448,8 +485,8 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 
 		static class Pending {
 			final Connection connection;
-			final Throwable error;
-			final State state;
+			final @Nullable Throwable error;
+			final @Nullable State state;
 
 			Pending(Connection connection, @Nullable Throwable error, @Nullable State state) {
 				this.connection = connection;
@@ -464,7 +501,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 		final HttpClientConfig config;
 		final InstrumentedPool<Connection> pool;
 		final SocketAddress remoteAddress;
-		final AddressResolverGroup<?> resolver;
+		final @Nullable AddressResolverGroup<?> resolver;
 
 		PooledConnectionAllocator(
 				ConnectionProvider parent,
@@ -475,6 +512,7 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 			this(null, null, parent, config, poolFactory, remoteAddress, resolver);
 		}
 
+		@SuppressWarnings("NullAway")
 		PooledConnectionAllocator(
 				@Nullable String id,
 				@Nullable String name,
@@ -490,13 +528,16 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 			this.pool = id == null ?
 					poolFactory.newPool(connectChannel(), null, DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
 							poolConfig -> new Http3Pool(poolConfig, poolFactory.allocationStrategy())) :
+					// Deliberately suppress "NullAway"
+					// With id != null, this means name != null
 					poolFactory.newPool(connectChannel(), DEFAULT_DESTROY_HANDLER, DEFAULT_EVICTION_PREDICATE,
 							new MicrometerPoolMetricsRecorder(id, name, remoteAddress),
 							poolConfig -> new Http3Pool(poolConfig, poolFactory.allocationStrategy()));
 		}
 
+		@SuppressWarnings({"unchecked", "FutureReturnValueIgnored"})
 		Publisher<Connection> connectChannel() {
-			return parent.acquire(config, new DelegatingConnectionObserver(), () -> remoteAddress, resolver)
+			return parent.acquire(config, new DelegatingConnectionObserver(), () -> remoteAddress, null)
 					.flatMap(conn ->
 						Mono.create(sink -> {
 							Channel channel = conn.channel();
@@ -506,22 +547,47 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 							Http3ChannelInitializer.HttpTrafficHandler initializer =
 									channel.pipeline().remove(Http3ChannelInitializer.HttpTrafficHandler.class);
 
-							QuicChannelBootstrap bootstrap =
-									QuicChannel.newBootstrap(channel)
-									           .handler(initializer.quicChannelInitializer)
-									           .remoteAddress(remoteAddress);
-							attributes(bootstrap, config.attributes());
-							channelOptions(bootstrap, config.options());
-							bootstrap.option(ChannelOption.AUTO_READ, true);
-							bootstrap.connect()
-							         .addListener(f -> {
-							             if (!f.isSuccess()) {
-							                 sink.error(f.cause());
-							             }
-							             else {
-							                 sink.success(Connection.from((Channel) f.get()));
-							             }
-							         });
+							AddressResolver<SocketAddress> addrResolver;
+							try {
+								addrResolver = (AddressResolver<SocketAddress>) requireNonNull(resolver).getResolver(channel.eventLoop());
+							}
+							catch (Throwable t) {
+								// "FutureReturnValueIgnored" this is deliberate
+								channel.close();
+								sink.error(t);
+								return;
+							}
+
+							if (!addrResolver.isSupported(remoteAddress) || addrResolver.isResolved(remoteAddress)) {
+								connect(channel, config, initializer.quicChannelInitializer, remoteAddress, sink);
+							}
+							else {
+								Future<SocketAddress> resolveFuture = addrResolver.resolve(remoteAddress);
+								if (resolveFuture.isDone()) {
+									Throwable cause = resolveFuture.cause();
+									if (cause != null) {
+										// "FutureReturnValueIgnored" this is deliberate
+										channel.close();
+										sink.error(cause);
+									}
+									else {
+										connect(channel, config, initializer.quicChannelInitializer, resolveFuture.getNow(), sink);
+									}
+								}
+								else {
+									resolveFuture.addListener(future -> {
+										Throwable cause = future.cause();
+										if (cause != null) {
+											// "FutureReturnValueIgnored" this is deliberate
+											channel.close();
+											sink.error(cause);
+										}
+										else {
+											connect(channel, config, initializer.quicChannelInitializer, (SocketAddress) future.getNow(), sink);
+										}
+									});
+								}
+							}
 						}));
 		}
 
@@ -537,6 +603,26 @@ final class Http3ConnectionProvider extends PooledConnectionProvider<Connection>
 			for (Map.Entry<ChannelOption<?>, ?> e : options.entrySet()) {
 				bootstrap.option((ChannelOption<Object>) e.getKey(), e.getValue());
 			}
+		}
+
+		static void connect(Channel channel, TransportConfig config, ChannelHandler handler, SocketAddress remoteAddress,
+				MonoSink<Connection> sink) {
+			QuicChannelBootstrap bootstrap =
+					QuicChannel.newBootstrap(channel)
+					           .handler(handler)
+					           .remoteAddress(remoteAddress);
+			attributes(bootstrap, config.attributes());
+			channelOptions(bootstrap, config.options());
+			bootstrap.option(ChannelOption.AUTO_READ, true);
+			bootstrap.connect()
+			         .addListener(f -> {
+			             if (!f.isSuccess()) {
+			                 sink.error(f.cause());
+			             }
+			             else {
+			                 sink.success(Connection.from((Channel) f.get()));
+			             }
+			         });
 		}
 
 		static final BiPredicate<Connection, PooledRefMetadata> DEFAULT_EVICTION_PREDICATE =

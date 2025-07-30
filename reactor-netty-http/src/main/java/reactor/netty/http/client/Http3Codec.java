@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2024-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,21 +20,24 @@ import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.logging.LoggingHandler;
-import io.netty.incubator.codec.http3.Http3ClientConnectionHandler;
-import io.netty.incubator.codec.http3.Http3FrameToHttpObjectCodec;
-import io.netty.incubator.codec.quic.QuicStreamChannel;
+import io.netty.handler.codec.http3.Http3ClientConnectionHandler;
+import io.netty.handler.codec.http3.Http3FrameToHttpObjectCodec;
+import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.jspecify.annotations.Nullable;
 import reactor.netty.ConnectionObserver;
 import reactor.netty.NettyPipeline;
 import reactor.netty.channel.ChannelMetricsRecorder;
 import reactor.netty.channel.ChannelOperations;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 
 import java.net.SocketAddress;
 import java.util.function.Function;
 
 import static reactor.netty.ReactorNetty.format;
+import static reactor.netty.http.client.Http2ConnectionProvider.http2PooledRef;
+import static reactor.netty.http.client.Http2ConnectionProvider.logStreamsState;
+import static reactor.netty.http.client.Http3ConnectionProvider.OWNER;
 
 final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 
@@ -43,10 +46,10 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 	final ConnectionObserver obs;
 	final ChannelOperations.OnSetup opsFactory;
 	final boolean acceptGzip;
-	final LoggingHandler loggingHandler;
-	final ChannelMetricsRecorder metricsRecorder;
+	final @Nullable LoggingHandler loggingHandler;
+	final @Nullable ChannelMetricsRecorder metricsRecorder;
 	final SocketAddress remoteAddress;
-	final Function<String, String> uriTagValue;
+	final @Nullable Function<String, String> uriTagValue;
 	final boolean validate;
 
 	Http3Codec(
@@ -56,7 +59,7 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 			@Nullable LoggingHandler loggingHandler,
 			@Nullable ChannelMetricsRecorder metricsRecorder,
 			SocketAddress remoteAddress,
-			Function<String, String> uriTagValue,
+			@Nullable Function<String, String> uriTagValue,
 			boolean validate) {
 		this.obs = obs;
 		this.opsFactory = opsFactory;
@@ -84,7 +87,7 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 		        .addLast(NettyPipeline.HttpTrafficHandler, HTTP_3_STREAM_BRIDGE_CLIENT_HANDLER);
 
 		if (acceptGzip) {
-			pipeline.addLast(NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
+			pipeline.addLast(NettyPipeline.HttpDecompressor, new HttpContentDecompressor(false, 0));
 		}
 
 		ChannelOperations.addReactiveBridge(ch, opsFactory, obs);
@@ -107,6 +110,13 @@ final class Http3Codec extends ChannelInitializer<QuicStreamChannel> {
 
 		if (log.isDebugEnabled()) {
 			log.debug(format(ch, "Initialized HTTP/3 stream pipeline {}"), ch.pipeline());
+
+			ConnectionObserver owner = ch.parent().attr(OWNER).get();
+			if (owner instanceof Http3ConnectionProvider.DisposableAcquire) {
+				Http3ConnectionProvider.DisposableAcquire da = (Http3ConnectionProvider.DisposableAcquire) owner;
+				Http2Pool.Http2PooledRef http2PooledRef = http2PooledRef(da.pooledRef);
+				logStreamsState(ch, http2PooledRef.slot, "Stream opened");
+			}
 		}
 	}
 

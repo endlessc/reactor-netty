@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2018-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import java.util.function.BiFunction;
 
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpRequest;
-import reactor.util.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 import static java.util.Objects.requireNonNull;
 
@@ -55,6 +55,8 @@ public final class ConnectionInfo {
 	final int hostPort;
 
 	final boolean isInetAddress;
+
+	final @Nullable String forwardedPrefix;
 
 	static ConnectionInfo from(HttpRequest request, boolean secured, SocketAddress localAddress, SocketAddress remoteAddress,
 			@Nullable BiFunction<ConnectionInfo, HttpRequest, ConnectionInfo> forwardedHeaderHandler) {
@@ -93,20 +95,25 @@ public final class ConnectionInfo {
 
 	ConnectionInfo(SocketAddress hostAddress, String hostName, int hostPort,
 			SocketAddress remoteAddress, String scheme, boolean isInetAddress) {
+		this(hostAddress, hostName, hostPort, remoteAddress, scheme, isInetAddress, null);
+	}
+
+	ConnectionInfo(SocketAddress hostAddress, String hostName, int hostPort,
+			SocketAddress remoteAddress, String scheme, boolean isInetAddress, @Nullable String forwardedPrefix) {
 		this.hostAddress = hostAddress;
 		this.hostName = hostName;
 		this.hostPort = hostPort;
 		this.isInetAddress = isInetAddress;
 		this.remoteAddress = remoteAddress;
 		this.scheme = scheme;
+		this.forwardedPrefix = forwardedPrefix;
 	}
 
 	/**
 	 * Return the host address of the connection.
 	 * @return the host address
 	 */
-	@Nullable
-	public InetSocketAddress getHostAddress() {
+	public @Nullable InetSocketAddress getHostAddress() {
 		return isInetAddress ? (InetSocketAddress) hostAddress : null;
 	}
 
@@ -114,8 +121,7 @@ public final class ConnectionInfo {
 	 * Return the remote address of the connection.
 	 * @return the remote address
 	 */
-	@Nullable
-	public InetSocketAddress getRemoteAddress() {
+	public @Nullable InetSocketAddress getRemoteAddress() {
 		return isInetAddress ? (InetSocketAddress) remoteAddress : null;
 	}
 
@@ -173,6 +179,18 @@ public final class ConnectionInfo {
 	}
 
 	/**
+	 * Return a new {@link ConnectionInfo} with the forwardedPrefix set.
+	 * @param forwardedPrefix the prefix provided via X-Forwarded-Prefix header
+	 * @return a new {@link ConnectionInfo}
+	 * @since 1.1.23
+	 */
+	public ConnectionInfo withForwardedPrefix(String forwardedPrefix) {
+		requireNonNull(forwardedPrefix, "forwardedPrefix");
+		return new ConnectionInfo(this.hostAddress, this.hostName, this.hostPort, this.remoteAddress, this.scheme,
+				this.isInetAddress, forwardedPrefix);
+	}
+
+	/**
 	 * Returns the connection host name.
 	 * @return the connection host name
 	 * @since 1.0.32
@@ -188,6 +206,15 @@ public final class ConnectionInfo {
 	 */
 	public int getHostPort() {
 		return hostPort != -1 ? hostPort : getDefaultHostPort(scheme);
+	}
+
+	/**
+	 * Returns the X-Forwarded-Prefix if it was part of the request headers.
+	 * @return the X-Forwarded-Prefix
+	 * @since 1.1.23
+	 */
+	public @Nullable String getForwardedPrefix() {
+		return forwardedPrefix;
 	}
 
 	/**

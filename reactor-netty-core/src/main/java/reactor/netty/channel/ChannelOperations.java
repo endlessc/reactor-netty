@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2011-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,10 +25,19 @@ import java.util.function.Predicate;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.channel.AbstractChannel;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelConfig;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelMetadata;
+import io.netty.channel.ChannelOutboundBuffer;
+import io.netty.channel.ChannelPromise;
+import io.netty.channel.DefaultChannelConfig;
+import io.netty.channel.EventLoop;
 import io.netty.util.ReferenceCounted;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscription;
 import reactor.core.CoreSubscriber;
@@ -48,7 +57,6 @@ import reactor.netty.NettyPipeline;
 import reactor.netty.ReactorNetty;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
 import static java.util.Objects.requireNonNull;
@@ -117,22 +125,24 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 	 *
 	 * @return the current {@link Channel} bound {@link ChannelOperations} or null if none
 	 */
-	@Nullable
-	public static ChannelOperations<?, ?> get(Channel ch) {
+	public static @Nullable ChannelOperations<?, ?> get(Channel ch) {
 		return Connection.from(ch)
 		                 .as(ChannelOperations.class);
 	}
 
-	final Connection          connection;
+	Connection                connection;
 	final FluxReceive         inbound;
-	final ConnectionObserver  listener;
+	ConnectionObserver        listener;
 	final Sinks.Empty<Void>   onTerminate;
 
+	@SuppressWarnings("NullAway")
+	// Deliberately suppress "NullAway"
+	// This is a lazy initialization
 	volatile Subscription outboundSubscription;
 
 	boolean localActive;
-	String longId;
-	String shortId;
+	@Nullable String longId;
+	@Nullable String shortId;
 
 	protected ChannelOperations(ChannelOperations<INBOUND, OUTBOUND> replaced) {
 		this.connection = replaced.connection;
@@ -157,9 +167,8 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		this.inbound = new FluxReceive(this);
 	}
 
-	@Nullable
 	@Override
-	public <T extends Connection> T as(Class<T> clazz) {
+	public <T extends Connection> @Nullable T as(Class<T> clazz) {
 		if (clazz == ChannelOperations.class) {
 			@SuppressWarnings("unchecked")
 			T thiz = (T) this;
@@ -206,7 +215,9 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		if (!inbound.isDisposed()) {
 			discard();
 		}
-		connection.dispose();
+		if (!connection.isDisposed()) {
+			connection.dispose();
+		}
 	}
 
 	@Override
@@ -502,6 +513,8 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 			// and it is guarded by rebind(connection), so tryEmitEmpty() should happen just once
 			onTerminate.tryEmitEmpty();
 			listener.onStateChange(this, ConnectionObserver.State.DISCONNECTING);
+			connection = new DisposedConnection(channel());
+			listener = ConnectionObserver.emptyListener();
 		}
 	}
 
@@ -593,8 +606,9 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 
 	@Override
 	public String asShortText() {
+		String shortId = this.shortId;
 		if (shortId == null) {
-			shortId = initShortId();
+			this.shortId = shortId = initShortId();
 		}
 
 		return shortId;
@@ -664,8 +678,7 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 		 *
 		 * @return the new {@link ChannelOperations}
 		 */
-		@Nullable
-		ChannelOperations<?, ?> create(Connection c, ConnectionObserver listener, @Nullable Object msg);
+		@Nullable ChannelOperations<?, ?> create(Connection c, ConnectionObserver listener, @Nullable Object msg);
 
 	}
 
@@ -681,4 +694,135 @@ public class ChannelOperations<INBOUND extends NettyInbound, OUTBOUND extends Ne
 			Subscription.class,
 			"outboundSubscription");
 
+	static final class DisposedChannel extends AbstractChannel {
+
+		final DefaultChannelConfig config;
+		final SocketAddress localAddress;
+		final ChannelMetadata metadata;
+		final SocketAddress remoteAddress;
+
+		DisposedChannel(Channel actual) {
+			super(null);
+			this.metadata = actual.metadata();
+			this.config = new DisposedChannelConfig(this);
+			this.localAddress = actual.localAddress();
+			this.remoteAddress = actual.remoteAddress();
+		}
+
+		@Override
+		public ChannelFuture close() {
+			return newSucceededFuture();
+		}
+
+		@Override
+		public ChannelFuture close(ChannelPromise promise) {
+			promise.setSuccess();
+			return promise;
+		}
+
+		@Override
+		public ChannelFuture closeFuture() {
+			return newSucceededFuture();
+		}
+
+		@Override
+		public ChannelConfig config() {
+			return config;
+		}
+
+		@Override
+		protected void doBeginRead() {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
+		protected void doBind(SocketAddress socketAddress) {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
+		protected void doClose() {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
+		protected void doDisconnect() {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
+		protected void doWrite(ChannelOutboundBuffer channelOutboundBuffer) {
+			throw new UnsupportedOperationException();
+		}
+
+		@Override
+		public boolean isActive() {
+			return false;
+		}
+
+		@Override
+		protected boolean isCompatible(EventLoop eventLoop) {
+			return false;
+		}
+
+		@Override
+		public boolean isOpen() {
+			return false;
+		}
+
+		@Override
+		protected SocketAddress localAddress0() {
+			return localAddress;
+		}
+
+		@Override
+		public ChannelMetadata metadata() {
+			return metadata;
+		}
+
+		@Override
+		protected AbstractUnsafe newUnsafe() {
+			return new DisposedChannelUnsafe();
+		}
+
+		@Override
+		protected SocketAddress remoteAddress0() {
+			return remoteAddress;
+		}
+
+		final class DisposedChannelUnsafe extends AbstractUnsafe {
+
+			@Override
+			public void connect(SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
+				promise.setFailure(new UnsupportedOperationException());
+			}
+		}
+	}
+
+	static final class DisposedChannelConfig extends DefaultChannelConfig {
+
+		DisposedChannelConfig(Channel channel) {
+			super(channel);
+		}
+
+		@Override
+		public ChannelConfig setAutoRead(boolean autoRead) {
+			// no-op
+			return this;
+		}
+	}
+
+	static final class DisposedConnection implements Connection {
+
+		final Channel channel;
+
+		DisposedConnection(Channel actual) {
+			this.channel = new DisposedChannel(actual);
+		}
+
+		@Override
+		public Channel channel() {
+			return channel;
+		}
+	}
 }

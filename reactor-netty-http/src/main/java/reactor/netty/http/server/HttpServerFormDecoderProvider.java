@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2023 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2021-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,10 +25,10 @@ import io.netty.handler.codec.http.multipart.HttpPostMultipartRequestDecoder;
 import io.netty.handler.codec.http.multipart.HttpPostStandardRequestDecoder;
 import io.netty.handler.codec.http.multipart.InterfaceHttpData;
 import io.netty.handler.codec.http.multipart.InterfaceHttpPostRequestDecoder;
+import org.jspecify.annotations.Nullable;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
-import reactor.util.annotation.Nullable;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
@@ -113,7 +113,7 @@ public final class HttpServerFormDecoderProvider {
 		Builder streaming(boolean enable);
 	}
 
-	final Path baseDirectory;
+	final @Nullable Path baseDirectory;
 	final Charset charset;
 	final long maxInMemorySize;
 	final long maxSize;
@@ -137,8 +137,7 @@ public final class HttpServerFormDecoderProvider {
 	 * @return the configured directory where to store disk {@link Attribute}/{@link FileUpload}
 	 * @see Builder#baseDirectory(Path)
 	 */
-	@Nullable
-	public Path baseDirectory() {
+	public @Nullable Path baseDirectory() {
 		return baseDirectory;
 	}
 
@@ -221,7 +220,7 @@ public final class HttpServerFormDecoderProvider {
 		return result;
 	}
 
-	Mono<Path> createDefaultTempDirectory() {
+	static Mono<Path> createDefaultTempDirectory() {
 		return Mono.fromCallable(() -> Files.createTempDirectory(DEFAULT_TEMP_DIRECTORY_PREFIX))
 		           .cache();
 	}
@@ -290,7 +289,7 @@ public final class HttpServerFormDecoderProvider {
 		static final Scheduler DEFAULT_SCHEDULER = Schedulers.boundedElastic();
 		static final boolean DEFAULT_STREAMING = false;
 
-		Path baseDirectory;
+		@Nullable Path baseDirectory;
 		Charset charset = DEFAULT_CHARSET;
 		long maxInMemorySize = DEFAULT_MAX_IN_MEMORY_SIZE;
 		long maxSize = DEFAULT_MAX_SIZE;
@@ -395,7 +394,7 @@ public final class HttpServerFormDecoderProvider {
 		public void destroy() {
 			super.destroy();
 			InterfaceHttpData partial = currentPartialHttpData();
-			if (partial != null) {
+			if (partial != null && partial.refCnt() > 0) {
 				partial.release();
 			}
 		}
@@ -452,7 +451,7 @@ public final class HttpServerFormDecoderProvider {
 		public void destroy() {
 			super.destroy();
 			InterfaceHttpData partial = currentPartialHttpData();
-			if (partial != null) {
+			if (partial != null && partial.refCnt() > 0) {
 				partial.release();
 			}
 		}

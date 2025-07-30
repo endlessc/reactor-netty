@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2024 VMware, Inc. or its affiliates, All Rights Reserved.
+ * Copyright (c) 2020-2025 VMware, Inc. or its affiliates, All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,6 +68,7 @@ import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.resolver.AddressResolverGroup;
 import io.netty.util.ReferenceCountUtil;
+import org.jspecify.annotations.Nullable;
 import org.reactivestreams.Publisher;
 import reactor.core.publisher.Mono;
 import reactor.netty.ChannelPipelineConfigurer;
@@ -92,13 +93,14 @@ import reactor.netty.transport.ProxyProvider;
 import reactor.netty.transport.logging.AdvancedByteBufFormat;
 import reactor.util.Logger;
 import reactor.util.Loggers;
-import reactor.util.annotation.Incubating;
-import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
+import static java.util.Objects.requireNonNull;
 import static reactor.netty.ReactorNetty.format;
 import static reactor.netty.ReactorNetty.setChannelContext;
 import static reactor.netty.http.client.Http2ConnectionProvider.OWNER;
+import static reactor.netty.http.client.Http2ConnectionProvider.http2PooledRef;
+import static reactor.netty.http.client.Http2ConnectionProvider.logStreamsState;
 import static reactor.netty.http.client.Http3Codec.newHttp3ClientConnectionHandler;
 
 /**
@@ -114,8 +116,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured base URL to use for this request/response or null
 	 */
-	@Nullable
-	public String baseUrl() {
+	public @Nullable String baseUrl() {
 		return baseUrl;
 	}
 
@@ -177,8 +178,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured follow redirect predicate or null
 	 */
-	@Nullable
-	public BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate() {
+	public @Nullable BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate() {
 		return followRedirectPredicate;
 	}
 
@@ -196,7 +196,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the HTTP/2 configuration
 	 */
-	public Http2SettingsSpec http2SettingsSpec() {
+	public @Nullable Http2SettingsSpec http2SettingsSpec() {
 		return http2Settings;
 	}
 
@@ -206,9 +206,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 * @return the HTTP/3 configuration
 	 * @since 1.2.0
 	 */
-	@Incubating
-	@Nullable
-	public Http3SettingsSpec http3SettingsSpec() {
+	public @Nullable Http3SettingsSpec http3SettingsSpec() {
 		return http3Settings;
 	}
 
@@ -271,8 +269,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured redirect request {@link BiConsumer} or null
 	 */
-	@Nullable
-	public BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer() {
+	public @Nullable BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer() {
 		return redirectRequestBiConsumer;
 	}
 
@@ -281,8 +278,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured redirect request consumer or null
 	 */
-	@Nullable
-	public Consumer<HttpClientRequest> redirectRequestConsumer() {
+	public @Nullable Consumer<HttpClientRequest> redirectRequestConsumer() {
 		return redirectRequestConsumer;
 	}
 
@@ -291,8 +287,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured response timeout or null
 	 */
-	@Nullable
-	public Duration responseTimeout() {
+	public @Nullable Duration responseTimeout() {
 		return responseTimeout;
 	}
 
@@ -303,8 +298,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 * @return the current {@link SslProvider} if that {@link HttpClient} secured via SSL
 	 * transport or null
 	 */
-	@Nullable
-	public SslProvider sslProvider() {
+	public @Nullable SslProvider sslProvider() {
 		return sslProvider;
 	}
 
@@ -313,7 +307,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured request uri
 	 */
-	public String uri() {
+	public @Nullable String uri() {
 		return uri == null ? uriStr : uri.toString();
 	}
 
@@ -324,8 +318,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 * @return the configured function that receives the actual uri and returns the uri tag value
 	 * that will be used for the metrics with {@link reactor.netty.Metrics#URI} tag
 	 */
-	@Nullable
-	public Function<String, String> uriTagValue() {
+	public @Nullable Function<String, String> uriTagValue() {
 		return uriTagValue;
 	}
 
@@ -334,7 +327,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	 *
 	 * @return the configured websocket client configuration
 	 */
-	public WebsocketClientSpec websocketClientSpec() {
+	public @Nullable WebsocketClientSpec websocketClientSpec() {
 		return websocketClientSpec;
 	}
 
@@ -343,37 +336,37 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 	boolean acceptBrotli;
 	boolean acceptGzip;
-	String baseUrl;
-	BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> body;
-	Function<? super Mono<? extends Connection>, ? extends Mono<? extends Connection>> connector;
+	@Nullable String baseUrl;
+	@Nullable BiFunction<? super HttpClientRequest, ? super NettyOutbound, ? extends Publisher<Void>> body;
+	@Nullable Function<? super Mono<? extends Connection>, ? extends Mono<? extends Connection>> connector;
 	ClientCookieDecoder cookieDecoder;
 	ClientCookieEncoder cookieEncoder;
 	HttpResponseDecoderSpec decoder;
-	Function<Mono<HttpClientConfig>, Mono<HttpClientConfig>> deferredConf;
-	BiConsumer<? super HttpClientRequest, ? super Connection> doAfterRequest;
-	BiConsumer<? super HttpClientResponse, ? super Connection> doAfterResponseSuccess;
-	BiConsumer<? super HttpClientResponse, ? super Connection> doOnRedirect;
-	BiConsumer<? super HttpClientRequest, ? super Connection> doOnRequest;
-	BiConsumer<? super HttpClientRequest, ? super Throwable> doOnRequestError;
-	BiConsumer<? super HttpClientResponse, ? super Connection> doOnResponse;
-	BiConsumer<? super HttpClientResponse, ? super Throwable> doOnResponseError;
-	BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate;
+	@Nullable Function<Mono<HttpClientConfig>, Mono<HttpClientConfig>> deferredConf;
+	@Nullable BiConsumer<? super HttpClientRequest, ? super Connection> doAfterRequest;
+	@Nullable BiConsumer<? super HttpClientResponse, ? super Connection> doAfterResponseSuccess;
+	@Nullable BiConsumer<? super HttpClientResponse, ? super Connection> doOnRedirect;
+	@Nullable BiConsumer<? super HttpClientRequest, ? super Connection> doOnRequest;
+	@Nullable BiConsumer<? super HttpClientRequest, ? super Throwable> doOnRequestError;
+	@Nullable BiConsumer<? super HttpClientResponse, ? super Connection> doOnResponse;
+	@Nullable BiConsumer<? super HttpClientResponse, ? super Throwable> doOnResponseError;
+	@Nullable BiPredicate<HttpClientRequest, HttpClientResponse> followRedirectPredicate;
 	HttpHeaders headers;
-	Http2SettingsSpec http2Settings;
-	Http3SettingsSpec http3Settings;
+	@Nullable Http2SettingsSpec http2Settings;
+	@Nullable Http3SettingsSpec http3Settings;
 	HttpMessageLogFactory httpMessageLogFactory;
 	HttpMethod method;
 	HttpProtocol[] protocols;
 	int _protocols;
-	BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer;
-	Consumer<HttpClientRequest> redirectRequestConsumer;
-	Duration responseTimeout;
+	@Nullable BiConsumer<HttpHeaders, HttpClientRequest> redirectRequestBiConsumer;
+	@Nullable Consumer<HttpClientRequest> redirectRequestConsumer;
+	@Nullable Duration responseTimeout;
 	boolean retryDisabled;
-	SslProvider sslProvider;
-	URI uri;
-	String uriStr;
-	Function<String, String> uriTagValue;
-	WebsocketClientSpec websocketClientSpec;
+	@Nullable SslProvider sslProvider;
+	@Nullable URI uri;
+	@Nullable String uriStr;
+	@Nullable Function<String, String> uriTagValue;
+	@Nullable WebsocketClientSpec websocketClientSpec;
 
 	HttpClientConfig(HttpConnectionProvider connectionProvider, Map<ChannelOption<?>, ?> options,
 			Supplier<? extends SocketAddress> remoteAddress) {
@@ -432,7 +425,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	public ChannelInitializer<Channel> channelInitializer(ConnectionObserver connectionObserver,
 			@Nullable SocketAddress remoteAddress, boolean onServer) {
 		ChannelInitializer<Channel> channelInitializer = super.channelInitializer(connectionObserver, remoteAddress, onServer);
-		return (_protocols & h3) == h3 ? new Http3ChannelInitializer(this, channelInitializer, connectionObserver) : channelInitializer;
+		return (_protocols & h3) == h3 ? new Http3ChannelInitializer(this, channelInitializer, connectionObserver, remoteAddress) : channelInitializer;
 	}
 
 	/**
@@ -505,6 +498,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 	@Override
 	protected void proxyProvider(ProxyProvider proxyProvider) {
 		super.proxyProvider(proxyProvider);
+	}
+
+	@Override
+	protected void proxyProviderSupplier(Supplier<ProxyProvider> proxyProviderSupplier) {
+		super.proxyProviderSupplier(proxyProviderSupplier);
 	}
 
 	@Override
@@ -591,6 +589,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			ConnectionObserver obs,
 			ChannelOperations.OnSetup opsFactory,
 			boolean acceptGzip,
+			boolean copyState,
 			@Nullable ChannelMetricsRecorder metricsRecorder,
 			@Nullable SocketAddress proxyAddress,
 			SocketAddress remoteAddress,
@@ -606,7 +605,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 				.addLast(NettyPipeline.HttpTrafficHandler, HTTP_2_STREAM_BRIDGE_CLIENT_HANDLER);
 
 		if (acceptGzip) {
-			pipeline.addLast(NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
+			pipeline.addLast(NettyPipeline.HttpDecompressor, new HttpContentDecompressor(false, 0));
 		}
 
 		ChannelOperations.addReactiveBridge(ch, opsFactory, obs);
@@ -668,6 +667,9 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		ChannelOperations<?, ?> ops = opsFactory.create(Connection.from(ch), obs, null);
 		if (ops != null) {
 			ops.bind();
+			if (copyState && ops instanceof HttpClientOperations) {
+				HttpClientOperations.copyState(((HttpClientOperations) ops));
+			}
 		}
 	}
 
@@ -722,7 +724,8 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		             .setMaxChunkSize(decoder.maxChunkSize())
 		             .setValidateHeaders(decoder.validateHeaders())
 		             .setInitialBufferSize(decoder.initialBufferSize())
-		             .setAllowDuplicateContentLengths(decoder.allowDuplicateContentLengths());
+		             .setAllowDuplicateContentLengths(decoder.allowDuplicateContentLengths())
+		             .setAllowPartialChunks(decoder.allowPartialChunks());
 		HttpClientCodec httpClientCodec =
 				new HttpClientCodec(decoderConfig, decoder.failOnMissingResponse, decoder.parseHttpAfterConnectRequest);
 
@@ -749,7 +752,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		 .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpTrafficHandler, new HttpTrafficHandler(observer));
 
 		if (acceptGzip) {
-			p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
+			p.addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.HttpDecompressor, new HttpContentDecompressor(false, 0));
 		}
 
 		if (metricsRecorder != null) {
@@ -784,13 +787,14 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		             .setMaxChunkSize(decoder.maxChunkSize())
 		             .setValidateHeaders(decoder.validateHeaders())
 		             .setInitialBufferSize(decoder.initialBufferSize())
-		             .setAllowDuplicateContentLengths(decoder.allowDuplicateContentLengths());
+		             .setAllowDuplicateContentLengths(decoder.allowDuplicateContentLengths())
+		             .setAllowPartialChunks(decoder.allowPartialChunks());
 		p.addBefore(NettyPipeline.ReactiveBridge,
 				NettyPipeline.HttpCodec,
 				new HttpClientCodec(decoderConfig, decoder.failOnMissingResponse, decoder.parseHttpAfterConnectRequest));
 
 		if (acceptGzip) {
-			p.addAfter(NettyPipeline.HttpCodec, NettyPipeline.HttpDecompressor, new HttpContentDecompressor());
+			p.addAfter(NettyPipeline.HttpCodec, NettyPipeline.HttpDecompressor, new HttpContentDecompressor(false, 0));
 		}
 
 		if (metricsRecorder != null) {
@@ -851,11 +855,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 		final boolean acceptGzip;
 		final Http2FrameCodec http2FrameCodec;
-		final ChannelMetricsRecorder metricsRecorder;
+		final @Nullable ChannelMetricsRecorder metricsRecorder;
 		final ChannelOperations.OnSetup opsFactory;
-		final SocketAddress proxyAddress;
+		final @Nullable SocketAddress proxyAddress;
 		final SocketAddress remoteAddress;
-		final Function<String, String> uriTagValue;
+		final @Nullable Function<String, String> uriTagValue;
 
 		H2CleartextCodec(
 				Http2FrameCodec http2FrameCodec,
@@ -883,9 +887,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			ConnectionObserver channelOwner = ctx.channel().attr(OWNER).get();
 			Http2ConnectionProvider.DisposableAcquire owner = null;
 			ConnectionObserver obs = null;
+			Http2Pool.Http2PooledRef http2PooledRef = null;
 			if (channelOwner instanceof Http2ConnectionProvider.DisposableAcquire) {
 				owner = (Http2ConnectionProvider.DisposableAcquire) channelOwner;
 				obs = owner.obs;
+				http2PooledRef = http2PooledRef(owner.pooledRef);
 			}
 			if (responseTimeoutHandler != null) {
 				pipeline.remove(NettyPipeline.ResponseTimeoutHandler);
@@ -904,23 +910,27 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			}
 			pipeline.remove(NettyPipeline.ReactiveBridge);
 			pipeline.remove(this);
+
+			if (http2PooledRef != null) {
+				http2PooledRef.slot.initMaxConcurrentStreams();
+			}
 		}
 	}
 
 	static final class H2Codec extends ChannelInitializer<Channel> {
 
 		final boolean acceptGzip;
-		final ChannelMetricsRecorder metricsRecorder;
-		final ConnectionObserver observer;
+		final @Nullable ChannelMetricsRecorder metricsRecorder;
+		final @Nullable ConnectionObserver observer;
 		final ChannelOperations.OnSetup opsFactory;
-		final Http2ConnectionProvider.DisposableAcquire owner;
+		final Http2ConnectionProvider.@Nullable DisposableAcquire owner;
 		final long responseTimeoutMillis;
-		final SocketAddress proxyAddress;
+		final @Nullable SocketAddress proxyAddress;
 		final SocketAddress remoteAddress;
-		final Function<String, String> uriTagValue;
+		final @Nullable Function<String, String> uriTagValue;
 
 		H2Codec(
-				@Nullable Http2ConnectionProvider.DisposableAcquire owner,
+				Http2ConnectionProvider.@Nullable DisposableAcquire owner,
 				@Nullable ConnectionObserver observer,
 				ChannelOperations.OnSetup opsFactory,
 				boolean acceptGzip,
@@ -933,7 +943,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		}
 
 		H2Codec(
-				@Nullable Http2ConnectionProvider.DisposableAcquire owner,
+				Http2ConnectionProvider.@Nullable DisposableAcquire owner,
 				@Nullable ConnectionObserver observer,
 				ChannelOperations.OnSetup opsFactory,
 				boolean acceptGzip,
@@ -962,7 +972,10 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 					setChannelContext(ch, owner.currentContext());
 				}
 				addStreamHandlers(ch, observer.then(new StreamConnectionObserver(owner.currentContext())), opsFactory,
-						acceptGzip, metricsRecorder, proxyAddress, remoteAddress, responseTimeoutMillis, uriTagValue);
+						acceptGzip, true, metricsRecorder, proxyAddress, remoteAddress, responseTimeoutMillis, uriTagValue);
+				if (log.isDebugEnabled()) {
+					logStreamsState(ch, http2PooledRef(owner.pooledRef).slot, "Stream opened");
+				}
 			}
 			else {
 				// Handle server pushes (inbound streams)
@@ -988,11 +1001,11 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		final boolean                                    acceptGzip;
 		final HttpResponseDecoderSpec                    decoder;
 		final Http2Settings                              http2Settings;
-		final ChannelMetricsRecorder                     metricsRecorder;
+		final @Nullable ChannelMetricsRecorder           metricsRecorder;
 		final ConnectionObserver                         observer;
-		final SocketAddress                              proxyAddress;
+		final @Nullable SocketAddress                    proxyAddress;
 		final SocketAddress                              remoteAddress;
-		final Function<String, String>                   uriTagValue;
+		final @Nullable Function<String, String>         uriTagValue;
 
 		H2OrHttp11Codec(HttpClientChannelInitializer initializer, ConnectionObserver observer, SocketAddress remoteAddress) {
 			this.acceptGzip = initializer.acceptGzip;
@@ -1040,12 +1053,12 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		final boolean                                    acceptGzip;
 		final HttpResponseDecoderSpec                    decoder;
 		final Http2Settings                              http2Settings;
-		final ChannelMetricsRecorder                     metricsRecorder;
+		final @Nullable ChannelMetricsRecorder           metricsRecorder;
 		final ChannelOperations.OnSetup                  opsFactory;
 		final int                                        protocols;
-		final SocketAddress                              proxyAddress;
-		final SslProvider                                sslProvider;
-		final Function<String, String>                   uriTagValue;
+		final @Nullable SocketAddress                    proxyAddress;
+		final @Nullable SslProvider                      sslProvider;
+		final @Nullable Function<String, String>         uriTagValue;
 
 		HttpClientChannelInitializer(HttpClientConfig config) {
 			this.acceptGzip = config.acceptGzip;
@@ -1054,7 +1067,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 			this.metricsRecorder = config.metricsRecorderInternal();
 			this.opsFactory = config.channelOperationsProvider();
 			this.protocols = config._protocols;
-			this.proxyAddress = config.proxyProvider() != null ? config.proxyProvider().getSocketAddress().get() : null;
+			this.proxyAddress = config.proxyProvider() != null ? config.proxyProvider().getProxyAddress() : null;
 			this.sslProvider = config.sslProvider;
 			this.uriTagValue = config.uriTagValue;
 		}
@@ -1069,10 +1082,10 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 				if ((protocols & h11orH2) == h11orH2) {
 					channel.pipeline()
 					       .addBefore(NettyPipeline.ReactiveBridge, NettyPipeline.H2OrHttp11Codec,
-					               new H2OrHttp11Codec(this, observer, remoteAddress));
+					               new H2OrHttp11Codec(this, observer, requireNonNull(remoteAddress)));
 				}
 				else if ((protocols & h11) == h11) {
-					configureHttp11Pipeline(channel.pipeline(), acceptGzip, decoder, metricsRecorder, proxyAddress, remoteAddress, uriTagValue);
+					configureHttp11Pipeline(channel.pipeline(), acceptGzip, decoder, metricsRecorder, proxyAddress, requireNonNull(remoteAddress), uriTagValue);
 				}
 				else if ((protocols & h2) == h2) {
 					configureHttp2Pipeline(channel.pipeline(), decoder, http2Settings, observer);
@@ -1086,7 +1099,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 					configureHttp11OrH2CleartextPipeline(channel.pipeline(), acceptGzip, decoder, http2Settings, metricsRecorder, observer, opsFactory, proxyAddress, remoteAddress, uriTagValue);
 				}
 				else if ((protocols & h11) == h11) {
-					configureHttp11Pipeline(channel.pipeline(), acceptGzip, decoder, metricsRecorder, proxyAddress, remoteAddress, uriTagValue);
+					configureHttp11Pipeline(channel.pipeline(), acceptGzip, decoder, metricsRecorder, proxyAddress, requireNonNull(remoteAddress), uriTagValue);
 				}
 				else if ((protocols & h2c) == h2c) {
 					configureHttp2Pipeline(channel.pipeline(), decoder, http2Settings, observer);
@@ -1097,13 +1110,13 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 
 	static final class HttpClientDoOn implements ConnectionObserver {
 
-		final BiConsumer<? super HttpClientRequest, ? super Connection> doAfterRequest;
-		final BiConsumer<? super HttpClientResponse, ? super Connection> doAfterResponseSuccess;
-		final BiConsumer<? super HttpClientResponse, ? super Connection> doOnRedirect;
-		final BiConsumer<? super HttpClientRequest, ? super Connection> doOnRequest;
-		final BiConsumer<? super HttpClientRequest, ? super Throwable> doOnRequestError;
-		final BiConsumer<? super HttpClientResponse, ? super Connection> doOnResponse;
-		final BiConsumer<? super HttpClientResponse, ? super Throwable> doOnResponseError;
+		final @Nullable BiConsumer<? super HttpClientRequest, ? super Connection> doAfterRequest;
+		final @Nullable BiConsumer<? super HttpClientResponse, ? super Connection> doAfterResponseSuccess;
+		final @Nullable BiConsumer<? super HttpClientResponse, ? super Connection> doOnRedirect;
+		final @Nullable BiConsumer<? super HttpClientRequest, ? super Connection> doOnRequest;
+		final @Nullable BiConsumer<? super HttpClientRequest, ? super Throwable> doOnRequestError;
+		final @Nullable BiConsumer<? super HttpClientResponse, ? super Connection> doOnResponse;
+		final @Nullable BiConsumer<? super HttpClientResponse, ? super Throwable> doOnResponseError;
 
 		HttpClientDoOn(@Nullable BiConsumer<? super HttpClientRequest,  ? super Connection> doAfterRequest,
 				@Nullable BiConsumer<? super HttpClientResponse,  ? super Connection> doAfterResponseSuccess,
@@ -1218,7 +1231,7 @@ public final class HttpClientConfig extends ClientTransportConfig<HttpClientConf
 		@SuppressWarnings("FutureReturnValueIgnored")
 		public void onStateChange(Connection connection, State state) {
 			if (state == State.DISCONNECTING) {
-				if (!connection.isPersistent() && connection.channel().isActive()) {
+				if (connection.channel().isActive()) {
 					// Will be released by closeFuture
 					// "FutureReturnValueIgnored" this is deliberate
 					connection.channel().close();
